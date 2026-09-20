@@ -89,6 +89,7 @@
 
     async supervisorNames() { return (await API.call('supervisors')).names || []; },
     async calendarGrid() { return (await API.call('calendarGrid')).values || []; },
+    async syncCalendar() { return (await API.call('syncCalendar')).summary || {}; },
     async venues() { return (await API.call('venues')).venues || []; }
   };
   window.API = API;

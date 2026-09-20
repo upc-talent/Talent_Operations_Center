@@ -57,7 +57,7 @@ function toast(msg, type){
   box.className = 'toast-item ' + (type==='err'?'err':type==='info'?'info':'ok');
   box.textContent = msg;
   document.getElementById('toast').appendChild(box);
-  setTimeout(()=>box.remove(), 3200);
+  setTimeout(()=>box.remove(), Math.max(3200, String(msg).length*60));   // long messages stay up long enough to read
 }
 
 const LEAVE_STATUSES = ['Sick Leave','Annual Leave','Resignation','Promotion'];

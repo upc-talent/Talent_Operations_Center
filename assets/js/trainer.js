@@ -263,18 +263,46 @@ const CAL_CODE_PATTERNS = [
 ];
 function openCalendarImportModal(){
   showModal(`
-    <h3>Import Calendar from Excel</h3>
-    <p class="small-note">Built for workbooks laid out like a weekly grid: a header row of weekday dates (e.g. "Tue 8 Sep"), a row of city/training codes beneath each date, and a row of trainer names beneath that. Codes are matched by prefix (JED, RUH, MEC, MAD, EAST, TAIF, ABH, BAHAH, JAZ) — "MIX" codes import as online training days, named Mix 1, Mix 2, etc. from the number already in the code. Unrecognized codes (holidays, "Salaries", etc.) are skipped.</p>
-    <p class="small-note">Supervisors are assigned automatically based on which supervisors already have pharmacists in each city, from your master sheet. Mix/Online days have no city to match, so you'll assign supervisors to those afterward from the Calendar or Days table.</p>
+    <h3>Calendar sync</h3>
     <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:#f7faff;">
-      <p class="small-note" style="margin:0 0 8px;"><b>From the Google Sheet</b> — reads the "2026 - Q4 Training Calendar" tab of your Training Operations Hub sheet.</p>
-      <button class="btn btn-navy btn-sm" onclick="importCalendarFromSheet()">⬇ Import from Google Sheet</button>
+      <p class="small-note" style="margin:0 0 8px;"><b>Automatic.</b> The "2026 - Q4 Training Calendar" tab of your Google Sheet is read by the server whenever the app loads (at most once a minute). New trainings appear for supervisors on their own; a training that moves keeps its assigned pharmacists; one removed from the sheet is hidden, never deleted. Anything you set here (visible-to, quotas, capacity, deadline, venue) is kept.</p>
+      <button class="btn btn-navy btn-sm" onclick="syncCalendarNow()">↻ Sync now</button>
     </div>
-    <div class="field"><label class="field-label">Or upload an Excel file</label><input type="file" id="calImportFile" accept=".xlsx,.xls"></div>
+    <details style="margin-bottom:10px;">
+      <summary class="small-note" style="cursor:pointer;">Advanced: import from an Excel file instead</summary>
+      <p class="small-note" style="margin-top:8px;">Weekly grid layout: a row of weekday dates ("Tue 8 Sep"), a row of city/training codes beneath, and a row of trainer names beneath that. "MIX" codes become online trainings. Unrecognized codes (holidays, "Salaries"…) are skipped.</p>
+      <div class="field"><input type="file" id="calImportFile" accept=".xlsx,.xls"></div>
+      <button class="btn btn-outline btn-sm" onclick="confirmCalendarImport()">Import File</button>
+    </details>
     <div class="modal-actions">
-      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-navy btn-sm" onclick="confirmCalendarImport()">Import File</button>
-    </div>`);
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Close</button>
+    </div>`, 'max-width:600px;');
+}
+
+/* Ask the server to re-read the calendar tab right now (it also does this by itself). */
+async function syncCalendarNow(){
+  closeModal();
+  toast('Reading the calendar tab…','info');
+  try{
+    const s = (await API.syncCalendar()) || {};
+    await renderCalendar();
+    buildDaysFilterBar(); renderDaysTable(); buildTrainerFilterBar(); renderTrainerNamesList();
+    const li = t => `<li style="margin:5px 0;">${t}</li>`;
+    let items = '';
+    if(s.added) items += li(`<b>${s.added}</b> new training day(s) added.`);
+    if(s.updated) items += li(`<b>${s.updated}</b> training day(s) updated from the calendar (dates / trainers).`);
+    if(s.reactivated) items += li(`${s.reactivated} training day(s) that came back into the calendar were re-opened.`);
+    if(s.deactivated) items += li(`<b>${s.deactivated}</b> training day(s) are no longer in the calendar and were hidden from supervisors (their assignments are kept).`);
+    if(s.trainersAdded && s.trainersAdded.length) items += li(`Added to your trainer roster: <b>${esc(s.trainersAdded.join(', '))}</b>.`);
+    if(s.unmatched && s.unmatched.length) items += li(`No supervisor found yet for: <b>${esc(s.unmatched.join(', '))}</b> — set "Visible to" on those days, or add that city's pharmacists to HeadCount.`);
+    if(s.skipped && s.skipped.length) items += li(`Not trainings, so not imported: ${esc(s.skipped.join(', '))}.`);
+    if(!items) items = li('Everything was already up to date.');
+    showModal(`<h3>Calendar synced</h3><ul style="padding-left:18px;font-size:13px;line-height:1.55;">${items}</ul>
+      <div class="modal-actions"><button class="btn btn-navy btn-sm" onclick="closeModal()">OK</button></div>`, 'max-width:560px;');
+  }catch(err){
+    console.error(err);
+    toast('Could not sync the calendar: '+(err.message||''), 'err');
+  }
 }
 async function confirmCalendarImport(){
   const file = document.getElementById('calImportFile').files[0];
@@ -294,73 +322,92 @@ async function confirmCalendarImport(){
   };
   reader.readAsArrayBuffer(file);
 }
-async function importCalendarFromSheet(){
-  try{
-    const grid = await API.calendarGrid();
-    // same shape the Excel path produces: fully blank rows removed
-    const aoa = grid.filter(row=>row.some(c=>String(c==null?'':c).trim()!==''));
-    await importCalendarFromAoa(aoa);
-  }catch(err){
-    console.error(err);
-    toast('Could not read the calendar tab: '+(err.message||''), 'err');
-    closeModal();
+/* Reads a calendar grid (array of rows) and returns the training days found in it.
+   Pure function — no saving — so it can be tested on its own. */
+function parseCalendarAoa(aoa){
+  let sheetYear = new Date().getFullYear();
+  for(const row of aoa.slice(0,3)){
+    for(const cell of row){
+      const m = String(cell||'').match(/(20\d{2})/);
+      if(m){ sheetYear = parseInt(m[1]); break; }
+    }
   }
+
+  // "Mon 21 Sep" — some cells are typed without the space ("Mon14 Dec"), so the space is optional
+  const dateHeaderRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*(\d{1,2})\s+([A-Za-z]+)/i;
+  const monthAbbrs = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  let lastMonthSeen = -1, yearForMonth = sheetYear;
+
+  const importedDays = [];
+  const skippedNames = new Set();
+  // A widest day block in the grid is 5 columns. Anything further right (the trainer / headcount
+  // summary tables next to the calendar) must not be read as training days.
+  const MAX_DAY_COLS = 5;
+
+  for(let r=0; r<aoa.length; r++){
+    const row = aoa[r];
+    const anchors = [];
+    for(let c=0; c<row.length; c++){
+      const val = String(row[c]||'').trim();
+      const m = val.match(dateHeaderRe);
+      if(m){
+        const monIdx = monthAbbrs[m[3].slice(0,3).toLowerCase()];
+        if(monIdx===undefined) continue;
+        if(lastMonthSeen!==-1 && monIdx < lastMonthSeen - 6){ yearForMonth++; }
+        lastMonthSeen = monIdx;
+        anchors.push({col:c, date: `${yearForMonth}-${String(monIdx+1).padStart(2,'0')}-${String(parseInt(m[2])).padStart(2,'0')}`});
+      }
+    }
+    if(!anchors.length) continue;
+    const codeRow = aoa[r+1] || [];
+    const trainerRow = aoa[r+2] || [];
+    anchors.forEach((anchor, ai)=>{
+      const nextCol = ai+1 < anchors.length ? Math.min(anchors[ai+1].col, anchor.col+MAX_DAY_COLS) : (anchor.col + MAX_DAY_COLS);
+      for(let c=anchor.col; c<nextCol; c++){
+        const code = String(codeRow[c]||'').trim();
+        if(!code) continue;
+        const trainerRaw = String(trainerRow[c]||'').trim();
+        const looksLikeCode = /\d/.test(trainerRaw) || CAL_CODE_PATTERNS.some(p=>p.re.test(trainerRaw)) || /^mix/i.test(trainerRaw);
+        const trainer = (trainerRaw && !looksLikeCode && trainerRaw.toLowerCase()!=='eg' && trainerRaw.toLowerCase()!=='co') ? trainerRaw : '';
+        if(/^mix/i.test(code)){
+          const numMatch = code.match(/\d+/);
+          const mixLabel = numMatch ? `Mix ${numMatch[0]}` : 'Mix';
+          importedDays.push({code:code.toUpperCase().replace(/\s+/g,''), date:anchor.date, city:'Online', trainingName:mixLabel, isOnline:true, onlineFormat:'split', trainer});
+          continue;
+        }
+        const cityMatch = CAL_CODE_PATTERNS.find(p=>p.re.test(code));
+        if(!cityMatch){
+          if(!dateHeaderRe.test(code)) skippedNames.add(code);   // a week with no codes: the "code" row is the next week's date row
+          continue;
+        }
+        importedDays.push({code:code.toUpperCase().replace(/\s+/g,''), date:anchor.date, city:cityMatch.city, trainingName:'', isOnline:false, trainer});
+      }
+    });
+  }
+  // An online "Mix n" training runs over two days and the grid lists it under BOTH dates.
+  // In the app it is one training day (day 1; day 2 is implied), so the repeat is dropped.
+  const dayMs = iso => Date.parse(iso+'T00:00:00Z');
+  const lastMixDay = {};
+  const days = importedDays.filter(d=>{
+    if(!d.isOnline) return true;
+    const prev = lastMixDay[d.trainingName];
+    const gap = prev===undefined ? null : (dayMs(d.date)-prev)/86400000;
+    if(gap!==null && gap>0 && gap<=3) return false;
+    lastMixDay[d.trainingName] = dayMs(d.date);
+    return true;
+  });
+  // identity of each entry = its code (same rule as the server's calendar sync); repeats are numbered
+  const codeCount = {};
+  days.forEach(d=>{ codeCount[d.code] = (codeCount[d.code]||0)+1; if(codeCount[d.code]>1) d.code += '#'+codeCount[d.code]; });
+  return {importedDays:days, skippedNames:[...skippedNames]};
 }
+
 async function importCalendarFromAoa(aoa){
   {
     {
-      let sheetYear = new Date().getFullYear();
-      for(const row of aoa.slice(0,3)){
-        for(const cell of row){
-          const m = String(cell||'').match(/(20\d{2})/);
-          if(m){ sheetYear = parseInt(m[1]); break; }
-        }
-      }
-
-      const dateHeaderRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})\s+([A-Za-z]+)/i;
-      const monthAbbrs = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-      let lastMonthSeen = -1, yearForMonth = sheetYear;
-
-      const importedDays = [];
-      let skipped = 0;
-
-      for(let r=0; r<aoa.length; r++){
-        const row = aoa[r];
-        const anchors = [];
-        for(let c=0; c<row.length; c++){
-          const val = String(row[c]||'').trim();
-          const m = val.match(dateHeaderRe);
-          if(m){
-            const monIdx = monthAbbrs[m[3].slice(0,3).toLowerCase()];
-            if(monIdx===undefined) continue;
-            if(lastMonthSeen!==-1 && monIdx < lastMonthSeen - 6){ yearForMonth++; }
-            lastMonthSeen = monIdx;
-            anchors.push({col:c, date: `${yearForMonth}-${String(monIdx+1).padStart(2,'0')}-${String(parseInt(m[2])).padStart(2,'0')}`});
-          }
-        }
-        if(!anchors.length) continue;
-        const codeRow = aoa[r+1] || [];
-        const trainerRow = aoa[r+2] || [];
-        anchors.forEach((anchor, ai)=>{
-          const nextCol = ai+1 < anchors.length ? anchors[ai+1].col : (anchor.col + 6);
-          for(let c=anchor.col; c<nextCol; c++){
-            const code = String(codeRow[c]||'').trim();
-            if(!code) continue;
-            const trainerRaw = String(trainerRow[c]||'').trim();
-            const looksLikeCode = /\d/.test(trainerRaw) || CAL_CODE_PATTERNS.some(p=>p.re.test(trainerRaw)) || /^mix/i.test(trainerRaw);
-            const trainer = (trainerRaw && !looksLikeCode && trainerRaw.toLowerCase()!=='eg' && trainerRaw.toLowerCase()!=='co') ? trainerRaw : '';
-            if(/^mix/i.test(code)){
-              const numMatch = code.match(/\d+/);
-              const mixLabel = numMatch ? `Mix ${numMatch[0]}` : 'Mix';
-              importedDays.push({date:anchor.date, city:'Online', trainingName:mixLabel, isOnline:true, onlineFormat:'split', trainer});
-              continue;
-            }
-            const cityMatch = CAL_CODE_PATTERNS.find(p=>p.re.test(code));
-            if(!cityMatch){ skipped++; continue; }
-            importedDays.push({date:anchor.date, city:cityMatch.city, trainingName:'', isOnline:false, trainer});
-          }
-        });
-      }
+      const parsed = parseCalendarAoa(aoa);
+      const importedDays = parsed.importedDays;
+      const skipped = parsed.skippedNames.length;
 
       if(!importedDays.length){
         toast('No recognizable training days found in this file','err');
@@ -370,39 +417,71 @@ async function importCalendarFromAoa(aoa){
 
       masterData = await getShared(K_MASTER, []);
       trainingConfig = await getShared(K_CONFIG, trainingConfig);
-      let autoAssignedCount = 0, unmatchedCities = new Set(), unmatchedTrainers = new Set();
+
+      // Running the import twice must not double the calendar: days that already exist
+      // (same date + city, or same date + Mix number) are left alone.
+      const knownCodes = new Set(trainingConfig.dates.filter(d=>d.calendarCode).map(d=>d.calendarCode));
+      const keyOf = d => [d.date, d.isOnline ? 'online' : d.city, d.trainingName||''].join('|');
+      const existing = {};
+      trainingConfig.dates.filter(d=>!d.calendarCode).forEach(d=>{ const k = keyOf(d); existing[k] = (existing[k]||0)+1; });
+
+      let autoAssignedCount = 0, addedCount = 0, alreadyThere = 0;
+      const unmatchedCities = new Set(), newTrainers = new Set();
       importedDays.forEach(item=>{
+        if(knownCodes.has(item.code)){ alreadyThere++; return; }          // already synced from the calendar tab
+        const k = keyOf({date:item.date, city:item.city, isOnline:item.isOnline, trainingName:item.trainingName});
+        if(existing[k] > 0){ existing[k]--; alreadyThere++; return; }      // added by hand earlier
+
+        // trainer names written in the calendar are added to the roster if they are new
         let matchedTrainer = '';
         if(item.trainer){
           matchedTrainer = trainingConfig.trainerNames.find(n=>n.toLowerCase()===item.trainer.toLowerCase()) || '';
-          if(!matchedTrainer) unmatchedTrainers.add(item.trainer);
+          if(!matchedTrainer){
+            matchedTrainer = item.trainer;
+            trainingConfig.trainerNames.push(matchedTrainer);
+            newTrainers.add(matchedTrainer);
+          }
         }
-        item.trainer = matchedTrainer;
         let visibleSupervisors = [];
-        if(!item.isOnline){
+        if(item.isOnline){
+          // Mix (online) days have no city — offer them to the supervisors who have Online pharmacists
+          visibleSupervisors = [...new Set(masterData.filter(isOnlinePharmacist).map(p=>p.supervisor).filter(isValidSupervisorName))];
+          if(visibleSupervisors.length) autoAssignedCount++;
+        } else {
           const itemCode = cityColorFor({city:item.city, isOnline:false}).code;
-          visibleSupervisors = [...new Set(masterData.filter(p=>cityColorFor({city:p.city, isOnline:false}).code===itemCode).map(p=>p.supervisor))];
+          visibleSupervisors = [...new Set(masterData.filter(p=>cityColorFor({city:p.city, isOnline:false}).code===itemCode).map(p=>p.supervisor).filter(isValidSupervisorName))];
           if(visibleSupervisors.length) autoAssignedCount++;
           else unmatchedCities.add(item.city);
         }
         trainingConfig.dates.push({
           id: uid('day'), date:item.date, city:item.city, trainingName:item.trainingName||'', type:'Pharmacist Training',
-          trainerNames: item.trainer ? [item.trainer] : [], isOnline:item.isOnline, onlineFormat:item.onlineFormat||'',
-          coordinator:'', zoomLink:'', visibleSupervisors, active:true
+          trainerNames: matchedTrainer ? [matchedTrainer] : [], isOnline:item.isOnline, onlineFormat:item.onlineFormat||'',
+          coordinator:'', zoomLink:'', visibleSupervisors, active:true,
+          calendarCode:item.code, calendarTrainer:matchedTrainer
         });
+        addedCount++;
       });
+      if(!addedCount){
+        closeModal();
+        toast(`Nothing new to import — all ${alreadyThere} training day(s) in the calendar are already in the app`, 'info');
+        return;
+      }
       const ok = await setConfigWithHistory(trainingConfig);
       closeModal();
       if(ok){
-        let msg = `Imported ${importedDays.length} training day(s), auto-assigned supervisors for ${autoAssignedCount}`;
-        if(skipped) msg += `, skipped ${skipped} unrecognized entr${skipped===1?'y':'ies'}`;
-        if(unmatchedCities.size) msg += `. No supervisor match found for: ${[...unmatchedCities].join(', ')} — assign manually.`;
-        if(unmatchedTrainers.size) msg += `. Trainer name(s) in the file not in your roster (left unassigned): ${[...unmatchedTrainers].join(', ')}.`;
-        toast(msg, 'ok');
+        const li = t => `<li style="margin:5px 0;">${t}</li>`;
+        let items = li(`<b>${addedCount}</b> training day(s) imported, supervisors matched automatically for <b>${autoAssignedCount}</b> of them.`);
+        if(alreadyThere) items += li(`${alreadyThere} day(s) were already in the app and were left as they are.`);
+        if(newTrainers.size) items += li(`Added to your trainer roster: <b>${esc([...newTrainers].join(', '))}</b>.`);
+        if(unmatchedCities.size) items += li(`No supervisor found yet for: <b>${esc([...unmatchedCities].join(', '))}</b> — those days appear once that city's pharmacists are in the roster, or you can set "Visible to" on each day.`);
+        if(skipped) items += li(`Not imported (not pharmacist trainings): ${esc(parsed.skippedNames.join(', '))}.`);
+        showModal(`<h3>Calendar imported</h3><ul style="padding-left:18px;font-size:13px;line-height:1.55;">${items}</ul>
+          <div class="modal-actions"><button class="btn btn-navy btn-sm" onclick="closeModal()">OK</button></div>`, 'max-width:560px;');
         renderCalendar();
         buildDaysFilterBar();
         renderDaysTable();
         buildTrainerFilterBar();
+        renderTrainerNamesList();
       }
     }
   }

@@ -73,6 +73,7 @@ function route_(req) {
     case 'get':          return { ok: true, data: getKey_(ctx, req.key) };
     case 'patch':        return patchKey_(ctx, req);
     case 'calendarGrid': requireTrainer_(ctx); return { ok: true, values: calendarGrid_() };
+    case 'syncCalendar': requireTrainer_(ctx); return { ok: true, summary: syncCalendar_(true) };
     case 'venues':       requireTrainer_(ctx); return { ok: true, venues: venues_() };
   }
   throw new Error('Unknown action');
@@ -495,7 +496,7 @@ function getKey_(ctx, key) {
   switch (key) {
     case 'master-pharmacists': return getMaster_(ctx);
     case 'operations':         return getOps_(ctx);
-    case 'training-config':    return getConfig_(ctx);
+    case 'training-config':    autoSyncCalendar_(); return getConfig_(ctx);
     case 'company-logo':       return { records: [], settings: { logo: settings_().logo || null } };
     case 'pending-pharmacists':
     case 'leave-requests':
@@ -580,6 +581,218 @@ function getTable_(ctx, key) {
 
 function calendarGrid_() {
   return sheet_(CONFIG.TABS.CALENDAR).getDataRange().getDisplayValues();
+}
+
+/* ═════════════════════════ Calendar tab → TrainingDays (automatic sync) ═════════════════════════
+ * The "2026 - Q4 Training Calendar" tab is the plan. Whenever the app loads its training days the
+ * server checks (at most once a minute) whether that tab changed and, if so, brings TrainingDays
+ * up to date:
+ *   - a new entry in the grid becomes a training day (supervisors matched from HeadCount),
+ *   - an entry that moved keeps its day (so assignments follow it) and gets the new date,
+ *   - an entry removed from the grid is hidden from supervisors (never deleted automatically),
+ *   - everything the trainer set in the app (visible-to, quotas, capacity, deadline, venue …) is kept.
+ * Days the trainer added by hand have no calendar code and are never touched.
+ */
+var CAL_CODE_PATTERNS = [
+  { re: /^JED\s*N/i, city: 'Jeddah North' }, { re: /^JED\s*S/i, city: 'Jeddah South' }, { re: /^JED/i, city: 'Jeddah' },
+  { re: /^RUH/i, city: 'Riyadh' }, { re: /^MEC/i, city: 'Mecca' }, { re: /^MAD/i, city: 'Madinah' },
+  { re: /^EAST/i, city: 'Eastern' }, { re: /^TAIF/i, city: 'Taif' }, { re: /^ABH/i, city: 'Abha' },
+  { re: /^BAHAH/i, city: 'Al Bahah' }, { re: /^JAZ/i, city: 'Jazan' }
+];
+// same grouping the front end uses (cityCodeFor) so "Jeddah North" days match "Jeddah N" pharmacists
+var CITY_CODE_PATTERNS = [
+  { match: /jeddah\s*n|jed\s*n/i, code: 'JED N' }, { match: /jeddah\s*s|jed\s*s/i, code: 'JED S' }, { match: /jeddah|jed/i, code: 'JED' },
+  { match: /riyadh|ruh/i, code: 'RUH' }, { match: /mecca|makkah|mec/i, code: 'MEC' }, { match: /madinah|medina|mad/i, code: 'MAD' },
+  { match: /eastern|dammam|khobar|east/i, code: 'EAST' }, { match: /taif/i, code: 'TAIF' }, { match: /khamis|abha|abh/i, code: 'ABH' },
+  { match: /bahah/i, code: 'BAH' }, { match: /jazan|jaz/i, code: 'JAZ' }
+];
+function cityCode_(city) {
+  city = String(city || '');
+  for (var i = 0; i < CITY_CODE_PATTERNS.length; i++) if (CITY_CODE_PATTERNS[i].match.test(city)) return CITY_CODE_PATTERNS[i].code;
+  return city.slice(0, 4).toUpperCase();
+}
+
+/** Turns the calendar grid into [{code, date, city, isOnline, trainingName, trainer}] + names of entries that are not trainings. */
+function parseCalendar_(grid) {
+  var aoa = grid.filter(function (row) { return row.some(function (c) { return String(c == null ? '' : c).trim() !== ''; }); });
+  var sheetYear = new Date().getFullYear();
+  outer: for (var i = 0; i < Math.min(3, aoa.length); i++) {
+    for (var j = 0; j < aoa[i].length; j++) {
+      var ym = String(aoa[i][j] || '').match(/(20\d{2})/);
+      if (ym) { sheetYear = parseInt(ym[1], 10); break outer; }
+    }
+  }
+  var dateHeaderRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*(\d{1,2})\s+([A-Za-z]+)/i;   // "Mon 21 Sep" (space optional: "Mon14 Dec")
+  var monthAbbrs = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  var MAX_DAY_COLS = 5;   // widest day block; anything to the right is the summary tables, not trainings
+  var lastMonthSeen = -1, yearForMonth = sheetYear;
+  var found = [], skipped = {};
+
+  function two(n) { return (n < 10 ? '0' : '') + n; }
+
+  for (var r = 0; r < aoa.length; r++) {
+    var row = aoa[r], anchors = [];
+    for (var c = 0; c < row.length; c++) {
+      var m = String(row[c] || '').trim().match(dateHeaderRe);
+      if (!m) continue;
+      var monIdx = monthAbbrs[m[3].slice(0, 3).toLowerCase()];
+      if (monIdx === undefined) continue;
+      if (lastMonthSeen !== -1 && monIdx < lastMonthSeen - 6) yearForMonth++;
+      lastMonthSeen = monIdx;
+      anchors.push({ col: c, date: yearForMonth + '-' + two(monIdx + 1) + '-' + two(parseInt(m[2], 10)) });
+    }
+    if (!anchors.length) continue;
+    var codeRow = aoa[r + 1] || [], trainerRow = aoa[r + 2] || [];
+    anchors.forEach(function (anchor, ai) {
+      var nextCol = ai + 1 < anchors.length ? Math.min(anchors[ai + 1].col, anchor.col + MAX_DAY_COLS) : anchor.col + MAX_DAY_COLS;
+      for (var col = anchor.col; col < nextCol; col++) {
+        var code = String(codeRow[col] || '').trim();
+        if (!code) continue;
+        var trainerRaw = String(trainerRow[col] || '').trim();
+        var looksLikeCode = /\d/.test(trainerRaw) || /^mix/i.test(trainerRaw) || CAL_CODE_PATTERNS.some(function (p) { return p.re.test(trainerRaw); });
+        var low = trainerRaw.toLowerCase();
+        var trainer = (trainerRaw && !looksLikeCode && low !== 'eg' && low !== 'co') ? trainerRaw : '';
+        var norm = code.toUpperCase().replace(/\s+/g, '');
+        if (/^mix/i.test(code)) {
+          var nm = code.match(/\d+/);
+          found.push({ code: norm, date: anchor.date, city: 'Online', isOnline: true, trainingName: nm ? 'Mix ' + nm[0] : 'Mix', trainer: trainer });
+          continue;
+        }
+        var cm = null;
+        for (var k = 0; k < CAL_CODE_PATTERNS.length; k++) if (CAL_CODE_PATTERNS[k].re.test(code)) { cm = CAL_CODE_PATTERNS[k]; break; }
+        if (!cm) { if (!dateHeaderRe.test(code)) skipped[code] = true; continue; }
+        found.push({ code: norm, date: anchor.date, city: cm.city, isOnline: false, trainingName: '', trainer: trainer });
+      }
+    });
+  }
+
+  // an online "Mix n" runs over two days and the grid lists it under BOTH dates → keep day 1 only
+  function ms(iso) { var p = parseIso_(iso); return Date.UTC(p.y, p.m, p.d); }
+  var lastMix = {}, entries = [];
+  found.forEach(function (e) {
+    if (e.isOnline) {
+      var prev = lastMix[e.code];
+      var gap = prev === undefined ? null : (ms(e.date) - prev) / 86400000;
+      if (gap !== null && gap > 0 && gap <= 3) return;
+      lastMix[e.code] = ms(e.date);
+    }
+    entries.push(e);
+  });
+  // identity of each entry = its code; if a code is (unexpectedly) used twice, number the repeats
+  var counts = {};
+  entries.forEach(function (e) {
+    counts[e.code] = (counts[e.code] || 0) + 1;
+    if (counts[e.code] > 1) e.code = e.code + '#' + counts[e.code];
+  });
+  return { entries: entries, skippedNames: Object.keys(skipped) };
+}
+
+function hashString_(s) {
+  var h = 5381;
+  for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return String(h >>> 0) + ':' + s.length;
+}
+
+function calendarSupervisorsFor_(entry, hcRows) {
+  var seen = {}, out = [];
+  var want = entry.isOnline ? null : cityCode_(entry.city);
+  hcRows.forEach(function (r) {
+    var city = String(r.v[HC.CITY - 1]).trim();
+    var sup = String(r.v[HC.SUPERVISOR - 1]).trim();
+    if (!sup || sup === '-' || sup === '—' || seen[sup]) return;
+    var ok = entry.isOnline ? city.toLowerCase() === 'online' : (city.toLowerCase() !== 'online' && cityCode_(city) === want);
+    if (ok) { seen[sup] = true; out.push(sup); }
+  });
+  return out;
+}
+
+/** Brings TrainingDays in line with the calendar tab. Returns a summary. `force` skips the "did it change?" check. */
+function syncCalendar_(force) {
+  var grid = calendarGrid_();
+  var hash = hashString_(JSON.stringify(grid));
+  if (!force && settings_().calendarHash === hash) return { changed: false };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var st = settings_();
+    if (!force && st.calendarHash === hash) return { changed: false };
+
+    var parsed = parseCalendar_(grid);
+    var hc = readHC_();
+    var existing = tList_(TABLES.days).map(function (x) { return x.v; });
+    var byCode = {};
+    existing.forEach(function (d) { if (d.calendarCode) byCode[d.calendarCode] = d; });
+
+    var roster = (st.trainerNames || []).slice();
+    var newTrainers = [];
+    function rosterName(name) {
+      if (!name) return '';
+      for (var i = 0; i < roster.length; i++) if (String(roster[i]).toLowerCase() === name.toLowerCase()) return roster[i];
+      roster.push(name); newTrainers.push(name);
+      return name;
+    }
+
+    var seen = {}, records = {}, changedIds = [];
+    var summary = { added: 0, updated: 0, deactivated: 0, reactivated: 0, unmatched: [], skipped: parsed.skippedNames, trainersAdded: newTrainers };
+    var unmatched = {};
+
+    parsed.entries.forEach(function (e) {
+      seen[e.code] = true;
+      var trainer = rosterName(e.trainer);
+      var d = byCode[e.code];
+      if (!d) {
+        d = {
+          id: newId_('day', null), date: e.date, city: e.city, trainingName: e.trainingName, type: 'Pharmacist Training',
+          trainerNames: trainer ? [trainer] : [], isOnline: e.isOnline, onlineFormat: e.isOnline ? 'split' : '',
+          coordinator: '', zoomLink: '', visibleSupervisors: calendarSupervisorsFor_(e, hc.rows), active: true,
+          calendarCode: e.code, calendarTrainer: trainer
+        };
+        records[d.id] = d; changedIds.push(d.id); summary.added++;
+        if (!d.visibleSupervisors.length) unmatched[e.city] = true;
+        return;
+      }
+      var before = JSON.stringify(d);
+      d.date = e.date; d.city = e.city;
+      // the trainer named in the calendar is applied unless someone changed the trainer in the app
+      var cur = d.trainerNames || [], oldCal = d.calendarTrainer || '';
+      if (cur.length === 0 || (cur.length === 1 && cur[0] === oldCal)) d.trainerNames = trainer ? [trainer] : [];
+      d.calendarTrainer = trainer;
+      if (d.removedFromCalendar) { d.removedFromCalendar = false; d.active = true; summary.reactivated++; }
+      if (!d.visibleSupervisors || !d.visibleSupervisors.length) {
+        d.visibleSupervisors = calendarSupervisorsFor_(e, hc.rows);
+        if (!d.visibleSupervisors.length) unmatched[e.city] = true;
+      }
+      if (JSON.stringify(d) !== before) { records[d.id] = d; changedIds.push(d.id); summary.updated++; }
+    });
+
+    existing.forEach(function (d) {
+      if (d.calendarCode && !seen[d.calendarCode] && !d.removedFromCalendar) {
+        d.removedFromCalendar = true; d.active = false;
+        records[d.id] = d; summary.deactivated++;
+      }
+    });
+    summary.unmatched = Object.keys(unmatched);
+
+    if (Object.keys(records).length) tPatch_(TABLES.days, records);
+    var patch = { calendarHash: hash, calendarSyncedAt: nowIso_() };
+    if (newTrainers.length) patch.trainerNames = roster;
+    patchSettings_(patch);
+    if (changedIds.length) refreshSessions_(changedIds);
+    summary.changed = true;
+    return summary;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Called whenever the app loads its training days; looks at the calendar tab at most once every 45 s. */
+function autoSyncCalendar_() {
+  var cache = CacheService.getScriptCache();
+  if (cache.get('cal_check')) return;
+  cache.put('cal_check', '1', 45);
+  try { syncCalendar_(false); }
+  catch (err) { Logger.log('Calendar auto-sync skipped: ' + err.message); }   // never let this break loading the app
 }
 
 function venues_() {

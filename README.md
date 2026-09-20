@@ -37,12 +37,28 @@ dev/                Local test server + in-browser fake sheet (synthetic data on
 | Tab | Purpose | Edited by |
 |---|---|---|
 | **HeadCount** | Master roster. **E = Date** (or leave status), **L = Attendance Status**, **M = Notes** are written by the app. | app (roster changes: trainer) |
-| **2026 - Q4 Training Calendar** | The planning grid. Trainer page → Calendar → *Import from Google Sheet* reads it. | you |
+| **2026 - Q4 Training Calendar** | The planning grid — **synced automatically** into `TrainingDays` (see below). | you |
 | **Venues** | `City` / `Recommended Venues` list, offered when adding a training day. | you |
 | **Approvals** | Requests waiting for / decided by the trainer (below). | app (you may read/filter freely) |
 | TrainingDays | The normalised list of training days the app works with. | app |
 | Notifications | Approval results shown to supervisors. | app |
 | Settings | Capacity, trainer/coordinator/training-name lists, logo. | app |
+
+**Calendar → training days (automatic).** Nobody has to import anything. Whenever the app loads its training days,
+the server looks at the calendar tab (at most once a minute) and, if it changed, updates `TrainingDays`:
+
+- a new entry in the grid becomes a training day, visible to the supervisors who have pharmacists in that city
+  (Mix / online days → supervisors with *Online* pharmacists);
+- an entry that **moves** keeps its training day, so the pharmacists already assigned follow it to the new date;
+- an entry **removed** from the grid is hidden from supervisors (never deleted automatically — delete it in the app if you want it gone);
+- a trainer name typed in the grid is added to the trainer roster; everything you set in the app
+  (visible-to, quotas, capacity, deadline, venue, coordinator) is kept, and a trainer you changed in the app is not overwritten;
+- days added by hand in the app are never touched.
+
+Each entry is recognised by its **code** in the grid (`JED N 1`, `RUH 3`, `MIX 4`…), so keep codes unique and don't rename a
+code if you want the app to treat it as the same training. Cells that aren't trainings (`Salaries`, holidays, `Re-Training`,
+`Learning Booster`, `Ams & SVs`, `CC`) are ignored. Trainer page → Calendar → **Calendar Sync** forces an immediate re-read and
+shows what changed. Days for a city stay without a supervisor until that city's pharmacists are in `HeadCount`.
 
 **HeadCount helper columns (N–T):** `Pharmacist ID`, `Session` (city — date text), `Punctuality`, `Arrival Time`, `Completion %`,
 and two hidden system columns (`Assignment`, `Attendance` — the app's source of truth for those rows).
