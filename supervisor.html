@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Supervisor — Training Operations Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">
+    <div id="logoBox"><img src="assets/img/logo.png" alt="Training Operations Hub logo"></div>
+    <div>
+      <span class="dept-label">Talent Management</span>
+      <h1>Training Operations Hub</h1>
+      <p>Supervisor page — assign your pharmacists to training days</p>
+    </div>
+  </div>
+  <div class="role-indicator">
+    <span class="badge">Supervisor</span>
+    <a class="home-link" href="index.html">← Home</a>
+  </div>
+</div>
+
+<main>
+  <section id="screen-supervisor">
+    <div class="card" id="supPickCard">
+      <div class="section-head" style="margin-top:0">
+        <h2>Select Your Name</h2>
+      </div>
+      <div class="row">
+        <select id="supervisorSelect" style="min-width:260px"></select>
+        <button class="btn btn-navy" onclick="loadSupervisorView()">View My Pharmacists</button>
+      </div>
+    </div>
+
+    <div id="supMain" class="hidden">
+      <div class="section-head">
+        <h2 id="supTitle">Pharmacists —</h2>
+      </div>
+
+      <div class="track-tabs-wrap">
+        <button class="track-tab active" id="supTrackTab-offline" onclick="switchSupTrack('offline')">🏢 Offline Pharmacists</button>
+        <button class="track-tab" id="supTrackTab-online" onclick="switchSupTrack('online')">🌐 Online Pharmacists</button>
+      </div>
+
+      <div id="supExportArea">
+      <p class="small-note" style="margin-bottom:6px">Your training days (capped at <span id="capHintSup"></span> each unless customized, counted across all supervisors):</p>
+      <div class="chip-row" id="supChipsDays"></div>
+      <p class="small-note" style="margin:10px 0 6px">Pharmacist status:</p>
+      <div class="chip-row" id="supChipsOverview"></div>
+      <p class="small-note" style="margin:8px 0 6px">Other status counts for your own pharmacists:</p>
+      <div class="chip-row" id="supChipsStatus"></div>
+
+      <div class="filter-bar" id="supFilterBar" style="margin-top:14px;"></div>
+
+      <div class="row" style="margin-bottom:8px;">
+        <button class="btn btn-navy btn-sm" onclick="openAddPharmacistModal()">+ Add New Pharmacist</button>
+        <button class="btn btn-outline btn-sm" onclick="openBulkAddModal()">⬆ Bulk Add New Pharmacists</button>
+        <button class="btn btn-outline btn-sm" onclick="openSubmissionHistoryModal()">📋 Submission History <span id="submissionHistoryDot"></span></button>
+      </div>
+      <p class="small-note" style="margin:-4px 0 8px;">New pharmacists and Annual Leave requests are submitted for the trainer's approval before they take effect.</p>
+      <div class="card" style="margin-top:0" id="supTableCard">
+        <div class="section-head" style="margin-top:0">
+          <h2>Pharmacist List</h2>
+          <div class="row">
+            <button class="btn btn-outline btn-sm" onclick="loadSupervisorView(true)">↻ Refresh</button>
+            <button class="btn btn-navy btn-sm" onclick="exportSupervisorExcel()">⬇ Excel</button>
+            <button class="btn btn-navy btn-sm" onclick="exportTableImage('supTableCard','my-pharmacists')">📷 Image</button>
+            <button class="btn btn-navy btn-sm" onclick="exportTablePDF('supTableCard','my-pharmacists')">🖨 PDF</button>
+          </div>
+        </div>
+        <div class="table-wrap" id="supTableWrap"><table>
+          <thead><tr>
+            <th class="no-sort">#</th>
+            <th onclick="toggleSort('sup','district')">District <span class="sort-ind" id="sort-sup-district"></span></th>
+            <th onclick="toggleSort('sup','areaManager')">Area Manager <span class="sort-ind" id="sort-sup-areaManager"></span></th>
+            <th onclick="toggleSort('sup','city')">City <span class="sort-ind" id="sort-sup-city"></span></th>
+            <th onclick="toggleSort('sup','supervisor')">Supervisor <span class="sort-ind" id="sort-sup-supervisor"></span></th>
+            <th onclick="toggleSort('sup','date')">Date <span class="sort-ind" id="sort-sup-date"></span></th>
+            <th onclick="toggleSort('sup','email')">Email <span class="sort-ind" id="sort-sup-email"></span></th>
+            <th onclick="toggleSort('sup','displayName')">Display Name <span class="sort-ind" id="sort-sup-displayName"></span></th>
+          </tr></thead>
+          <tbody id="supTableBody"></tbody>
+        </table></div>
+      </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="modalRoot"></div>
+<div id="toast"></div>
+<script src="assets/vendor/xlsx.full.min.js"></script>
+<script src="assets/vendor/jszip.min.js"></script>
+<script src="assets/vendor/html2canvas.min.js"></script>
+<script src="assets/vendor/jspdf.umd.min.js"></script>
+<script src="assets/js/config.js"></script>
+<script src="assets/js/api.js"></script>
+<script src="assets/js/common.js"></script><script src="assets/js/supervisor.js"></script>
+</body>
+</html>

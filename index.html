@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Training Operations Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <div id="logoBox"><img src="assets/img/logo.png" alt="Training Operations Hub logo"></div>
+    <div>
+      <span class="dept-label">Talent Management</span>
+      <h1>Training Operations Hub</h1>
+      <p>Coordinating training schedules between supervisors and the training team</p>
+    </div>
+  </div>
+</div>
+
+<main class="landing-main">
+  <div class="landing-intro">
+    <h2>Where would you like to go?</h2>
+    <p>Pick the tool you need. Changes made on the Supervisor page are visible to the training team straight away.</p>
+  </div>
+
+  <div class="landing-grid">
+    <a class="landing-card" href="supervisor.html">
+      <div class="ic">🧑‍💼</div>
+      <h3>Supervisor</h3>
+      <p>Assign each of your pharmacists to a training date or record their status (leave, resignation, promotion), and register newly hired pharmacists.</p>
+      <span class="cta">Open Supervisor page →</span>
+    </a>
+
+    <a class="landing-card c-reports" data-link="progressReports" href="#" target="_blank" rel="noopener noreferrer">
+      <div class="ic">📊</div>
+      <h3>Course Progress Reports</h3>
+      <p>Live dashboard of course completion rates across the pharmacy network.</p>
+      <span class="cta">Open reports <span class="ext">↗ new tab</span></span>
+    </a>
+
+    <a class="landing-card c-ticket" data-link="ticketing" href="#" target="_blank" rel="noopener noreferrer">
+      <div class="ic">🎫</div>
+      <h3>LMS Ticketing System</h3>
+      <p>Raise a ticket for any issue or request related to the learning management system.</p>
+      <span class="cta">Submit a ticket <span class="ext">↗ new tab</span></span>
+    </a>
+  </div>
+</main>
+
+<a class="trainer-fab" href="trainer.html" title="Trainer sign-in" aria-label="Trainer sign-in">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/></svg>
+</a>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/api.js"></script>
+<script>
+  // show the company logo (uploaded by the trainer team) if there is one — the logo is public, everything else is not
+  API.init('supervisor');
+  getShared('company-logo', null).then(function (logo) {
+    if (logo) document.getElementById('logoBox').innerHTML = '<img alt="" src="' + String(logo).replace(/"/g, '') + '">';
+  });
+</script>
+<script>
+  // card links live in assets/js/config.js so they are edited in one place
+  document.querySelectorAll('[data-link]').forEach(function (a) {
+    var url = (APP_CONFIG.LINKS || {})[a.getAttribute('data-link')];
+    if (url) a.href = url; else a.removeAttribute('href');
+  });
+</script>
+</body>
+</html>

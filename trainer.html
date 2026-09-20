@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trainer — Training Operations Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">
+    <div id="logoBox"><img src="assets/img/logo.png" alt="Training Operations Hub logo"></div>
+    <div>
+      <span class="dept-label">Talent Management</span>
+      <h1>Training Operations Hub</h1>
+      <p>Trainer page — attendance, setup, approvals and analytics</p>
+    </div>
+  </div>
+  <div class="role-indicator hidden" id="trainerBar">
+    <span class="badge">Trainer</span>
+    <a class="home-link" href="index.html">← Home</a>
+    <button type="button" onclick="trainerSignOut()">Sign out</button>
+  </div>
+</div>
+
+<main>
+
+  <!-- ══════════ SIGN-IN ══════════ -->
+  <section id="loginGate" class="hidden">
+    <form class="login-card" onsubmit="submitLogin(event)" autocomplete="on">
+      <div class="login-ic">🎓</div>
+      <h2>Trainer sign-in</h2>
+      <p class="login-sub">This area is for the Talent Management training team.</p>
+      <label class="field-label" for="loginUser">User name</label>
+      <input type="text" id="loginUser" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+      <label class="field-label" for="loginPass" style="margin-top:12px;">Password</label>
+      <input type="password" id="loginPass" name="password" autocomplete="current-password" required>
+      <p class="login-error hidden" id="loginError" role="alert"></p>
+      <button type="submit" class="btn btn-navy login-btn" id="loginBtn">Sign in</button>
+      <a class="login-back" href="index.html">← Back to home</a>
+    </form>
+  </section>
+  <section id="screen-trainer" class="hidden">
+    <div class="tabs">
+      <button class="tab active" data-tab="t-attend" onclick="switchTrainerTab('t-attend')">Attendance</button>
+      <button class="tab" data-tab="t-setup" onclick="switchTrainerTab('t-setup')">Setup</button>
+      <button class="tab" data-tab="t-approvals" onclick="switchTrainerTab('t-approvals')">Approvals <span id="pendingDot"></span></button>
+      <button class="tab" data-tab="t-analytics" onclick="switchTrainerTab('t-analytics')">Analytics &amp; Export</button>
+      <button class="tab" data-tab="t-calendar" onclick="switchTrainerTab('t-calendar')">Calendar</button>
+    </div>
+
+    <!-- ATTENDANCE TAB -->
+    <div id="t-attend" class="trainer-tab">
+      <div class="filter-bar" id="trainerFilterBar"></div>
+
+      <div class="card" id="sessionCard" style="display:none;">
+        <div class="row">
+          <span class="small-note" id="sessionHint"></span>
+          <a id="sessionZoomLink" href="#" target="_blank" class="btn btn-outline btn-sm hidden">🔗 Zoom Link</a>
+        </div>
+        <div class="chip-row" id="sessionSummaryChips" style="margin-top:12px;"></div>
+      </div>
+
+      <div class="section-head">
+        <h2 id="trainerTableTitle">All Records</h2>
+        <div class="row">
+          <button class="btn btn-outline btn-sm" onclick="refreshTrainer()">↻ Refresh</button>
+          <button class="btn btn-navy btn-sm" onclick="exportAttendanceExcel()">⬇ Excel</button>
+          <button class="btn btn-navy btn-sm" onclick="exportTableImage('trainerCard','training-attendance')">📷 Image</button>
+          <button class="btn btn-navy btn-sm" onclick="exportTablePDF('trainerCard','training-attendance')">🖨 PDF</button>
+        </div>
+      </div>
+      <div id="trainerCard" class="card">
+        <div class="table-wrap"><table id="trainerTable">
+          <thead><tr>
+            <th class="no-sort">#</th>
+            <th onclick="toggleSort('trainer','district')">District <span class="sort-ind" id="sort-trainer-district"></span></th>
+            <th onclick="toggleSort('trainer','areaManager')">Area Manager <span class="sort-ind" id="sort-trainer-areaManager"></span></th>
+            <th onclick="toggleSort('trainer','city')">City <span class="sort-ind" id="sort-trainer-city"></span></th>
+            <th onclick="toggleSort('trainer','supervisor')">Supervisor <span class="sort-ind" id="sort-trainer-supervisor"></span></th>
+            <th onclick="toggleSort('trainer','date')">Date <span class="sort-ind" id="sort-trainer-date"></span></th>
+            <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
+            <th onclick="toggleSort('trainer','displayName')">Display Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
+            <th onclick="toggleSort('trainer','completionPct')">Completion Rate <span class="sort-ind" id="sort-trainer-completionPct"></span></th>
+            <th onclick="toggleSort('trainer','attendance')">Attendance <span class="sort-ind" id="sort-trainer-attendance"></span></th>
+            <th class="no-sort">Late Arrival Time</th>
+            <th class="no-sort">Notes</th>
+          </tr></thead>
+          <tbody id="trainerTableBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- SETUP TAB -->
+    <div id="t-setup" class="trainer-tab hidden">
+      <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>Company Logo</h2></div>
+        <div class="row">
+          <input type="file" id="logoInput" accept="image/*" onchange="handleLogoUpload(this)">
+          <button class="btn btn-outline btn-sm" onclick="clearLogo()">Remove Logo</button>
+        </div>
+      </div>
+
+
+      <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>Master Pharmacist Data (Excel Upload)</h2></div>
+        <p class="small-note">Expected columns (name match is flexible): <b>District, Area Manager, City, Supervisor Name, Pharmacy No., User/Employee ID, Username (Email), Display Name (Pharmacist name), Phone number (Whatsapp), SCFHS</b>. You'll see a column-mapping preview before anything is saved. Uploading replaces the current list entirely; rows are de-duplicated by email.</p>
+        <div class="row" style="margin-top:8px">
+          <input type="file" id="masterFileInput" accept=".xlsx,.xls,.csv" onchange="handleMasterUpload(this)">
+          <button class="btn btn-outline btn-sm" onclick="clearMasterData()">🗑 Clear All Data</button>
+        </div>
+        <div class="stat-mini" id="masterStats"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>Import Completion % (Viewership Report)</h2></div>
+        <p class="small-note">Upload the completion report exported from the main viewership tool — needs a column with the pharmacist's email and a column with their completion percentage. Matched by email and merged into the pharmacists already on the master sheet.</p>
+        <div class="row" style="margin-top:8px">
+          <input type="file" id="completionFileInput" accept=".xlsx,.xls,.csv" onchange="handleCompletionUpload(this)">
+        </div>
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
+          <p class="small-note" style="margin:0 0 8px;">Or pull live from <b>Training Completion Reports</b> — pick the course to pull the Completion Rate from:</p>
+          <div class="row" style="flex-wrap:wrap;">
+            <select id="completionCourseSelect" style="min-width:220px"><option value="">Loading courses…</option></select>
+            <button class="btn btn-outline btn-sm" onclick="loadCompletionCourseList()">↻ Refresh Course List</button>
+            <button class="btn btn-navy btn-sm" onclick="syncCompletionFromCourse()">⬇ Sync Now</button>
+          </div>
+          <p class="small-note" id="completionSyncStatus" style="margin-top:8px"></p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>Capacity Setting</h2></div>
+        <div class="row">
+          <div><label class="field-label">Maximum Capacity per Day</label><input type="number" id="maxInput" style="width:100px"></div>
+          <button class="btn btn-navy" style="margin-top:18px" onclick="saveCapacitySettings()">Save Setting</button>
+        </div>
+        <p class="small-note" style="margin-top:8px">Once a day reaches this number, supervisors and trainers can no longer assign additional pharmacists to it.</p>
+      </div>
+
+      <div class="row" style="align-items:stretch;gap:16px;flex-wrap:wrap;">
+      <div class="card" style="flex:1;min-width:320px;margin-top:0;">
+        <div class="section-head" style="margin-top:0"><h2>Trainers Roster</h2></div>
+        <div class="row">
+          <input type="text" id="newTrainerName" placeholder="Trainer name">
+          <button class="btn btn-navy btn-sm" onclick="addTrainerName()">+ Add Trainer</button>
+        </div>
+        <div class="row" style="margin-top:10px" id="trainerNamesList"></div>
+      </div>
+
+      <div class="card" style="flex:1;min-width:320px;margin-top:0;">
+        <div class="section-head" style="margin-top:0"><h2>Coordinators Roster</h2></div>
+        <p class="small-note" style="margin-top:0">Coordinators are separate from trainers — this list feeds the "Coordinator" dropdown when adding or editing an online training day.</p>
+        <div class="row">
+          <input type="text" id="newCoordinatorName" placeholder="Coordinator name">
+          <button class="btn btn-navy btn-sm" onclick="addCoordinatorName()">+ Add Coordinator</button>
+        </div>
+        <div class="row" style="margin-top:10px" id="coordinatorNamesList"></div>
+      </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>Training Names / Programs</h2></div>
+        <p class="small-note">Reusable names you can pick from when adding a training day, instead of retyping.</p>
+        <div class="row">
+          <input type="text" id="newTrainingName" placeholder="e.g. New Hire Onboarding Batch 3">
+          <button class="btn btn-navy btn-sm" onclick="addTrainingName()">+ Add</button>
+        </div>
+        <div class="row" style="margin-top:10px" id="trainingNamesList"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-head" style="margin-top:0">
+          <h2>Training Days</h2>
+          <div class="row">
+            <button class="btn btn-navy btn-sm" onclick="openAddDayModal()">+ Add Training Day</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteAllDays()">🗑 Delete All</button>
+          </div>
+        </div>
+        <div class="filter-bar" id="daysFilterBar" style="margin-bottom:14px;"></div>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th class="no-sort">#</th>
+            <th onclick="toggleDaysSort('date')">Date <span class="sort-ind" id="sort-days-date"></span></th>
+            <th onclick="toggleDaysSort('city')">City / Type <span class="sort-ind" id="sort-days-city"></span></th>
+            <th class="no-sort">Trainer(s)</th>
+            <th class="no-sort">Visible To</th>
+            <th onclick="toggleDaysSort('assigned')">Assigned <span class="sort-ind" id="sort-days-assigned"></span></th>
+            <th class="no-sort"></th>
+          </tr></thead>
+          <tbody id="daysTableBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- APPROVALS TAB -->
+    <div id="t-approvals" class="trainer-tab hidden">
+      <div class="section-head" style="margin-top:0"><h2>Over-Quota Assignments Awaiting Approval</h2></div>
+      <p class="small-note" style="margin-bottom:8px">A supervisor assigned a pharmacist to an online day after reaching their quota for that day. Approve to let it count, or reject to send them back to Not Assigned.</p>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>#</th><th>Supervisor</th><th>Pharmacist</th><th>Day</th><th style="min-width:170px">Action</th></tr></thead>
+          <tbody id="quotaApprovalsBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="section-head"><h2>Annual Leave Requests</h2></div>
+      <p class="small-note" style="margin-bottom:8px">Submitted in bulk by supervisors via the Annual Leave template. Approving sets the pharmacist's status to Annual Leave.</p>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>#</th><th>Supervisor</th><th>Pharmacist</th><th>Submitted</th><th style="min-width:170px">Action</th></tr></thead>
+          <tbody id="leaveRequestsBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="section-head"><h2>New Pharmacists Awaiting Approval</h2></div>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th class="no-sort">#</th>
+            <th onclick="toggleApprovalsSort('district')">District <span class="sort-ind" id="sort-appr-district"></span></th>
+            <th class="no-sort">Area Mgr</th>
+            <th onclick="toggleApprovalsSort('city')">City <span class="sort-ind" id="sort-appr-city"></span></th>
+            <th onclick="toggleApprovalsSort('supervisor')">Supervisor <span class="sort-ind" id="sort-appr-supervisor"></span></th>
+            <th onclick="toggleApprovalsSort('displayName')">Display Name <span class="sort-ind" id="sort-appr-displayName"></span></th>
+            <th class="no-sort">Pharmacy No.</th><th class="no-sort">Employee ID</th><th class="no-sort">Email</th><th class="no-sort">Phone</th><th class="no-sort">SCFHS</th>
+            <th onclick="toggleApprovalsSort('addedAt')">Submitted <span class="sort-ind" id="sort-appr-addedAt"></span></th>
+            <th class="no-sort" style="min-width:160px">Action</th>
+          </tr></thead>
+          <tbody id="approvalsTableBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="section-head">
+        <h2>Decision History</h2>
+        <button class="btn btn-danger btn-sm" onclick="clearAllApprovalsHistory()">🗑 Clear All</button>
+      </div>
+      <p class="small-note" style="margin-bottom:8px">Approved and rejected entries stay here — nothing is deleted automatically, and you can reopen any of them for reconsideration.</p>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th class="no-sort">#</th>
+            <th onclick="toggleApprHistSort('supervisor')">Supervisor <span class="sort-ind" id="sort-apprhist-supervisor"></span></th>
+            <th onclick="toggleApprHistSort('displayName')">Display Name <span class="sort-ind" id="sort-apprhist-displayName"></span></th>
+            <th onclick="toggleApprHistSort('status')">Status <span class="sort-ind" id="sort-apprhist-status"></span></th>
+            <th class="no-sort">Reason</th>
+            <th onclick="toggleApprHistSort('decidedAt')">Decided <span class="sort-ind" id="sort-apprhist-decidedAt"></span></th>
+            <th class="no-sort" style="min-width:190px">Action</th>
+          </tr></thead>
+          <tbody id="approvalsHistoryBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS TAB -->
+    <div id="t-analytics" class="trainer-tab hidden">
+      <div class="section-head" style="margin-top:0">
+        <h2>Overview</h2>
+        <div class="row">
+          <button class="btn btn-outline btn-sm" onclick="refreshAnalytics()">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="chip-row" id="globalChipsBig"></div>
+      <div class="chip-row" id="globalChipsSmall" style="margin-top:6px;"></div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="section-head" style="margin-top:0;cursor:pointer;" onclick="toggleBreakdown()">
+          <h2>Breakdown <span id="breakdownChevron" style="font-size:11px;display:inline-block;transition:transform .15s ease;">▸</span></h2>
+        </div>
+        <div id="breakdownBody" class="hidden">
+          <div class="row" style="margin-bottom:10px;">
+            <div class="dim-toggle" id="dimToggle">
+              <button class="btn btn-outline btn-sm active" data-dim="city" onclick="setAnalyticsDim('city')">By City</button>
+              <button class="btn btn-outline btn-sm" data-dim="district" onclick="setAnalyticsDim('district')">By District</button>
+              <button class="btn btn-outline btn-sm" data-dim="areaManager" onclick="setAnalyticsDim('areaManager')">By Area Manager</button>
+              <button class="btn btn-outline btn-sm" data-dim="supervisor" onclick="setAnalyticsDim('supervisor')">By Supervisor</button>
+            </div>
+            <button class="btn btn-outline btn-sm" id="pctToggleBtn" onclick="toggleAnalyticsPct()">Show as %</button>
+          </div>
+          <div class="table-wrap"><table id="analyticsTable">
+            <thead><tr><th>#</th><th id="dimHeader">City</th><th>Total</th><th>Attended</th><th>Not Assigned</th><th>Assigned but Absent</th><th>Sick Leave</th><th>Annual Leave</th><th>Resignation</th><th>Promotion</th></tr></thead>
+            <tbody id="analyticsBody"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px" id="masterSheetPreviewCard">
+        <div class="section-head" style="margin-top:0">
+          <h2>Master Sheet Preview</h2>
+          <div class="row">
+            <span class="small-note">Reflects every change made so far.</span>
+            <button class="btn btn-navy btn-sm" onclick="exportMasterSheet()">⬇ Excel</button>
+            <button class="btn btn-navy btn-sm" onclick="exportTableImage('masterSheetPreviewCard','master-sheet')">📷 Image</button>
+            <button class="btn btn-navy btn-sm" onclick="exportTablePDF('masterSheetPreviewCard','master-sheet')">🖨 PDF</button>
+          </div>
+        </div>
+        <div class="filter-bar" id="masterFilterBar"></div>
+        <div class="table-wrap"><table id="masterSheetPreviewTable">
+          <thead><tr>
+            <th class="no-sort">#</th>
+            <th onclick="toggleSort('master','district')">District <span class="sort-ind" id="sort-master-district"></span></th>
+            <th onclick="toggleSort('master','areaManager')">Area Manager <span class="sort-ind" id="sort-master-areaManager"></span></th>
+            <th onclick="toggleSort('master','city')">City <span class="sort-ind" id="sort-master-city"></span></th>
+            <th onclick="toggleSort('master','supervisor')">Supervisor <span class="sort-ind" id="sort-master-supervisor"></span></th>
+            <th onclick="toggleSort('master','date')">Date <span class="sort-ind" id="sort-master-date"></span></th>
+            <th onclick="toggleSort('master','email')">Email <span class="sort-ind" id="sort-master-email"></span></th>
+            <th onclick="toggleSort('master','displayName')">Display Name <span class="sort-ind" id="sort-master-displayName"></span></th>
+            <th onclick="toggleSort('master','attendance')">Attendance Status <span class="sort-ind" id="sort-master-attendance"></span></th>
+            <th class="no-sort">Notes</th>
+          </tr></thead>
+          <tbody id="masterSheetPreviewBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- CALENDAR TAB -->
+    <div id="t-calendar" class="trainer-tab hidden">
+      <div class="section-head" style="margin-top:0">
+        <h2 id="calendarQuarterLabel">Calendar</h2>
+        <div class="row">
+          <button class="btn btn-outline btn-sm" onclick="renderCalendar()">↻ Refresh</button>
+          <button class="btn btn-outline btn-sm" id="calUndoBtn" onclick="undoCalendarChange()" disabled>↶ Undo</button>
+          <button class="btn btn-outline btn-sm" id="calRedoBtn" onclick="redoCalendarChange()" disabled>↷ Redo</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom:10px;">
+        <button class="btn btn-navy btn-sm" onclick="openAddDayModal()">+ Add Training Day</button>
+        <button class="btn btn-navy btn-sm" onclick="openCalendarImportModal()">⬆ Import from Excel</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteAllDays()">🗑 Delete All</button>
+      </div>
+      <p class="small-note" style="margin-bottom:8px;">Drag a training day onto another date to reschedule it.</p>
+      <div class="row" style="margin-bottom:10px;">
+        <button class="btn btn-navy btn-sm" onclick="exportTableImage('calendarExportArea','training-calendar')">📷 Image</button>
+        <button class="btn btn-navy btn-sm" onclick="exportTablePDF('calendarExportArea','training-calendar')">🖨 PDF</button>
+        <button class="btn btn-navy btn-sm" onclick="exportCalendarExcel()">⬇ Excel</button>
+      </div>
+      <div class="row calendar-quarter-nav" style="justify-content:space-between;margin-bottom:10px;">
+        <div class="row" id="calendarMonthLinks"></div>
+        <div class="row">
+          <button class="btn btn-outline btn-sm" onclick="shiftCalendarQuarter(-1)">‹ Prev Quarter</button>
+          <button class="btn btn-outline btn-sm" onclick="shiftCalendarQuarter(1)">Next Quarter ›</button>
+        </div>
+      </div>
+      <div class="row" id="calendarLegend" style="margin-bottom:14px;"></div>
+      <div id="calendarExportArea">
+        <div id="calendarMonthsContainer"></div>
+      </div>
+
+      <div class="section-head"><h2>Calendar Analytics</h2></div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;font-size:13px;color:var(--navy);">Training Days per Trainer</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Trainer</th><th>Training Days</th></tr></thead>
+          <tbody id="calAnalyticsTrainerBody"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;font-size:13px;color:var(--navy);">Days per Trainer per Week</h3>
+        <div class="table-wrap"><table>
+          <thead><tr id="calAnalyticsWeekHead"><th>Week Of</th></tr></thead>
+          <tbody id="calAnalyticsWeekBody"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 8px;font-size:13px;color:var(--navy);">By Region</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Region</th><th>Pharmacists</th><th>Training Days</th><th>Avg Pharmacists / Group</th></tr></thead>
+          <tbody id="calAnalyticsRegionBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div id="modalRoot"></div>
+<div id="toast"></div>
+<script src="assets/vendor/xlsx.full.min.js"></script>
+<script src="assets/vendor/jszip.min.js"></script>
+<script src="assets/vendor/html2canvas.min.js"></script>
+<script src="assets/vendor/jspdf.umd.min.js"></script>
+<script src="assets/js/config.js"></script>
+<script src="assets/js/api.js"></script>
+<script src="assets/js/common.js"></script><script src="assets/js/trainer.js"></script>
+</body>
+</html>
