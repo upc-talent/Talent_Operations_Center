@@ -58,6 +58,7 @@ var HC_FIELDS = [
 ];
 var HC_REQUIRED = ['DISTRICT', 'AREA', 'CITY', 'SUPERVISOR', 'DATE', 'EMAIL', 'NAME'];
 var ID_RE = /^ph_[a-z0-9]+$/i;
+var HC_MEMO = null, HC_MEMO_ON = false;
 var LEAVE_STATUSES = ['Sick Leave', 'Annual Leave', 'Resignation', 'Promotion'];
 var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -93,6 +94,7 @@ function route_(req) {
   switch (action) {
     case 'me':           return { ok: true, role: ctx.role, who: ctx.who || null };
     case 'get':          return { ok: true, data: getKey_(ctx, req.key) };
+    case 'getMany':      return { ok: true, data: getMany_(ctx, req.keys) };
     case 'patch':        return patchKey_(ctx, req);
     case 'calendarGrid': requireTrainer_(ctx); return { ok: true, values: calendarGrid_() };
     case 'syncCalendar': requireTrainer_(ctx); return { ok: true, summary: syncCalendar_(true) };
@@ -264,6 +266,7 @@ function initHCLayout_(sh) {
 
 /** Reads HeadCount into [{row, v:[display strings]}]. Gives every pharmacist an ID and repairs ids that ended up in the wrong column. */
 function readHC_() {
+  if (HC_MEMO_ON && HC_MEMO) return HC_MEMO;   // several keys read in one request share one pass over the sheet
   var sh = sheet_(CONFIG.TABS.HEADCOUNT);
   initHCLayout_(sh);
   var last = sh.getLastRow();
@@ -303,7 +306,9 @@ function readHC_() {
       noteCol.setNumberFormat('@').setValues(noteVals);
     }
   }
-  return { sh: sh, rows: rows };
+  var result = { sh: sh, rows: rows };
+  if (HC_MEMO_ON) HC_MEMO = result;
+  return result;
 }
 
 function newId_(prefix, taken) {
@@ -1248,4 +1253,18 @@ function checkSetup() {
   Logger.log('Supervisors: ' + supervisorNames_().length);
   Logger.log('Missing tabs: ' + (missingTabs.length ? missingTabs.join(', ') : 'none'));
   Logger.log('Trainer credentials set: ' + (!!props.getProperty('TRAINER_USER') && !!props.getProperty('TRAINER_PASS')));
+}
+
+/** Several keys in ONE request (one round-trip, one read of HeadCount) — the app loads master + config + operations + requests together. */
+function getMany_(ctx, keys) {
+  if (!keys || !keys.length) throw new Error('No keys requested.');
+  if (keys.length > 12) throw new Error('Too many keys.');
+  var out = {};
+  HC_MEMO = null; HC_MEMO_ON = true;
+  try {
+    keys.forEach(function (k) { out[k] = getKey_(ctx, k); });
+  } finally {
+    HC_MEMO_ON = false; HC_MEMO = null;
+  }
+  return out;
 }

@@ -4,7 +4,7 @@ Coordinates training schedules between supervisors and the Talent Management tra
 Static front-end (GitHub Pages) + Google Apps Script backend + a Google Sheet as the database.
 
 ```
-index.html          Landing page: Supervisor · Course Progress Reports · LMS Ticketing · (trainer icon, bottom-right)
+index.html          Landing page: Supervisor · Course Progress Reports · (trainer icon, bottom-right). LMS Ticketing card is parked — see config.js
 supervisor.html     Supervisor page (pick your name → assign pharmacists, request additions/leave)
 trainer.html        Trainer page — behind a sign-in (attendance, setup, approvals, analytics, calendar)
 assets/js/config.js Every URL lives here (backend, LMS reports, ticketing form)

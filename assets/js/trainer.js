@@ -1889,20 +1889,20 @@ function renderTrainerTable(){
   const dateId = singleSelectedDate();
   if(dateId) renderSessionSummary(dateId);
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="12" class="empty-msg">No records match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="11" class="empty-msg">No records match the current filters</td></tr>`;
     updateSortIndicators('trainer');
     return;
   }
+  // Column order: Pharmacist Name (with row number), Email, Supervisor, District, Area Manager, City, Date, …
   tb.innerHTML = list.map((p,i)=>`
     <tr>
-      <td>${i+1}</td>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p.displayName)}</td>
+      <td>${esc(p.email||'—')}</td>
+      <td>${esc(p.supervisor)}</td>
       <td>${esc(p.district||'—')}</td>
       <td>${esc(p.areaManager||'—')}</td>
       <td>${cityCellHtml(p)}</td>
-      <td>${esc(p.supervisor)}</td>
       <td class="no-truncate">${dateCellHtml(p, true, days, 'onTrainerAssignChange')}</td>
-      <td>${esc(p.email||'—')}</td>
-      <td>${esc(p.displayName)}</td>
       <td>${completionCellHtml(p)}</td>
       <td class="no-truncate">${attendanceCellHtml(p)}</td>
       <td>${arrivalCellHtml(p)}</td>
@@ -2058,9 +2058,9 @@ function renderQuotaApprovals(){
   }
   tb.innerHTML = items.map((it,i)=>`
     <tr>
-      <td>${i+1}</td>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(it.p.displayName)}</td>
+      <td>${esc(it.p.email||'—')}</td>
       <td>${esc(it.p.supervisor)}</td>
-      <td>${esc(it.p.displayName)}</td>
       <td>${esc(it.day.city)} — ${formatDate(it.day.date)}</td>
       <td>
         <button class="btn btn-ok btn-sm" onclick="approveQuota('${it.pid}')">✔ Approve</button>
@@ -2119,9 +2119,9 @@ async function renderLeaveRequests(){
   }
   tb.innerHTML = list.map((lr,i)=>`
     <tr>
-      <td>${i+1}</td>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(lr.displayName)}</td>
+      <td>${esc(((masterData.find(m=>m.id===lr.pharmacistId))||{}).email||'—')}</td>
       <td>${esc(lr.supervisor)}</td>
-      <td>${esc(lr.displayName)}</td>
       <td>${new Date(lr.requestedAt).toLocaleDateString('en-GB')}</td>
       <td>
         <button class="btn btn-ok btn-sm" onclick="approveLeaveRequest('${lr.id}')">✔ Approve</button>
@@ -2175,19 +2175,18 @@ function renderApprovalsTab(){
   list = genericSort(list, apprSortState, (p,k)=> k==='addedAt' ? p.addedAt : String(p[k]||'').toLowerCase());
   const tb = document.getElementById('approvalsTableBody');
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="13" class="empty-msg">No pharmacists awaiting approval</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="12" class="empty-msg">No pharmacists awaiting approval</td></tr>`;
   } else {
     tb.innerHTML = list.map((p,i)=>`
       <tr>
-        <td>${i+1}</td>
+        <td class="name-cell"><span class="rownum">${i+1}</span><input type="text" value="${esc(p.displayName)}" id="ap-name-${p.id}" style="width:170px"></td>
+        <td><input type="text" value="${esc(p.email)}" id="ap-email-${p.id}" style="width:170px"></td>
+        <td>${esc(p.supervisor)}</td>
         <td>${esc(p.district||'—')}</td>
         <td>${esc(p.areaManager||'—')}</td>
         <td>${cityCellHtml(p)}</td>
-        <td>${esc(p.supervisor)}</td>
-        <td><input type="text" value="${esc(p.displayName)}" id="ap-name-${p.id}" style="width:140px"></td>
         <td><input type="text" value="${esc(p.pharmacyNo)}" id="ap-pn-${p.id}" style="width:80px"></td>
         <td><input type="text" value="${esc(p.employeeId)}" id="ap-eid-${p.id}" style="width:80px"></td>
-        <td><input type="text" value="${esc(p.email)}" id="ap-email-${p.id}" style="width:150px"></td>
         <td><input type="text" value="${esc(p.phone)}" id="ap-phone-${p.id}" style="width:100px"></td>
         <td><input type="text" value="${esc(p.scfhs)}" id="ap-scfhs-${p.id}" style="width:80px"></td>
         <td>${new Date(p.addedAt).toLocaleDateString('en-GB')}</td>
@@ -2217,9 +2216,9 @@ function renderApprovalsHistory(){
   }
   tb.innerHTML = list.map((p,i)=>`
     <tr>
-      <td>${i+1}</td>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p.displayName)}</td>
+      <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
-      <td>${esc(p.displayName)}</td>
       <td><span class="badge ${p.status==='Approved'?'badge-date':'badge-leave'}">${esc(p.status)}</span></td>
       <td>${esc(p.rejectionReason||'—')}</td>
       <td>${p.decidedAt ? new Date(p.decidedAt).toLocaleDateString('en-GB') : '—'}</td>
@@ -2484,16 +2483,17 @@ function renderMasterSheetPreview(){
   let list = applyMasterFilters(masterData);
   list = applySort('master', list);
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="10" class="empty-msg">No data matches the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No data matches the current filters</td></tr>`;
     updateSortIndicators('master');
     return;
   }
   tb.innerHTML = list.map((p,i)=>{
     const r = buildMasterRow(p);
     return `<tr>
-      <td>${i+1}</td><td>${esc(r.district||'—')}</td><td>${esc(r.areaManager||'—')}</td><td>${cityCellHtml(p)}</td>
-      <td>${esc(r.supervisor)}</td><td>${esc(r.dateText)}</td>
-      <td>${esc(r.email||'—')}</td><td>${esc(r.displayName)}</td>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(r.displayName)}</td>
+      <td>${esc(r.email||'—')}</td>
+      <td>${esc(r.supervisor)}</td><td>${esc(r.district||'—')}</td><td>${esc(r.areaManager||'—')}</td><td>${cityCellHtml(p)}</td>
+      <td>${esc(r.dateText)}</td>
       <td>${esc(r.statusText)}</td><td>${esc(r.note||'—')}</td>
     </tr>`;
   }).join('');
@@ -2503,11 +2503,11 @@ function renderMasterSheetPreview(){
 async function exportMasterSheet(){
   const list = applyMasterFilters(masterData);
   if(!list.length){ toast('No data to export','err'); return; }
-  const headers = ['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Notes'];
+  const headers = ['Display Name (Pharmacist name)','Username (Email)','Supervisor Name','District','Area Manager','City','Date','Pharmacy No.','User/Employee ID','Phone number (Whatsapp)','SCFHS','Attendance Status','Notes'];
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
-    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.pharmacyNo,r.employeeId,r.email,r.displayName,r.phone,r.scfhs,r.statusText,r.note]);
+    rows.push([r.displayName,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.pharmacyNo,r.employeeId,r.phone,r.scfhs,r.statusText,r.note]);
   });
   const colWidths = computeAutoColWidths_(headers, rows);
   const statusColIndex = headers.indexOf('Attendance Status');
@@ -2518,7 +2518,7 @@ async function exportMasterSheet(){
 async function exportAttendanceExcel(){
   const list = applyTrainerFilters(masterData);
   if(!list.length){ toast('No data to export','err'); return; }
-  const headers = ['District','Area Manager','City','Supervisor','Date','Email','Display Name','Completion Rate','Attendance','Late Arrival Time','Notes'];
+  const headers = ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date','Completion Rate','Attendance','Late Arrival Time','Notes'];
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
@@ -2533,9 +2533,9 @@ async function exportAttendanceExcel(){
       const att = ops.attendance[p.id];
       lateTime = (att&&att.status==='Attended'&&att.punctuality==='Late')?(att.time||''):'';
     }
-    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.email,r.displayName,r.completionPct, r.statusText, lateTime, r.note]);
+    rows.push([r.displayName,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.completionPct, r.statusText, lateTime, r.note]);
   });
-  const colWidths = [14,18,12,18,24,26,26,10,16,14,22];
+  const colWidths = [28,28,20,14,18,12,24,10,16,14,26];
   const ok = await downloadStyledXlsx('training-attendance.xlsx', 'Attendance', headers, rows, colWidths);
   if(ok) toast('Excel downloaded','ok');
 }

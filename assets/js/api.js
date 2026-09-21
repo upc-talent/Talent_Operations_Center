@@ -30,16 +30,51 @@
     return mockLoading;
   }
 
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // One attempt. Anything that looks like a temporary Google / network hiccup is flagged `transient` so it can be retried.
+  async function transportOnce(body) {
+    if (!CFG.API_URL) throw new Error('Backend URL is not configured (assets/js/config.js).');
+    let res;
+    try {
+      // Plain-text body keeps this a "simple" request, so Apps Script needs no CORS pre-flight.
+      res = await fetch(CFG.API_URL, { method: 'POST', body: JSON.stringify(body), redirect: 'follow' });
+    } catch (e) {
+      const err = new Error('Network problem — check your connection');
+      err.transient = true;
+      throw err;
+    }
+    if (!res.ok) {
+      const err = new Error('Server error (HTTP ' + res.status + ')');
+      err.transient = res.status === 404 || res.status === 408 || res.status === 429 || res.status >= 500;
+      throw err;
+    }
+    try {
+      return await res.json();
+    } catch (e) {
+      const err = new Error('Google returned an unexpected page');   // an HTML error page instead of JSON
+      err.transient = true;
+      throw err;
+    }
+  }
+
+  // Google Apps Script occasionally answers a perfectly good request with a 404 / 5xx / HTML page, mostly when
+  // several requests hit at once. Every request here is safe to repeat (writes are per-record upserts/deletes),
+  // so temporary failures are retried a couple of times before the user ever sees an error.
   async function transport(body) {
     if (CFG.API_URL === 'mock') {
       await loadMock();
       return window.MockBackend.handle(body);
     }
-    if (!CFG.API_URL) throw new Error('Backend URL is not configured (assets/js/config.js).');
-    // Plain-text body keeps this a "simple" request, so Apps Script needs no CORS pre-flight.
-    const res = await fetch(CFG.API_URL, { method: 'POST', body: JSON.stringify(body), redirect: 'follow' });
-    if (!res.ok) throw new Error('Server error (HTTP ' + res.status + ')');
-    return res.json();
+    const waits = [700, 1800];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await transportOnce(body);
+      } catch (e) {
+        if (!e.transient || attempt >= waits.length) throw e;
+        await sleep(waits[attempt]);
+      }
+    }
   }
 
   /* ───────────── session ───────────── */
@@ -202,6 +237,33 @@
         toast('Could not load data — ' + (e.message || 'check your connection'), 'err');
       }
       return fallback;
+    }
+  };
+
+  /** Loads several keys in ONE request (much lighter on Google than parallel requests). Falls back to one-by-one
+      loading if the deployed script is an older version that doesn't know "getMany". */
+  window.getSharedMany = async function (keys, fallbacks) {
+    fallbacks = fallbacks || {};
+    try {
+      const out = await API.call('getMany', { keys });
+      const res = {};
+      keys.forEach(k => {
+        const canon = canonFromWire(k, (out.data || {})[k] || {});
+        snapshots[k] = canon;
+        res[k] = valueFromCanon(k, canon);
+      });
+      return res;
+    } catch (e) {
+      if (/unknown action/i.test(e.message || '')) {
+        const res = {};
+        for (const k of keys) res[k] = await window.getShared(k, fallbacks[k]);   // sequential, not parallel
+        return res;
+      }
+      console.error('load failed', keys, e);
+      if (!e.authExpired && typeof toast === 'function') toast('Could not load data — ' + (e.message || 'check your connection'), 'err');
+      const res = {};
+      keys.forEach(k => { res[k] = fallbacks[k]; });
+      return res;
     }
   };
 

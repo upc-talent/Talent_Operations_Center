@@ -82,18 +82,17 @@ async function openSubmissionHistoryModal(){
 
   const rows = list.length ? list.map((r,i)=>`
     <tr>
-      <td>${i+1}</td>
-      <td style="white-space:normal;min-width:140px;">${esc(r.displayName)}</td>
+      <td class="name-cell" style="white-space:normal;min-width:160px;"><span class="rownum">${i+1}</span>${esc(r.displayName)}</td>
       <td style="white-space:normal;"><span class="badge badge-empty">${esc(r.type)}</span></td>
       <td><span class="badge ${r.status==='Approved'?'badge-date':'badge-leave'}">${esc(r.status)}</span></td>
       <td style="white-space:normal;min-width:100px;">${esc(r.reason||'—')}</td>
       <td style="white-space:nowrap;">${r.decidedAt ? new Date(r.decidedAt).toLocaleDateString('en-GB') : '—'}</td>
-    </tr>`).join('') : `<tr><td colspan="6" class="empty-msg">No decisions yet</td></tr>`;
+    </tr>`).join('') : `<tr><td colspan="5" class="empty-msg">No decisions yet</td></tr>`;
   showModal(`
     <h3>Submission History</h3>
     <p class="small-note">New pharmacists, over-quota assignments, and Annual Leave requests you've submitted, and what happened to them — these stay here permanently.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>Name</th><th>Type</th><th>Status</th><th>Reason</th><th>Decided</th></tr></thead>
+      <thead><tr><th>Pharmacist Name</th><th>Type</th><th>Status</th><th>Reason</th><th>Decided</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="closeModal()">Close</button></div>`, 'max-width:820px;');
@@ -201,39 +200,39 @@ function renderSupervisorTable(){
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
   if(!own.length && !pending.length){
-    tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No pharmacists match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
     return;
   }
   let i = 0;
+  // Column order: Pharmacist Name (with its row number), Email, Supervisor, District, Area Manager, City, Date, Notes
+  const nameCell = (n, p) => `<td class="name-cell"><span class="rownum">${n}</span>${esc(p.displayName)}</td>`;
   let rows = own.map(p=>{
     i++;
     return `<tr>
-      <td>${i}</td>
+      ${nameCell(i, p)}
+      <td>${esc(p.email||'—')}</td>
+      <td>${esc(p.supervisor)}</td>
       <td>${esc(p.district||'—')}</td>
       <td>${esc(p.areaManager||'—')}</td>
       <td>${cityCellHtml(p)}</td>
-      <td>${esc(p.supervisor)}</td>
       <td class="no-truncate">${dateCellHtml(p, true, days, 'onAssignChange')}</td>
-      <td>${esc(p.email||'—')}</td>
-      <td>${esc(p.displayName)}</td>
       <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
   rows += pending.map(p=>{
     i++;
     return `<tr class="pending-row">
-      <td>${i}</td>
+      ${nameCell(i, p)}
+      <td>${esc(p.email||'—')}</td>
+      <td>${esc(p.supervisor)}</td>
       <td>${esc(p.district||'—')}</td>
       <td>${esc(p.areaManager||'—')}</td>
       <td>${cityCellHtml(p)}</td>
-      <td>${esc(p.supervisor)}</td>
       <td class="no-truncate"><span class="badge badge-pending">Pending Approval</span><br>
         <button class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="openEditPendingModal('${p.id}')">Edit</button>
         <button class="btn btn-danger btn-sm" style="margin-top:4px;" onclick="deletePendingPharmacist('${p.id}')">Delete</button>
       </td>
-      <td>${esc(p.email||'—')}</td>
-      <td>${esc(p.displayName)}</td>
       <td></td>
     </tr>`;
   }).join('');
@@ -551,7 +550,7 @@ async function confirmAnnualLeaveUpload(){
 async function exportSupervisorExcel(){
   const list = applySupFilters(currentSupervisorScope());
   if(!list.length){ toast('No data to export','err'); return; }
-  const headers = ['District','Area Manager','City','Supervisor','Date','Email','Display Name','Attendance','Late Arrival Time','Notes'];
+  const headers = ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Notes'];
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
@@ -566,9 +565,9 @@ async function exportSupervisorExcel(){
       const att = ops.attendance[p.id];
       lateTime = (att&&att.status==='Attended'&&att.punctuality==='Late')?(att.time||''):'';
     }
-    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.email,r.displayName, r.statusText, lateTime, r.note]);
+    rows.push([r.displayName,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.note]);
   });
-  const colWidths = [14,18,12,18,24,26,26,16,14,22];
+  const colWidths = [28,28,20,14,18,12,24,16,14,26];
   const ok = await downloadStyledXlsx('my-pharmacists.xlsx', 'My Pharmacists', headers, rows, colWidths);
   if(ok) toast('Excel downloaded','ok');
 }

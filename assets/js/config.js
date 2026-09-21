@@ -15,8 +15,10 @@
 
     // Landing-page cards
     LINKS: {
-      progressReports: 'https://upc-talent.github.io/LMS-reporting/',
-      ticketing: 'https://forms.clickup.com/90152546261/f/2kyr5byn-5335/DH1J7W33E380VYJM8C'
+      progressReports: 'https://upc-talent.github.io/LMS-reporting/'
+      // LMS Ticketing System card is switched off for now. To bring it back: add this link here
+      //   ticketing: 'https://forms.clickup.com/90152546261/f/2kyr5byn-5335/DH1J7W33E380VYJM8C'
+      // and re-add the card (see the "c-ticket" style in assets/css/app.css) to index.html.
     },
 
     BASE: ''   // path prefix for dev helpers (leave empty)

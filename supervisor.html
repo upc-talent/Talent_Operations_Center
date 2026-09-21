@@ -74,14 +74,13 @@
         </div>
         <div class="table-wrap" id="supTableWrap"><table>
           <thead><tr>
-            <th class="no-sort">#</th>
+            <th onclick="toggleSort('sup','displayName')">Pharmacist Name <span class="sort-ind" id="sort-sup-displayName"></span></th>
+            <th onclick="toggleSort('sup','email')">Email <span class="sort-ind" id="sort-sup-email"></span></th>
+            <th onclick="toggleSort('sup','supervisor')">Supervisor <span class="sort-ind" id="sort-sup-supervisor"></span></th>
             <th onclick="toggleSort('sup','district')">District <span class="sort-ind" id="sort-sup-district"></span></th>
             <th onclick="toggleSort('sup','areaManager')">Area Manager <span class="sort-ind" id="sort-sup-areaManager"></span></th>
             <th onclick="toggleSort('sup','city')">City <span class="sort-ind" id="sort-sup-city"></span></th>
-            <th onclick="toggleSort('sup','supervisor')">Supervisor <span class="sort-ind" id="sort-sup-supervisor"></span></th>
             <th onclick="toggleSort('sup','date')">Date <span class="sort-ind" id="sort-sup-date"></span></th>
-            <th onclick="toggleSort('sup','email')">Email <span class="sort-ind" id="sort-sup-email"></span></th>
-            <th onclick="toggleSort('sup','displayName')">Display Name <span class="sort-ind" id="sort-sup-displayName"></span></th>
             <th class="no-sort">Notes</th>
           </tr></thead>
           <tbody id="supTableBody"></tbody>

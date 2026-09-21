@@ -75,14 +75,13 @@
       <div id="trainerCard" class="card">
         <div class="table-wrap"><table id="trainerTable">
           <thead><tr>
-            <th class="no-sort">#</th>
+            <th onclick="toggleSort('trainer','displayName')">Pharmacist Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
+            <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
+            <th onclick="toggleSort('trainer','supervisor')">Supervisor <span class="sort-ind" id="sort-trainer-supervisor"></span></th>
             <th onclick="toggleSort('trainer','district')">District <span class="sort-ind" id="sort-trainer-district"></span></th>
             <th onclick="toggleSort('trainer','areaManager')">Area Manager <span class="sort-ind" id="sort-trainer-areaManager"></span></th>
             <th onclick="toggleSort('trainer','city')">City <span class="sort-ind" id="sort-trainer-city"></span></th>
-            <th onclick="toggleSort('trainer','supervisor')">Supervisor <span class="sort-ind" id="sort-trainer-supervisor"></span></th>
             <th onclick="toggleSort('trainer','date')">Date <span class="sort-ind" id="sort-trainer-date"></span></th>
-            <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
-            <th onclick="toggleSort('trainer','displayName')">Display Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
             <th onclick="toggleSort('trainer','completionPct')">Completion Rate <span class="sort-ind" id="sort-trainer-completionPct"></span></th>
             <th onclick="toggleSort('trainer','attendance')">Attendance <span class="sort-ind" id="sort-trainer-attendance"></span></th>
             <th class="no-sort">Late Arrival Time</th>
@@ -201,7 +200,7 @@
       <p class="small-note" style="margin-bottom:8px">A supervisor assigned a pharmacist to an online day after reaching their quota for that day. Approve to let it count, or reject to send them back to Not Assigned.</p>
       <div class="card">
         <div class="table-wrap"><table>
-          <thead><tr><th>#</th><th>Supervisor</th><th>Pharmacist</th><th>Day</th><th style="min-width:170px">Action</th></tr></thead>
+          <thead><tr><th>Pharmacist Name</th><th>Email</th><th>Supervisor</th><th>Day</th><th style="min-width:170px">Action</th></tr></thead>
           <tbody id="quotaApprovalsBody"></tbody>
         </table></div>
       </div>
@@ -210,7 +209,7 @@
       <p class="small-note" style="margin-bottom:8px">Submitted in bulk by supervisors via the Annual Leave template. Approving sets the pharmacist's status to Annual Leave.</p>
       <div class="card">
         <div class="table-wrap"><table>
-          <thead><tr><th>#</th><th>Supervisor</th><th>Pharmacist</th><th>Submitted</th><th style="min-width:170px">Action</th></tr></thead>
+          <thead><tr><th>Pharmacist Name</th><th>Email</th><th>Supervisor</th><th>Submitted</th><th style="min-width:170px">Action</th></tr></thead>
           <tbody id="leaveRequestsBody"></tbody>
         </table></div>
       </div>
@@ -219,13 +218,13 @@
       <div class="card">
         <div class="table-wrap"><table>
           <thead><tr>
-            <th class="no-sort">#</th>
+            <th onclick="toggleApprovalsSort('displayName')">Pharmacist Name <span class="sort-ind" id="sort-appr-displayName"></span></th>
+            <th class="no-sort">Email</th>
+            <th onclick="toggleApprovalsSort('supervisor')">Supervisor <span class="sort-ind" id="sort-appr-supervisor"></span></th>
             <th onclick="toggleApprovalsSort('district')">District <span class="sort-ind" id="sort-appr-district"></span></th>
             <th class="no-sort">Area Mgr</th>
             <th onclick="toggleApprovalsSort('city')">City <span class="sort-ind" id="sort-appr-city"></span></th>
-            <th onclick="toggleApprovalsSort('supervisor')">Supervisor <span class="sort-ind" id="sort-appr-supervisor"></span></th>
-            <th onclick="toggleApprovalsSort('displayName')">Display Name <span class="sort-ind" id="sort-appr-displayName"></span></th>
-            <th class="no-sort">Pharmacy No.</th><th class="no-sort">Employee ID</th><th class="no-sort">Email</th><th class="no-sort">Phone</th><th class="no-sort">SCFHS</th>
+            <th class="no-sort">Pharmacy No.</th><th class="no-sort">Employee ID</th><th class="no-sort">Phone</th><th class="no-sort">SCFHS</th>
             <th onclick="toggleApprovalsSort('addedAt')">Submitted <span class="sort-ind" id="sort-appr-addedAt"></span></th>
             <th class="no-sort" style="min-width:160px">Action</th>
           </tr></thead>
@@ -241,9 +240,9 @@
       <div class="card">
         <div class="table-wrap"><table>
           <thead><tr>
-            <th class="no-sort">#</th>
+            <th onclick="toggleApprHistSort('displayName')">Pharmacist Name <span class="sort-ind" id="sort-apprhist-displayName"></span></th>
+            <th class="no-sort">Email</th>
             <th onclick="toggleApprHistSort('supervisor')">Supervisor <span class="sort-ind" id="sort-apprhist-supervisor"></span></th>
-            <th onclick="toggleApprHistSort('displayName')">Display Name <span class="sort-ind" id="sort-apprhist-displayName"></span></th>
             <th onclick="toggleApprHistSort('status')">Status <span class="sort-ind" id="sort-apprhist-status"></span></th>
             <th class="no-sort">Reason</th>
             <th onclick="toggleApprHistSort('decidedAt')">Decided <span class="sort-ind" id="sort-apprhist-decidedAt"></span></th>
@@ -299,14 +298,13 @@
         <div class="filter-bar" id="masterFilterBar"></div>
         <div class="table-wrap"><table id="masterSheetPreviewTable">
           <thead><tr>
-            <th class="no-sort">#</th>
+            <th onclick="toggleSort('master','displayName')">Pharmacist Name <span class="sort-ind" id="sort-master-displayName"></span></th>
+            <th onclick="toggleSort('master','email')">Email <span class="sort-ind" id="sort-master-email"></span></th>
+            <th onclick="toggleSort('master','supervisor')">Supervisor <span class="sort-ind" id="sort-master-supervisor"></span></th>
             <th onclick="toggleSort('master','district')">District <span class="sort-ind" id="sort-master-district"></span></th>
             <th onclick="toggleSort('master','areaManager')">Area Manager <span class="sort-ind" id="sort-master-areaManager"></span></th>
             <th onclick="toggleSort('master','city')">City <span class="sort-ind" id="sort-master-city"></span></th>
-            <th onclick="toggleSort('master','supervisor')">Supervisor <span class="sort-ind" id="sort-master-supervisor"></span></th>
             <th onclick="toggleSort('master','date')">Date <span class="sort-ind" id="sort-master-date"></span></th>
-            <th onclick="toggleSort('master','email')">Email <span class="sort-ind" id="sort-master-email"></span></th>
-            <th onclick="toggleSort('master','displayName')">Display Name <span class="sort-ind" id="sort-master-displayName"></span></th>
             <th onclick="toggleSort('master','attendance')">Attendance Status <span class="sort-ind" id="sort-master-attendance"></span></th>
             <th class="no-sort">Notes</th>
           </tr></thead>

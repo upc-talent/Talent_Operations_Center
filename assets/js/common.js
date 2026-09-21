@@ -177,14 +177,14 @@ let trainingConfig = {dates:[], maxCapacity:30, trainerNames:[], coordinatorName
 let ops = {assignments:{}, attendance:{}};
 let leaveRequestsCache = [];
 async function loadCoreData(){
-  // the four reads are independent, so run them together (each is a network round-trip)
-  const [m, p, c, o] = await Promise.all([
-    getShared(K_MASTER, []),
-    getShared(K_PENDING, []),
-    getShared(K_CONFIG, {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]}),
-    getShared(K_OPS, {assignments:{}, attendance:{}})
-  ]);
-  masterData = m; pendingList = p; trainingConfig = c; ops = o;
+  // one request for all four (a single round-trip; firing four at once made Google answer some with errors)
+  const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS], {
+    [K_MASTER]: [],
+    [K_PENDING]: [],
+    [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]},
+    [K_OPS]: {assignments:{}, attendance:{}}
+  });
+  masterData = r[K_MASTER]; pendingList = r[K_PENDING]; trainingConfig = r[K_CONFIG]; ops = r[K_OPS];
   if(!trainingConfig.dates) trainingConfig.dates = [];
   if(!trainingConfig.trainerNames) trainingConfig.trainerNames = [];
   if(!trainingConfig.coordinatorNames) trainingConfig.coordinatorNames = [];
