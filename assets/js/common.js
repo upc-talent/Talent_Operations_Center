@@ -574,7 +574,7 @@ function buildMasterRow(p){
     phone:p.phone||'', scfhs:p.scfhs||'',
     completionPct: p.completionPct!==undefined && p.completionPct!=='' ? p.completionPct+'%' : '',
     statusText,
-    note: validDateAssignment && att&&att.note?att.note:'',
+    note: p.note || (validDateAssignment && att && att.note ? att.note : ''),
     markedBy: validDateAssignment && att ? (att.markedBy || (att.day1&&att.day1.markedBy) || (att.day2&&att.day2.markedBy) || '') : ''
   };
 }

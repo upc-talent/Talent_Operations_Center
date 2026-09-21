@@ -201,7 +201,7 @@ function renderSupervisorTable(){
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
   if(!own.length && !pending.length){
-    tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No pharmacists match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
     return;
   }
@@ -217,6 +217,7 @@ function renderSupervisorTable(){
       <td class="no-truncate">${dateCellHtml(p, true, days, 'onAssignChange')}</td>
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.displayName)}</td>
+      <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
   rows += pending.map(p=>{
@@ -233,6 +234,7 @@ function renderSupervisorTable(){
       </td>
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.displayName)}</td>
+      <td></td>
     </tr>`;
   }).join('');
   tb.innerHTML = rows;

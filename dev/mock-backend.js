@@ -58,6 +58,7 @@
       getName: () => state.name,
       getMaxRows: () => state.maxRows,
       getMaxColumns: () => state.maxCols,
+      getLastColumn() { let lc = 0; state.rows.forEach(r => { for (let c = (r || []).length; c > 0; c--) if (r[c-1] !== '' && r[c-1] != null) { lc = Math.max(lc, c); break; } }); return lc; },
       getLastRow() { for (let r = state.rows.length - 1; r >= 0; r--) if ((state.rows[r] || []).some(v => v !== '' && v != null)) return r + 1; return 0; },
       insertRowsAfter(pos, n) { for (let i = 0; i < n; i++) state.rows.splice(pos, 0, []); state.maxRows += n; },
       insertColumnsAfter(pos, n) { state.maxCols += n; },
@@ -118,8 +119,10 @@
 
   /* ───────────── synthetic data ───────────── */
   function seed(store) {
-    const HC = { name: 'HeadCount', rows: [], maxRows: 400, maxCols: 13 };
-    HC.rows.push(['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Notes']);
+    const HC = { name: 'HeadCount', rows: [], maxRows: 400, maxCols: 15 };
+    // same shape as the real sheet after a column was inserted: Attendance Adherence in M, Notes in N, and an
+    // earlier build's pharmacist ids sitting in column O with no header
+    HC.rows.push(['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Attendance Adherence','Notes','']);
     const cities = [
       ['Dr. Test East', 'Dr. Area One', 'Jeddah North', ['Dr. Sara Demo', 'Dr. Omar Demo']],
       ['Dr. Test East', 'Dr. Area One', 'Jeddah South', ['Dr. Lina Demo']],
@@ -134,11 +137,11 @@
         for (let i = 0; i < 6; i++) {
           n++;
           const nm = first[n % first.length] + ' Sample ' + n;
-          HC.rows.push([district, am, city, sup, '', 'P' + (100 + n), String(1000 + n), 'demo_user' + n + '@example.test', nm, '5' + String(10000000 + n), i % 2 ? 'SC' + (200000 + n) : '-', '', '']);
+          HC.rows.push([district, am, city, sup, '', 'P' + (100 + n), String(1000 + n), 'demo_user' + n + '@example.test', nm, '5' + String(10000000 + n), i % 2 ? 'SC' + (200000 + n) : '-', '', '', n === 3 ? 'Legal issue abroad - check with HR before assigning' : '', 'ph_seed' + n]);
         }
       });
     });
-    HC.rows.push(['Dr. Test East', 'Dr. Area One', 'Supervisors', '-', '', '-', '955', 'sup_lead@example.test', 'Lead Supervisor Sample', '500000000', '-', '', '']);
+    HC.rows.push(['Dr. Test East', 'Dr. Area One', 'Supervisors', '-', '', '-', '955', 'sup_lead@example.test', 'Lead Supervisor Sample', '500000000', '-', '', '', '', 'ph_seedlead']);
     store.sheets.HeadCount = HC;
 
     // a small weekly grid in the same layout as the real calendar tab
@@ -189,6 +192,7 @@
       persist();
       return JSON.parse(out.getContent());
     },
+    setup() { gs.setupSheets(); persist(); },   // same as pressing Run on setupSheets in the Apps Script editor
     reset() { localStorage.removeItem(STORE_KEY); location.reload(); },
     dump() { return store; }
   };

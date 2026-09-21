@@ -285,3 +285,5 @@ p.small-note{margin:0 0 6px;}
 .login-btn{margin-top:18px;padding:11px 16px;font-size:14px;}
 .login-back{margin-top:14px;text-align:center;color:var(--muted);font-size:12.5px;text-decoration:none;}
 .login-back:hover{color:var(--navy);text-decoration:underline;}
+/* Notes column on the supervisor page (the pharmacist's note from the HeadCount sheet) */
+.sup-note{display:inline-block;white-space:normal;min-width:160px;max-width:340px;background:var(--warn-bg);color:var(--warn);border-left:3px solid var(--warn);padding:5px 9px;border-radius:6px;font-weight:600;font-size:12.5px;line-height:1.45;}

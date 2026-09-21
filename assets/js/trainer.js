@@ -497,7 +497,8 @@ const MASTER_FIELDS = [
   {key:'email', label:'Username (Email)', required:false},
   {key:'displayName', label:'Display Name (Pharmacist Name)', required:true},
   {key:'phone', label:'Phone (Whatsapp)', required:false},
-  {key:'scfhs', label:'SCFHS', required:false}
+  {key:'scfhs', label:'SCFHS', required:false},
+  {key:'note', label:'Notes (shown to the supervisor)', required:false}
 ];
 
 function showColumnMappingModal(headerRow, autoIndices, totalRows){
@@ -659,7 +660,8 @@ async function handleMasterUpload(input){
         email: findCol([/email/i]),
         displayName: findCol([/display.*name/i, /pharmacist.*name/i, /^name$/i]),
         phone: findCol([/phone/i, /whatsapp/i]),
-        scfhs: findCol([/scfhs/i])
+        scfhs: findCol([/scfhs/i]),
+        note: findCol([/^notes?$/i])
       };
 
       const mapping = await showColumnMappingModal(headerRow, autoIndices, aoa.length-1);
@@ -676,7 +678,8 @@ async function handleMasterUpload(input){
         email: mapping.email!==-1 ? String(r[mapping.email]??'').trim() : '',
         displayName: mapping.displayName!==-1 ? String(r[mapping.displayName]??'').trim() : '',
         phone: mapping.phone!==-1 ? String(r[mapping.phone]??'').trim() : '',
-        scfhs: mapping.scfhs!==-1 ? String(r[mapping.scfhs]??'').trim() : ''
+        scfhs: mapping.scfhs!==-1 ? String(r[mapping.scfhs]??'').trim() : '',
+        note: mapping.note!==-1 ? String(r[mapping.note]??'').trim() : ''
       })).filter(p=>p.displayName && p.supervisor);
 
       if(!rawParsed.length){ toast('No usable rows found — check that the mapped Supervisor and Display Name columns actually contain data','err'); input.value=''; return; }
@@ -1868,10 +1871,12 @@ function arrivalCellHtml(p){
   if(!att || att.status!=='Attended' || (att.punctuality||'On Time')!=='Late') return '—';
   return `<input type="time" value="${att.time||''}" style="width:85px" onchange="onAttendanceTimeChange('${p.id}', this.value)">`;
 }
+// The note is the pharmacist's "Notes" cell in the HeadCount tab: what the trainer types here is written to the sheet,
+// and anything typed in the sheet shows here — and to the pharmacist's supervisor on the supervisor page.
 function noteCellHtml(p){
-  if(!hasValidDateAssignment(p)) return '—';
   const att = ops.attendance[p.id];
-  return `<input type="text" class="note-input" placeholder="Notes" value="${esc(att&&att.note?att.note:'')}" onchange="onAttendanceNoteChange('${p.id}', this.value)">`;
+  const note = (p.note!==undefined && p.note!=='') ? p.note : (att && att.note ? att.note : '');
+  return `<input type="text" class="note-input" placeholder="Notes" value="${esc(note)}" onchange="onPharmacistNoteChange('${p.id}', this.value)">`;
 }
 
 function renderTrainerTable(){
@@ -1982,13 +1987,13 @@ async function onSplitAttendanceTimeChange(pid, dayNum, time){
   const ok = await setShared(K_OPS, ops);
   if(ok) toast('Arrival time updated','ok');
 }
-async function onAttendanceNoteChange(pid, note){
-  if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
-  const prev = ops.attendance[pid] || {status:''};
-  ops.attendance[pid] = {...prev, note, markedBy: currentTrainerIdentity, markedAt: nowIso()};
-  const ok = await setShared(K_OPS, ops);
-  if(ok) toast('Note saved','ok');
+async function onPharmacistNoteChange(pid, note){
+  masterData = await getShared(K_MASTER, []);
+  const p = masterData.find(m=>m.id===pid);
+  if(!p) return;
+  p.note = String(note||'').trim();
+  const ok = await setShared(K_MASTER, masterData);
+  if(ok) toast('Note saved — the pharmacist\'s supervisor can see it','ok');
 }
 
 async function refreshTrainer(){

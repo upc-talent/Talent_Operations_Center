@@ -22,7 +22,7 @@ dev/                Local test server + in-browser fake sheet (synthetic data on
 2. In the Sheet: **Extensions → Apps Script**. Replace the contents of `Code.gs` with `backend/Code.gs`.
    *(Optional)* show the manifest (Project Settings → "Show appsscript.json") and paste `backend/appsscript.json` — it sets the Riyadh time zone, which the supervisor deadlines use.
 3. Pick **`setupSheets`** in the function drop-down → **Run** → approve the permissions. It:
-   - adds helper columns **N–T** to `HeadCount` (your columns A–M are untouched),
+   - finds the `HeadCount` columns by their headers and adds any the app needs at the far right (your own columns stay where they are),
    - creates the tabs `Approvals`, `TrainingDays`, `Notifications`, `Settings`,
    - gives every pharmacist row a unique ID.
 4. **Project Settings → Script Properties → Add**:
@@ -36,7 +36,7 @@ dev/                Local test server + in-browser fake sheet (synthetic data on
 
 | Tab | Purpose | Edited by |
 |---|---|---|
-| **HeadCount** | Master roster. **E = Date** (or leave status), **L = Attendance Status**, **M = Notes** are written by the app. | app (roster changes: trainer) |
+| **HeadCount** | Master roster. The app fills `Date`, `Attendance Status`, `Attendance Adherence` (and helper columns); `Notes` is yours. | app / you |
 | **2026 - Q4 Training Calendar** | The planning grid — **synced automatically** into `TrainingDays` (see below). | you |
 | **Venues** | `City` / `Recommended Venues` list, offered when adding a training day. | you |
 | **Approvals** | Requests waiting for / decided by the trainer (below). | app (you may read/filter freely) |
@@ -60,10 +60,22 @@ code if you want the app to treat it as the same training. Cells that aren't tra
 `Learning Booster`, `Ams & SVs`, `CC`) are ignored. Trainer page → Calendar → **Calendar Sync** forces an immediate re-read and
 shows what changed. Days for a city stay without a supervisor until that city's pharmacists are in `HeadCount`.
 
-**HeadCount helper columns (N–T):** `Pharmacist ID`, `Session` (city — date text), `Punctuality`, `Arrival Time`, `Completion %`,
-and two hidden system columns (`Assignment`, `Attendance` — the app's source of truth for those rows).
-**Edit assignments/attendance through the app**: E/L/M are overwritten from the system columns when a row changes.
-New pharmacists you paste in by hand get an ID automatically the next time the app reads the sheet.
+**HeadCount columns are found by their header text (row 1), not by position** — insert, move or add your own columns freely.
+What the app uses:
+
+| Header | Who writes it | Meaning |
+|---|---|---|
+| `Date` | app | the pharmacist's training date (or leave status) |
+| `Attendance Status` | app | `Attended` / `Absent` / `Partial …` / leave status |
+| `Attendance Adherence` | app | **`On Time` or `Late`**, set when the trainer marks the pharmacist *Attended* (blank if absent). For a two-day online training: `Late` if either attended day was late |
+| `Notes` | you / trainer | the pharmacist's note. Shown to their **supervisor** on the Supervisor page and editable by the trainer in the *Notes* box. The app never overwrites it |
+| `Pharmacist ID`, `Session`, `Arrival Time`, `Completion %` | app | added at the right-hand end if missing (`Arrival Time` = the late arrival time) |
+| `Assignment (system)`, `Attendance (system)` | app | hidden; the app's source of truth for each row — don't edit |
+
+**Edit assignments/attendance through the app**: Date / Attendance Status / Attendance Adherence are overwritten from the system
+columns whenever a row changes. New pharmacists you paste into the sheet get an ID automatically the next time the app reads it.
+An unlabelled column full of `ph_…` ids is recognised as the ID column, and ids that ended up in Notes are moved back.
+Run `checkSetup` in the editor to see which column the app found for each field.
 
 **Approvals tab**
 

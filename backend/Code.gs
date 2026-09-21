@@ -28,14 +28,36 @@ var CONFIG = {
   DEFAULT_CAPACITY: 30
 };
 
-/* HeadCount columns (1-based). A–M are the sheet's existing columns, N–T are added by setupSheets(). */
-var HC = {
-  DISTRICT: 1, AREA: 2, CITY: 3, SUPERVISOR: 4, DATE: 5, PHARMACY: 6, EMPID: 7, EMAIL: 8, NAME: 9,
-  PHONE: 10, SCFHS: 11, STATUS: 12, NOTES: 13,
-  ID: 14, SESSION: 15, PUNCT: 16, ARRIVAL: 17, COMPLETION: 18, ASSIGN: 19, ATT: 20
-};
-var HC_NCOLS = 20;
-var HC_EXTRA_HEADERS = ['Pharmacist ID', 'Session', 'Punctuality', 'Arrival Time', 'Completion %', 'Assignment (system)', 'Attendance (system)'];
+/* HeadCount columns are found by their HEADER TEXT (row 1), never by position — so you can insert, move or
+ * rename-around columns freely. HC.X is the 1-based column number of field X, filled in by initHCLayout_().
+ * Columns the app needs but the sheet lacks (e.g. "Pharmacist ID", "Session") are added at the right-hand end. */
+var HC = {};
+var HC_LAYOUT_DONE = false;
+var HC_FIELDS = [
+  // [key, accepted header texts (lower-case), header written if the app has to add the column]
+  ['DISTRICT',   ['district']],
+  ['AREA',       ['area manager']],
+  ['CITY',       ['city']],
+  ['SUPERVISOR', ['supervisor name', 'supervisor']],
+  ['DATE',       ['date']],
+  ['PHARMACY',   ['pharmacy no.', 'pharmacy no']],
+  ['EMPID',      ['user/employee id', 'employee id']],
+  ['EMAIL',      ['username (email)', 'email']],
+  ['NAME',       ['display name (pharmacist name)', 'display name']],
+  ['PHONE',      ['phone number (whatsapp)', 'phone number', 'phone']],
+  ['SCFHS',      ['scfhs']],
+  ['STATUS',     ['attendance status']],
+  ['ADHERENCE',  ['attendance adherence'], 'Attendance Adherence'],
+  ['NOTES',      ['notes', 'note'], 'Notes'],
+  ['ID',         ['pharmacist id'], 'Pharmacist ID'],
+  ['SESSION',    ['session'], 'Session'],
+  ['ARRIVAL',    ['arrival time'], 'Arrival Time'],
+  ['COMPLETION', ['completion %', 'completion'], 'Completion %'],
+  ['ASSIGN',     ['assignment (system)'], 'Assignment (system)'],
+  ['ATT',        ['attendance (system)'], 'Attendance (system)']
+];
+var HC_REQUIRED = ['DISTRICT', 'AREA', 'CITY', 'SUPERVISOR', 'DATE', 'EMAIL', 'NAME'];
+var ID_RE = /^ph_[a-z0-9]+$/i;
 var LEAVE_STATUSES = ['Sick Leave', 'Annual Leave', 'Resignation', 'Promotion'];
 var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -174,36 +196,111 @@ function parseJson_(s) {
 }
 function nowIso_() { return new Date().toISOString(); }
 
-/** Reads HeadCount into [{row, v:[20 display strings]}]. Fills in missing Pharmacist IDs. */
+/** Works out where each HeadCount field lives from the header row, and adds any column the app needs but the sheet lacks. */
+function initHCLayout_(sh) {
+  if (HC_LAYOUT_DONE) return;
+  var lastCol = Math.max(sh.getLastColumn(), 1);
+  var header = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  var layout = {}, used = {};
+  HC_FIELDS.forEach(function (f) {
+    for (var i = 0; i < header.length; i++) {
+      if (!used[i] && f[1].indexOf(header[i]) !== -1) { layout[f[0]] = i + 1; used[i] = true; return; }
+    }
+  });
+  HC_FIELDS.forEach(function (f) {
+    if (HC_REQUIRED.indexOf(f[0]) !== -1 && !layout[f[0]]) throw new Error('The HeadCount tab needs a column headed "' + f[1][0] + '" in row 1.');
+  });
+
+  // A column of app-generated ids that lost its header (e.g. after a column was inserted) is adopted as "Pharmacist ID".
+  if (!layout.ID && sh.getLastRow() >= 2) {
+    for (var c = 0; c < header.length; c++) {
+      if (used[c] || header[c] !== '') continue;
+      var vals = sh.getRange(2, c + 1, sh.getLastRow() - 1, 1).getDisplayValues();
+      var filled = 0, ids = 0;
+      vals.forEach(function (x) { if (x[0] !== '') { filled++; if (ID_RE.test(x[0])) ids++; } });
+      if (filled > 0 && ids / filled > 0.5) {
+        layout.ID = c + 1; used[c] = true;
+        sh.getRange(1, c + 1).setNumberFormat('@').setValue('Pharmacist ID');
+        break;
+      }
+    }
+  }
+
+  // Likewise adopt unlabelled columns holding the app's saved assignments / attendance (written by an earlier build
+  // into whatever column sat in that position), so nothing already recorded is lost.
+  if ((!layout.ASSIGN || !layout.ATT) && sh.getLastRow() >= 2) {
+    for (var c2 = 0; c2 < header.length; c2++) {
+      if (used[c2] || header[c2] !== '') continue;
+      var col = sh.getRange(2, c2 + 1, sh.getLastRow() - 1, 1).getDisplayValues();
+      var nonEmpty = 0, asg = 0, att = 0;
+      col.forEach(function (x) {
+        var s = String(x[0]);
+        if (s === '') return;
+        nonEmpty++;
+        if (/^\{"type":"(date|leave)"/.test(s)) asg++;
+        else if (/^\{/.test(s) && /"(status|day1|day2|note|markedAt)"/.test(s)) att++;
+      });
+      if (!nonEmpty) continue;
+      if (!layout.ASSIGN && asg / nonEmpty > 0.5) {
+        layout.ASSIGN = c2 + 1; used[c2] = true; sh.getRange(1, c2 + 1).setNumberFormat('@').setValue('Assignment (system)');
+      } else if (!layout.ATT && att / nonEmpty > 0.5) {
+        layout.ATT = c2 + 1; used[c2] = true; sh.getRange(1, c2 + 1).setNumberFormat('@').setValue('Attendance (system)');
+      }
+    }
+  }
+
+  var next = lastCol;
+  HC_FIELDS.forEach(function (f) {
+    if (layout[f[0]] || !f[2]) return;
+    next++;
+    layout[f[0]] = next;
+    if (sh.getMaxColumns() < next) sh.insertColumnsAfter(sh.getMaxColumns(), next - sh.getMaxColumns());
+    sh.getRange(1, next).setNumberFormat('@').setValue(f[2]);
+  });
+  layout.NCOLS = Math.max(next, lastCol);
+  HC = layout;
+  HC_LAYOUT_DONE = true;
+}
+
+/** Reads HeadCount into [{row, v:[display strings]}]. Gives every pharmacist an ID and repairs ids that ended up in the wrong column. */
 function readHC_() {
   var sh = sheet_(CONFIG.TABS.HEADCOUNT);
-  if (sh.getMaxColumns() < HC_NCOLS) sh.insertColumnsAfter(sh.getMaxColumns(), HC_NCOLS - sh.getMaxColumns());
+  initHCLayout_(sh);
   var last = sh.getLastRow();
   var rows = [];
   if (last >= 2) {
-    var vals = sh.getRange(2, 1, last - 1, HC_NCOLS).getDisplayValues();
-    var missing = false;
+    var vals = sh.getRange(2, 1, last - 1, HC.NCOLS).getDisplayValues();
+    var seen = {}, idFix = {}, noteFix = false;
     for (var i = 0; i < vals.length; i++) {
       var v = vals[i];
       if (!String(v[HC.NAME - 1]).trim()) continue;
-      if (!v[HC.ID - 1]) missing = true;
+      var id = String(v[HC.ID - 1]).trim();
+      var note = String(v[HC.NOTES - 1]).trim();
+      // an earlier build wrote ids into the Notes column when a column had been inserted: put them back
+      if (ID_RE.test(note)) {
+        if (!ID_RE.test(id)) id = note;
+        v[HC.NOTES - 1] = '';
+        noteFix = true;
+      }
+      if (!ID_RE.test(id) || seen[id]) {          // blank, overwritten by something else, or duplicated
+        id = newId_('ph', seen);
+      }
+      if (id !== String(v[HC.ID - 1]).trim()) idFix[i] = id;
+      seen[id] = true;
+      v[HC.ID - 1] = id;
       rows.push({ row: i + 2, v: v });
     }
-    if (missing) {
-      // fill blanks in one write (rows added by hand in the sheet)
+    if (Object.keys(idFix).length) {
       var idCol = sh.getRange(2, HC.ID, last - 1, 1);
-      var idVals = idCol.getValues();
-      var seen = {};
-      for (var k = 0; k < idVals.length; k++) if (idVals[k][0]) seen[idVals[k][0]] = true;
-      rows.forEach(function (r) {
-        if (!r.v[HC.ID - 1]) {
-          var id = newId_('ph', seen);
-          seen[id] = true;
-          idVals[r.row - 2][0] = id;
-          r.v[HC.ID - 1] = id;
-        }
-      });
+      var idVals = idCol.getDisplayValues();
+      Object.keys(idFix).forEach(function (k) { idVals[k][0] = idFix[k]; });
       idCol.setNumberFormat('@').setValues(idVals);
+    }
+    if (noteFix) {
+      var noteCol = sh.getRange(2, HC.NOTES, last - 1, 1);
+      var noteVals = noteCol.getDisplayValues();
+      for (var j = 0; j < noteVals.length; j++) if (ID_RE.test(String(noteVals[j][0]).trim())) noteVals[j][0] = '';
+      noteCol.setNumberFormat('@').setValues(noteVals);
     }
   }
   return { sh: sh, rows: rows };
@@ -321,12 +418,12 @@ function attStatus_(t, split) {
   return t.status || '';
 }
 
-/** Human-readable columns (E, L, M, O, P, Q) + system JSON (S, T) for one pharmacist row. */
+/** Human-readable columns (Date, Attendance Status, Attendance Adherence, Session, Arrival Time) + the system JSON columns for one pharmacist row. */
 function derivedCols_(a, t, days) {
   var cols = {};
   cols[HC.ASSIGN] = a ? JSON.stringify(a) : '';
   cols[HC.ATT] = t ? JSON.stringify(t) : '';
-  var date = '', session = '', status = '', punct = '', arrival = '';
+  var date = '', session = '', status = '', adherence = '', arrival = '';
   if (a && a.type === 'leave') {
     date = a.status; session = a.status; status = a.status;
   } else if (a && a.type === 'date') {
@@ -340,16 +437,19 @@ function derivedCols_(a, t, days) {
       status = pending ? '' : attStatus_(t, split);
       if (t) {
         if (split) {
-          var late = [], parts = [];
+          var attended = 0, lateDays = 0, parts = [];
           [1, 2].forEach(function (n) {
             var d = t['day' + n];
-            if (d && d.status === 'Attended' && d.punctuality === 'Late') { late.push('Day' + n); parts.push('Day' + n + ': ' + (d.time || '')); }
+            if (d && d.status === 'Attended') {
+              attended++;
+              if (d.punctuality === 'Late') { lateDays++; parts.push('Day' + n + ': ' + (d.time || '')); }
+            }
           });
-          if (status === 'Attended') punct = late.length ? 'Late' : 'On Time';
+          if (attended) adherence = lateDays ? 'Late' : 'On Time';
           arrival = parts.join(' / ');
         } else if (t.status === 'Attended') {
-          punct = t.punctuality || 'On Time';
-          arrival = punct === 'Late' ? (t.time || '') : '';
+          adherence = t.punctuality || 'On Time';
+          arrival = adherence === 'Late' ? (t.time || '') : '';
         }
       }
     }
@@ -357,9 +457,9 @@ function derivedCols_(a, t, days) {
   cols[HC.DATE] = date;
   cols[HC.SESSION] = session;
   cols[HC.STATUS] = status;
-  cols[HC.NOTES] = (t && t.note) || '';
-  cols[HC.PUNCT] = punct;
+  cols[HC.ADHERENCE] = adherence;   // "On Time" / "Late", set when the trainer marks the pharmacist Attended
   cols[HC.ARRIVAL] = arrival;
+  // The Notes column belongs to the people editing the sheet / the trainer's Notes box — it is never overwritten here.
   return cols;
 }
 
@@ -510,7 +610,8 @@ function masterOf_(v) {
   var m = {
     id: v[HC.ID - 1], district: v[HC.DISTRICT - 1], areaManager: v[HC.AREA - 1], city: v[HC.CITY - 1],
     supervisor: v[HC.SUPERVISOR - 1], pharmacyNo: v[HC.PHARMACY - 1], employeeId: v[HC.EMPID - 1], email: v[HC.EMAIL - 1],
-    displayName: v[HC.NAME - 1], phone: v[HC.PHONE - 1], scfhs: v[HC.SCFHS - 1]
+    displayName: v[HC.NAME - 1], phone: v[HC.PHONE - 1], scfhs: v[HC.SCFHS - 1],
+    note: v[HC.NOTES - 1]
   };
   if (v[HC.COMPLETION - 1] !== '') m.completionPct = v[HC.COMPLETION - 1];
   return m;
@@ -523,8 +624,8 @@ function getMaster_(ctx) {
     var m = masterOf_(r.v);
     if (ctx.role === 'supervisor') {
       if (m.supervisor !== ctx.who) return;
-      // supervisors do not need contact / licence details of existing pharmacists
-      m = { id: m.id, district: m.district, areaManager: m.areaManager, city: m.city, supervisor: m.supervisor, email: m.email, displayName: m.displayName, completionPct: m.completionPct };
+      // supervisors do not need contact / licence details of existing pharmacists — but they do see the sheet's Notes
+      m = { id: m.id, district: m.district, areaManager: m.areaManager, city: m.city, supervisor: m.supervisor, email: m.email, displayName: m.displayName, note: m.note, completionPct: m.completionPct };
       if (m.completionPct === undefined) delete m.completionPct;
     }
     recs.push({ id: m.id, v: m });
@@ -845,7 +946,7 @@ function patchKey_(ctx, req) {
 
 function newHCRow_(id, m) {
   var row = [];
-  for (var i = 0; i < HC_NCOLS; i++) row.push('');
+  for (var i = 0; i < HC.NCOLS; i++) row.push('');
   row[HC.ID - 1] = id;
   fillMasterCols_(row, m);
   return row;
@@ -862,6 +963,8 @@ function fillMasterCols_(row, m) {
   row[HC.PHONE - 1] = m.phone || '';
   row[HC.SCFHS - 1] = m.scfhs || '';
   row[HC.COMPLETION - 1] = (m.completionPct === undefined || m.completionPct === null) ? '' : String(m.completionPct);
+  // only touch Notes when the caller sent one, so approvals / roster edits never wipe a note typed in the sheet
+  if (m.note !== undefined) row[HC.NOTES - 1] = m.note === null ? '' : String(m.note);
 }
 
 function patchMaster_(records) {
@@ -877,7 +980,7 @@ function patchMaster_(records) {
       var tmp = ex.v.slice();
       fillMasterCols_(tmp, m);
       var cols = {};
-      [HC.DISTRICT, HC.AREA, HC.CITY, HC.SUPERVISOR, HC.PHARMACY, HC.EMPID, HC.EMAIL, HC.NAME, HC.PHONE, HC.SCFHS, HC.COMPLETION].forEach(function (c) {
+      [HC.DISTRICT, HC.AREA, HC.CITY, HC.SUPERVISOR, HC.PHARMACY, HC.EMPID, HC.EMAIL, HC.NAME, HC.PHONE, HC.SCFHS, HC.COMPLETION, HC.NOTES].forEach(function (c) {
         if (tmp[c - 1] !== ex.v[c - 1]) cols[c] = tmp[c - 1];
       });
       if (Object.keys(cols).length) updates.push({ row: ex.row, cols: cols });
@@ -887,7 +990,7 @@ function patchMaster_(records) {
   });
   writeCells_(hc.sh, updates);
   deleteRows_(hc.sh, deletes);
-  appendRows_(hc.sh, HC_NCOLS, appends);
+  appendRows_(hc.sh, HC.NCOLS, appends);
   CacheService.getScriptCache().remove('sup_names');   // roster changed → refresh the supervisor list
 }
 
@@ -1078,13 +1181,18 @@ function setupSheets() {
   var ss = ss_();
   var hcSheet = sheet_(CONFIG.TABS.HEADCOUNT);
 
-  // 1) HeadCount: add helper columns N–T, keep A–M exactly as they are
-  if (hcSheet.getMaxColumns() < HC_NCOLS) hcSheet.insertColumnsAfter(hcSheet.getMaxColumns(), HC_NCOLS - hcSheet.getMaxColumns());
-  hcSheet.getRange(1, HC.ID, 1, HC_EXTRA_HEADERS.length).setValues([HC_EXTRA_HEADERS]);
-  hcSheet.getRange(1, HC.NOTES).copyTo(hcSheet.getRange(1, HC.ID, 1, HC_EXTRA_HEADERS.length), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-  hcSheet.getRange(1, 1, hcSheet.getMaxRows(), HC_NCOLS).setNumberFormat('@');   // keep phones / IDs / times as typed
-  hcSheet.hideColumns(HC.ASSIGN, 2);                                             // system JSON columns
-  readHC_();                                                                     // fills any missing Pharmacist IDs
+  // 1) HeadCount: columns are found by header text. Any the app needs but the sheet lacks are added on the right;
+  //    your own columns (including ones you inserted) are left exactly where they are.
+  HC_LAYOUT_DONE = false;
+  initHCLayout_(hcSheet);
+  var headerFormat = hcSheet.getRange(1, HC.STATUS);
+  HC_FIELDS.forEach(function (f) {
+    if (f[2] && HC[f[0]]) headerFormat.copyTo(hcSheet.getRange(1, HC[f[0]]), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  });
+  hcSheet.getRange(1, 1, hcSheet.getMaxRows(), HC.NCOLS).setNumberFormat('@');   // keep phones / IDs / times as typed
+  hcSheet.hideColumns(HC.ASSIGN);                                                // system JSON columns
+  hcSheet.hideColumns(HC.ATT);
+  readHC_();                                                                     // gives every pharmacist an ID and repairs misplaced ones
 
   // 2) Extra tabs the app needs
   ensureTab_(ss, CONFIG.TABS.DAYS, ['ID', 'Date', 'City', 'Training Name', 'Type', 'Trainer(s)', 'Online', 'Format', 'Coordinator', 'Capacity', 'Deadline', 'Active', 'Venue', 'Visible To (supervisors)', 'Data (system)']);
@@ -1098,8 +1206,24 @@ function setupSheets() {
   var st = settings_();
   if (st.maxCapacity === undefined) patchSettings_({ maxCapacity: CONFIG.DEFAULT_CAPACITY });
 
+  // 4) Re-derive the visible columns (Date, Attendance Status, Attendance Adherence, Session, Arrival Time) from what is saved
+  recomputeAllRows_();
+
   Logger.log('Setup complete. Tabs: ' + ss.getSheets().map(function (s) { return s.getName(); }).join(', '));
   Logger.log('Next: add TRAINER_USER and TRAINER_PASS under Project Settings > Script Properties, then deploy as a Web App.');
+}
+
+/** Rewrites the readable columns of every row that has an assignment or attendance, from the saved (system) data. */
+function recomputeAllRows_() {
+  var hc = readHC_();
+  var days = daysMap_();
+  var updates = [];
+  hc.rows.forEach(function (r) {
+    var a = parseJson_(r.v[HC.ASSIGN - 1]), t = parseJson_(r.v[HC.ATT - 1]);
+    if (a || t) updates.push({ row: r.row, cols: derivedCols_(a, t, days) });
+  });
+  writeCells_(hc.sh, updates);
+  Logger.log('Refreshed ' + updates.length + ' pharmacist row(s).');
 }
 
 function ensureTab_(ss, name, headers) {
@@ -1118,6 +1242,8 @@ function checkSetup() {
   var missingTabs = [];
   Object.keys(CONFIG.TABS).forEach(function (k) { if (!ss_().getSheetByName(CONFIG.TABS[k])) missingTabs.push(CONFIG.TABS[k]); });
   var props = PropertiesService.getScriptProperties();
+  function letter(n) { var s = ''; while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+  Logger.log('HeadCount columns found: ' + HC_FIELDS.map(function (f) { return f[0] + '=' + letter(HC[f[0]]); }).join(', '));
   Logger.log('Pharmacist rows: ' + hc.rows.length);
   Logger.log('Supervisors: ' + supervisorNames_().length);
   Logger.log('Missing tabs: ' + (missingTabs.length ? missingTabs.join(', ') : 'none'));
