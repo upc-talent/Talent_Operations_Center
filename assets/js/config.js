@@ -7,7 +7,7 @@
    ════════════════════════════════════════════════════════════════════ */
 (function () {
   const cfg = {
-    // Google Apps Script web app that reads/writes the Training Operations Hub sheet
+    // Google Apps Script web app that reads/writes the app's Google Sheet
     API_URL: 'https://script.google.com/macros/s/AKfycbxbLEHU-uRJhHtd9yT2nqiFi6trJEyvNS8zxKNkALhY_deI5U9VlrKF5AJJUsbPvSyU/exec',
 
     // Existing LMS completion-report source (used by Trainer > Setup > "Sync Now")

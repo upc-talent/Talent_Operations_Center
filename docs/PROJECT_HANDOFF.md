@@ -1,4 +1,4 @@
-# Training Operations Hub — project handoff
+# Talent Operations Center — project handoff
 
 Everything a new developer (human or AI agent) needs to continue this project. Written at the end of the first build
 session. **No secrets are in this file** — the trainer login lives only in the Apps Script *Script Properties* (ask the owner).

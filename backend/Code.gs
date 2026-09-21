@@ -1,5 +1,5 @@
 /**
- * Training Operations Hub — Google Apps Script backend
+ * Talent Operations Center — Google Apps Script backend
  * ----------------------------------------------------
  * Deploy as a Web App:  Execute as = Me,  Who has access = Anyone.
  * The Google Sheet itself should stay RESTRICTED (not "anyone with the link") —
@@ -66,7 +66,7 @@ var MONTHS = ['January','February','March','April','May','June','July','August',
 
 function doGet() {
   // Health check only — no data is ever served over GET.
-  return json_({ ok: true, service: 'Training Operations Hub API' });
+  return json_({ ok: true, service: 'Talent Operations Center API' });
 }
 
 function doPost(e) {

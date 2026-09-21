@@ -1,4 +1,4 @@
-# Training Operations Hub
+# Talent Operations Center
 
 Coordinates training schedules between supervisors and the Talent Management training team.
 Static front-end (GitHub Pages) + Google Apps Script backend + a Google Sheet as the database.
@@ -29,7 +29,7 @@ dev/                Local test server + in-browser fake sheet (synthetic data on
    `TRAINER_USER` and `TRAINER_PASS` (the trainer-page login). They are stored on Google's side only — never in this repo.
 5. **Deploy → Manage deployments →** (edit the existing one) **→ Version: New version → Deploy.**
    Settings: *Execute as: Me · Who has access: Anyone.* The URL stays the same. (A brand-new deployment gives a new URL — put it in `assets/js/config.js`.)
-6. Sanity check: open the web-app URL in a browser — you should see `{"ok":true,"service":"Training Operations Hub API"}`.
+6. Sanity check: open the web-app URL in a browser — you should see `{"ok":true,"service":"Talent Operations Center API"}`.
    Optionally run **`checkSetup`** in the editor and read *Execution log*.
 
 ## 2. Sheet structure

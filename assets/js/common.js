@@ -197,7 +197,7 @@ async function loadLogo(){
   // Trainer > Setup is stored in the sheet and, if present, replaces it; "Remove Logo" goes back to the file.
   const logo = await getShared(K_LOGO, null);
   const box = document.getElementById('logoBox');
-  box.innerHTML = logo ? `<img src="${logo}" alt="Logo">` : '<img src="assets/img/logo.png" alt="Training Operations Hub logo">';
+  box.innerHTML = logo ? `<img src="${logo}" alt="Logo">` : '<img src="assets/img/logo.png" alt="Talent Operations Center logo">';
 }
 
 /* ═══════════════════════════════ CAPACITY HELPERS ═══════════════════════════════ */
