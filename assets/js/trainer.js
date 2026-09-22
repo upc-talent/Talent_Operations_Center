@@ -101,13 +101,22 @@ function scrollToCalMonth(i){
 
 /* Sequential per-city instance numbers for calendar labels, e.g. ABH 1, ABH 2, ABH 3 — in date order */
 function computeCityInstanceNumbers(){
-  const byCity = {};
-  const nonOnline = trainingConfig.dates.filter(d=>!d.isOnline).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const byGroup = {};
   const numbers = {};
+  const nonOnline = trainingConfig.dates.filter(d=>!d.isOnline).slice().sort((a,b)=>a.date.localeCompare(b.date));
   nonOnline.forEach(d=>{
     const code = cityColorFor(d).code;
-    byCity[code] = (byCity[code]||0) + 1;
-    numbers[d.id] = byCity[code];
+    byGroup[code] = (byGroup[code]||0) + 1;
+    numbers[d.id] = byGroup[code];
+  });
+  // Online days with cities tagged get their own counter, grouped by the exact set of cities tagged
+  // (so "North" and "North + Taif" count separately). A split online training shares one id across both
+  // of its calendar cells, so both halves automatically get the same number here — nothing else needed.
+  const onlineGrouped = trainingConfig.dates.filter(d=>d.isOnline && onlineGroupKey(d)).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  onlineGrouped.forEach(d=>{
+    const key = onlineGroupKey(d);
+    byGroup[key] = (byGroup[key]||0) + 1;
+    numbers[d.id] = byGroup[key];
   });
   return numbers;
 }
@@ -186,7 +195,9 @@ function renderCalendarMonth(year, month, sectionIdx, instanceNumbers){
       const count = dayCount(d.id);
       const num = instanceNumbers[d.id];
       const isActive = d.active!==false;
-      const label = d.isOnline ? (d.trainingName || c.code) : ((num ? `${c.code} ${num}` : c.code));
+      const label = d.isOnline
+        ? (onlineCitiesLabel(d) ? `Online ${onlineCitiesLabel(d)}${num?' '+num:''}` : (d.trainingName || c.code))
+        : ((num ? `${c.code} ${num}` : c.code));
       const trainerLine = (d.trainerNames && d.trainerNames.length) ? `<br><span style="font-weight:400;">${esc(d.trainerNames.join(', '))}</span>` : '';
       const dayTag = isContinuation ? '<br><span style="font-weight:400;font-size:8.5px;opacity:.8;">· Day 2</span>' : '';
       const dragAttrs = isContinuation ? '' : `draggable="true" ondragstart="event.stopPropagation(); dragDayId='${d.id}'; event.dataTransfer.effectAllowed='move'; this.classList.add('cal-event-dragging');" ondragend="dragDayId=null; this.classList.remove('cal-event-dragging'); document.querySelectorAll('.cal-cell-dragover').forEach(el=>el.classList.remove('cal-cell-dragover'));"`;
@@ -1049,19 +1060,59 @@ function updateDaysSortIndicators(){
   });
 }
 
+/* Multi-select for bulk actions (hide/unhide/assign/delete) on the Training Days table. */
+let selectedDayIds = new Set();
+function updateDaysBulkBar(){
+  const bar = document.getElementById('daysBulkBar');
+  const countEl = document.getElementById('daysBulkCount');
+  const selectAllCb = document.getElementById('daysSelectAllCb');
+  if(!bar) return;
+  const n = selectedDayIds.size;
+  bar.classList.toggle('hidden', n===0);
+  if(countEl) countEl.textContent = n===1 ? '1 day selected' : `${n} days selected`;
+  if(selectAllCb){
+    const visibleIds = [...document.querySelectorAll('.day-select-cb')].map(cb=>cb.dataset.day);
+    const visibleSelected = visibleIds.filter(id=>selectedDayIds.has(id));
+    selectAllCb.checked = visibleIds.length>0 && visibleSelected.length===visibleIds.length;
+    selectAllCb.indeterminate = visibleSelected.length>0 && visibleSelected.length<visibleIds.length;
+  }
+}
+function toggleDaySelection(dayId, checked){
+  if(checked) selectedDayIds.add(dayId); else selectedDayIds.delete(dayId);
+  updateDaysBulkBar();
+}
+function toggleAllDaySelection(checked){
+  // only the rows currently visible under the active filters/sort — not every day in the sheet
+  document.querySelectorAll('.day-select-cb').forEach(cb=>{
+    const id = cb.dataset.day;
+    cb.checked = checked;
+    if(checked) selectedDayIds.add(id); else selectedDayIds.delete(id);
+  });
+  updateDaysBulkBar();
+}
+function clearDaySelection(){
+  selectedDayIds.clear();
+  renderDaysTable();
+}
 function renderDaysTable(){
   const tb = document.getElementById('daysTableBody');
   if(!trainingConfig.dates.length){
-    tb.innerHTML = `<tr><td colspan="7" class="empty-msg"><div class="ic">📅</div>No training days configured yet</td></tr>`;
+    selectedDayIds.clear();
+    tb.innerHTML = `<tr><td colspan="8" class="empty-msg"><div class="ic">📅</div>No training days configured yet</td></tr>`;
     updateDaysSortIndicators();
+    updateDaysBulkBar();
     return;
   }
   const filteredDates = trainingConfig.dates.filter(dayMatchesFilters);
   if(!filteredDates.length){
-    tb.innerHTML = `<tr><td colspan="7" class="empty-msg">No training days match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No training days match the current filters</td></tr>`;
     updateDaysSortIndicators();
+    updateDaysBulkBar();
     return;
   }
+  // drop selected ids that no longer exist (deleted elsewhere) so the bar's count stays accurate
+  const liveIds = new Set(trainingConfig.dates.map(d=>d.id));
+  selectedDayIds.forEach(id=>{ if(!liveIds.has(id)) selectedDayIds.delete(id); });
   let sortedDates = [...filteredDates];
   sortedDates.sort((a,b)=>{
     const va = getDaysSortValue(a, daysSortState.key), vb = getDaysSortValue(b, daysSortState.key);
@@ -1077,6 +1128,7 @@ function renderDaysTable(){
     const typeText = d.type || 'Pharmacist Training';
     const onlineText = d.isOnline ? `<br><span class="badge badge-date">Online — ${d.onlineFormat==='fullday'?'1 day':'split, 2 days'}${d.coordinator?' — '+esc(d.coordinator):''}</span>${d.zoomLink?` <a href="${esc(d.zoomLink)}" target="_blank" style="font-size:10.5px;">Zoom link</a>`:''}` : '';
     return `<tr style="${isActive?'':'opacity:.55;'}">
+      <td><input type="checkbox" class="day-select-cb" data-day="${d.id}" ${selectedDayIds.has(d.id)?'checked':''} onchange="toggleDaySelection('${d.id}', this.checked)"></td>
       <td>${i+1}</td>
       <td>${dayDateLabel(d)} ${isActive?'':'<span class="badge badge-empty">Hidden</span>'}</td>
       <td><span class="city-badge">${esc(d.city)}</span>${d.trainingName?'<br><span class="small-note">'+esc(d.trainingName)+'</span>':''}<br><span class="badge badge-leave">${esc(typeText)}</span>${onlineText}</td>
@@ -1093,6 +1145,7 @@ function renderDaysTable(){
     </tr>`;
   }).join('');
   updateDaysSortIndicators();
+  updateDaysBulkBar();
 }
 
 function openEditDayModal(dayId){
@@ -1145,6 +1198,14 @@ function openEditDayModal(dayId){
         <p class="small-note" id="editDaySplitPreview" style="margin-top:6px;color:var(--navy);font-weight:600;"></p>
       </div>
       <div class="field"><label class="field-label">Coordinator (optional)</label><select id="editDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
+      <div class="field">
+        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to.)</label>
+        <div class="row" style="margin-bottom:6px;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-online-city-cb', true)">Select All</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-online-city-cb', false)">Clear All</button>
+        </div>
+        <div class="checkbox-list" style="max-height:140px;">${onlineCityCheckboxesHtml('edit-day-online-city-cb', day.onlineCities)}</div>
+      </div>
       <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="editDayZoomLink" value="${esc(day.zoomLink||'')}" placeholder="https://zoom.us/j/..."></div>
       <div class="field">
         <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
@@ -1236,6 +1297,7 @@ async function confirmEditDay(dayId){
   const isOnline = document.getElementById('editDayIsOnline').checked;
   const onlineFormat = isOnline ? document.getElementById('editDayOnlineFormat').value : '';
   const coordinator = isOnline ? document.getElementById('editDayCoordinator').value : '';
+  const onlineCities = isOnline ? [...document.querySelectorAll('.edit-day-online-city-cb:checked')].map(cb=>cb.value) : [];
   const zoomLink = isOnline ? document.getElementById('editDayZoomLink').value.trim() : '';
   const venue = document.getElementById('editDayVenue').value.trim();
   const supervisorQuotas = {};
@@ -1262,7 +1324,7 @@ async function confirmEditDay(dayId){
   if(day){
     Object.assign(day, {
       date, city, trainingName, type, capacity: (capVal && capVal>0) ? capVal : null, deadline, active,
-      trainerNames, isOnline, onlineFormat, coordinator, zoomLink, venue, supervisorQuotas, visibleSupervisors
+      trainerNames, isOnline, onlineFormat, coordinator, onlineCities, zoomLink, venue, supervisorQuotas, visibleSupervisors
     });
   }
   const ok = await setConfigWithHistory(trainingConfig);
@@ -1369,6 +1431,14 @@ function openAddDayModal(presetDate){
         <p class="small-note" id="newDaySplitPreview" style="margin-top:6px;color:var(--navy);font-weight:600;"></p>
       </div>
       <div class="field"><label class="field-label">Coordinator (optional)</label><select id="newDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
+      <div class="field">
+        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to.)</label>
+        <div class="row" style="margin-bottom:6px;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('new-day-online-city-cb', true)">Select All</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('new-day-online-city-cb', false)">Clear All</button>
+        </div>
+        <div class="checkbox-list" style="max-height:140px;">${onlineCityCheckboxesHtml('new-day-online-city-cb')}</div>
+      </div>
       <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="newDayZoomLink" placeholder="https://zoom.us/j/..."></div>
       <div class="field">
         <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
@@ -1435,6 +1505,7 @@ async function confirmAddDay(){
   const isOnline = document.getElementById('newDayIsOnline').checked;
   const onlineFormat = isOnline ? document.getElementById('newDayOnlineFormat').value : '';
   const coordinator = isOnline ? document.getElementById('newDayCoordinator').value : '';
+  const onlineCities = isOnline ? [...document.querySelectorAll('.new-day-online-city-cb:checked')].map(cb=>cb.value) : [];
   const zoomLink = isOnline ? document.getElementById('newDayZoomLink').value.trim() : '';
   const venue = document.getElementById('newDayVenue').value.trim();
   const supervisorQuotas = {};
@@ -1465,7 +1536,7 @@ async function confirmAddDay(){
   uniqueDates.forEach(date=>{
     const id = uid('day');
     newDayIds.push(id);
-    trainingConfig.dates.push({id, date, city, trainingName, type, deadline, trainerNames, isOnline, onlineFormat, coordinator, zoomLink, venue, supervisorQuotas, visibleSupervisors, active:true});
+    trainingConfig.dates.push({id, date, city, trainingName, type, deadline, trainerNames, isOnline, onlineFormat, coordinator, onlineCities, zoomLink, venue, supervisorQuotas, visibleSupervisors, active:true});
   });
   const ok = await setConfigWithHistory(trainingConfig);
   closeModal();
@@ -1613,6 +1684,146 @@ async function hideAllDays(){
   const ok = await setConfigWithHistory(trainingConfig);
   if(ok){
     toast('All training days hidden from supervisors','ok');
+    buildDaysFilterBar();
+    renderDaysTable();
+    buildTrainerFilterBar();
+    renderCalendar();
+  }
+}
+
+/* ═══════════════ Bulk actions on the selected Training Days (same effect as the single-day actions above,
+   applied to every id in selectedDayIds in one save instead of one request per day) ═══════════════ */
+async function hideSelectedDays(){
+  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id) && d.active!==false);
+  if(!targets.length){ toast('No visible days in your selection','info'); return; }
+  const go = await confirmDialog(`Hide ${targets.length} selected training day(s) from supervisors? Existing assignments are not affected.`);
+  if(!go) return;
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  trainingConfig.dates.forEach(d=>{ if(selectedDayIds.has(d.id)) d.active = false; });
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){
+    toast(`${targets.length} training day(s) hidden`,'ok');
+    selectedDayIds.clear();
+    buildDaysFilterBar();
+    renderDaysTable();
+    buildTrainerFilterBar();
+    renderCalendar();
+  }
+}
+async function unhideSelectedDays(){
+  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id) && d.active===false);
+  if(!targets.length){ toast('No hidden days in your selection','info'); return; }
+  const go = await confirmDialog(`Unhide ${targets.length} selected training day(s)?`);
+  if(!go) return;
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  trainingConfig.dates.forEach(d=>{ if(selectedDayIds.has(d.id)) d.active = true; });
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){
+    toast(`${targets.length} training day(s) unhidden`,'ok');
+    selectedDayIds.clear();
+    buildDaysFilterBar();
+    renderDaysTable();
+    buildTrainerFilterBar();
+    renderCalendar();
+  }
+}
+async function deleteSelectedDays(){
+  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id));
+  if(!targets.length) return;
+  const affected = targets.reduce((sum,d)=>sum+dayCount(d.id), 0);
+  const msg = affected>0
+    ? `${affected} pharmacist assignment(s) across these ${targets.length} day(s) will move back to Not Assigned. Delete ${targets.length} selected training day(s)?`
+    : `Delete ${targets.length} selected training day(s)?`;
+  const go = await confirmDialog(msg);
+  if(!go) return;
+  const ids = new Set(selectedDayIds);
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  trainingConfig.dates = trainingConfig.dates.filter(d=>!ids.has(d.id));
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){
+    ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+    let cleaned = false;
+    Object.keys(ops.assignments).forEach(pid=>{
+      if(ops.assignments[pid].type==='date' && ids.has(ops.assignments[pid].dateId)){
+        delete ops.assignments[pid];
+        delete ops.attendance[pid];
+        cleaned = true;
+      }
+    });
+    if(cleaned) await setShared(K_OPS, ops);
+    toast(`${ids.size} training day(s) deleted`,'ok');
+    selectedDayIds.clear();
+    buildDaysFilterBar();
+    renderDaysTable();
+    renderCalendar();
+    buildTrainerFilterBar();
+  }
+}
+// Bulk "Assign…": sets Trainer(s), Visible-to supervisors and/or Coordinator identically across every
+// selected day — each field only touches the days if its own checkbox is ticked, so (for example) picking
+// trainers doesn't accidentally clear Visible-to on days you only meant to reassign a trainer for.
+function openBulkAssignModal(){
+  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id));
+  if(!targets.length) return;
+  const supNames = sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
+  const supCheckboxes = supNames.map(n=>`<label><input type="checkbox" class="bulk-sup-cb" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found.</span>';
+  const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="bulk-trainer-cb" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet.</span>';
+  const coordinatorOptions = trainingConfig.coordinatorNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  showModal(`
+    <h3>Assign — ${targets.length} selected day(s)</h3>
+    <p class="small-note">Only the fields you tick below are changed; everything else on these days is left as it is. This replaces the existing value on each selected day (it doesn't add to it).</p>
+    <div class="field">
+      <label class="toggle-label"><input type="checkbox" id="bulkApplyTrainers" onchange="document.getElementById('bulkTrainerBlock').classList.toggle('hidden', !this.checked)"> Set Trainer(s)</label>
+      <div id="bulkTrainerBlock" class="hidden" style="margin-top:8px;">
+        <div class="row" style="margin-bottom:6px;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-trainer-cb', true)">Select All</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-trainer-cb', false)">Clear All</button>
+        </div>
+        <div class="checkbox-list" style="max-height:120px;">${trainerCheckboxes}</div>
+      </div>
+    </div>
+    <div class="field">
+      <label class="toggle-label"><input type="checkbox" id="bulkApplyCoordinator" onchange="document.getElementById('bulkCoordinatorBlock').classList.toggle('hidden', !this.checked)"> Set Coordinator</label>
+      <div id="bulkCoordinatorBlock" class="hidden" style="margin-top:8px;">
+        <select id="bulkCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select>
+      </div>
+    </div>
+    <div class="field">
+      <label class="toggle-label"><input type="checkbox" id="bulkApplyVisible" onchange="document.getElementById('bulkVisibleBlock').classList.toggle('hidden', !this.checked)"> Set Visible to</label>
+      <div id="bulkVisibleBlock" class="hidden" style="margin-top:8px;">
+        <div class="row" style="margin-bottom:6px;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-sup-cb', true)">Select All</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-sup-cb', false)">Clear All</button>
+        </div>
+        <div class="checkbox-list">${supCheckboxes}</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="confirmBulkAssign()">Apply to ${targets.length} day(s)</button>
+    </div>`);
+}
+async function confirmBulkAssign(){
+  const applyTrainers = document.getElementById('bulkApplyTrainers').checked;
+  const applyCoordinator = document.getElementById('bulkApplyCoordinator').checked;
+  const applyVisible = document.getElementById('bulkApplyVisible').checked;
+  if(!applyTrainers && !applyCoordinator && !applyVisible){ toast('Tick at least one field to set','err'); return; }
+  const trainerNames = [...document.querySelectorAll('.bulk-trainer-cb:checked')].map(cb=>cb.value);
+  const coordinator = document.getElementById('bulkCoordinator').value;
+  const visibleSupervisors = [...document.querySelectorAll('.bulk-sup-cb:checked')].map(cb=>cb.value);
+  const ids = new Set(selectedDayIds);
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  trainingConfig.dates.forEach(d=>{
+    if(!ids.has(d.id)) return;
+    if(applyTrainers) d.trainerNames = trainerNames;
+    if(applyCoordinator) d.coordinator = coordinator;
+    if(applyVisible) d.visibleSupervisors = visibleSupervisors;
+  });
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){
+    toast(`Applied to ${ids.size} day(s)`,'ok');
+    closeModal();
+    selectedDayIds.clear();
     buildDaysFilterBar();
     renderDaysTable();
     buildTrainerFilterBar();

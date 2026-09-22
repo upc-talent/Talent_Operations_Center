@@ -181,8 +181,17 @@
           </div>
         </div>
         <div class="filter-bar" id="daysFilterBar" style="margin-bottom:14px;"></div>
+        <div class="row hidden" id="daysBulkBar" style="margin-bottom:10px;align-items:center;gap:8px;">
+          <span class="small-note" id="daysBulkCount" style="font-weight:600;"></span>
+          <button class="btn btn-outline btn-sm" onclick="hideSelectedDays()">🙈 Hide</button>
+          <button class="btn btn-outline btn-sm" onclick="unhideSelectedDays()">👁 Unhide</button>
+          <button class="btn btn-navy btn-sm" onclick="openBulkAssignModal()">👤 Assign…</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteSelectedDays()">🗑 Delete</button>
+          <button class="btn btn-outline btn-sm" onclick="clearDaySelection()">Clear selection</button>
+        </div>
         <div class="table-wrap"><table>
           <thead><tr>
+            <th class="no-sort"><input type="checkbox" id="daysSelectAllCb" onchange="toggleAllDaySelection(this.checked)" title="Select all"></th>
             <th class="no-sort">#</th>
             <th onclick="toggleDaysSort('date')">Date <span class="sort-ind" id="sort-days-date"></span></th>
             <th onclick="toggleDaysSort('city')">City / Type <span class="sort-ind" id="sort-days-city"></span></th>

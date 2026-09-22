@@ -42,7 +42,7 @@
         <h2 id="supTitle">Pharmacists —</h2>
       </div>
 
-      <div class="track-tabs-wrap">
+      <div class="track-tabs-wrap" id="supTrackTabsWrap">
         <button class="track-tab active" id="supTrackTab-offline" onclick="switchSupTrack('offline')">🏢 Offline Pharmacists</button>
         <button class="track-tab" id="supTrackTab-online" onclick="switchSupTrack('online')">🌐 Online Pharmacists</button>
       </div>
@@ -73,8 +73,15 @@
             <button class="btn btn-navy btn-sm" onclick="exportTablePDF('supTableCard','my-pharmacists')">🖨 PDF</button>
           </div>
         </div>
+        <div class="row hidden" id="supBulkBar" style="margin-bottom:10px;align-items:center;gap:8px;">
+          <span class="small-note" id="supBulkCount" style="font-weight:600;"></span>
+          <select id="supBulkAssignSelect" style="max-width:260px;"></select>
+          <button class="btn btn-navy btn-sm" onclick="bulkAssignSelected()">Assign selected</button>
+          <button class="btn btn-outline btn-sm" onclick="clearSupSelection()">Clear selection</button>
+        </div>
         <div class="table-wrap" id="supTableWrap"><table>
           <thead><tr>
+            <th class="no-sort"><input type="checkbox" id="supSelectAllCb" onchange="toggleAllSupSelection(this.checked)" title="Select all"></th>
             <th onclick="toggleSort('sup','displayName')">Pharmacist Name <span class="sort-ind" id="sort-sup-displayName"></span></th>
             <th onclick="toggleSort('sup','email')">Email <span class="sort-ind" id="sort-sup-email"></span></th>
             <th onclick="toggleSort('sup','supervisor')">Supervisor <span class="sort-ind" id="sort-sup-supervisor"></span></th>

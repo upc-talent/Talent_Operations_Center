@@ -123,6 +123,21 @@ const FALLBACK_PALETTE = [
 ];
 const ONLINE_COLOR = {code:'MIX', ...COLOR_PALETTE.grey};
 
+/* Online days can be tagged with one or more cities (for Calendar-tab grouping/labeling only, e.g.
+   "Online North 1" — colour always stays grey; this never affects capacity/visibility, which still uses
+   visibleSupervisors. Untagged online days (the old default) fall back to the plain "Mix" label as before. */
+function onlineCitiesLabel(d){
+  return (d.onlineCities && d.onlineCities.length) ? d.onlineCities.join(' + ') : '';
+}
+function onlineGroupKey(d){
+  return (d.onlineCities && d.onlineCities.length) ? 'ONLINE:'+[...d.onlineCities].sort().join('+') : '';
+}
+function onlineCityCheckboxesHtml(className, selectedCities){
+  const cities = [...new Set(masterData.map(p=>p.city).filter(Boolean))].sort();
+  selectedCities = selectedCities || [];
+  return cities.map(c=>`<label><input type="checkbox" class="${className}" value="${esc(c)}" ${selectedCities.includes(c)?'checked':''}> ${esc(c)}</label>`).join('') || '<span class="small-note">No cities found in the master data yet.</span>';
+}
+
 function cityColorFor(day){
   if(day.isOnline) return ONLINE_COLOR;
   const code = cityCodeFor(day.city || '');
@@ -223,6 +238,15 @@ function initSyncStatusIndicator(){
     if(txt) txt.textContent = SYNC_STATUS_LABELS[status] || '';
   });
 }
+// Safety net alongside the per-row "Saving…" state: warns before leaving/closing the tab while a save
+// (any save, on either page) is still in flight, so a save doesn't get silently abandoned mid-request.
+(function(){
+  let lastApiStatus = 'idle';
+  if(typeof onApiStatusChange === 'function') onApiStatusChange(s=>{ lastApiStatus = s; });
+  window.addEventListener('beforeunload', function(e){
+    if(lastApiStatus==='saving'){ e.preventDefault(); e.returnValue = ''; }
+  });
+})();
 
 /* ═══════════════════════════════ CAPACITY HELPERS ═══════════════════════════════ */
 function dayCount(dateId, excludingPid){
