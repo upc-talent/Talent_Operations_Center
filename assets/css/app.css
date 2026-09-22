@@ -26,7 +26,11 @@ input,select,textarea{font-family:inherit;}
 .role-indicator button:hover{background:rgba(255,255,255,.15);}
 
 /* ── sync status pill (top bar): shows while the page is retrieving/sending data ────────────────────────── */
-.sync-status{display:none;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:5px 11px;border-radius:20px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);color:rgba(255,255,255,.9);white-space:nowrap;}
+/* Floating status pill: pinned to the viewport (bottom-left) so it stays visible while the page scrolls, instead
+   of scrolling away inside the top bar. Only shown while a request is in flight (.show). Bottom-right/centre are
+   taken by the trainer FAB and the toasts, so it sits bottom-left, with a solid navy background so it reads over
+   the page body (the old translucent-white only worked on the navy header). */
+.sync-status{position:fixed;bottom:18px;left:18px;z-index:90;display:none;align-items:center;gap:7px;font-size:11.5px;font-weight:700;padding:7px 13px;border-radius:20px;background:var(--navy);border:1px solid rgba(255,255,255,.18);color:#fff;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.22);}
 .sync-status.show{display:inline-flex;}
 .sync-status .dot{width:7px;height:7px;border-radius:50%;background:var(--blue);flex-shrink:0;animation:syncPulse 1s ease-in-out infinite;}
 .sync-status.saving .dot{background:#ffc107;}
