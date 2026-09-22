@@ -172,6 +172,16 @@
       </div>
 
       <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>Online Cities / Regions</h2></div>
+        <p class="small-note">Custom labels for grouping online sessions (e.g. "North", "South") — add them once here, then just tick them off when adding or editing an online training day. Feeds the Calendar tab's numbering, e.g. "Online North 1".</p>
+        <div class="row">
+          <input type="text" id="newOnlineCity" placeholder="e.g. North">
+          <button class="btn btn-navy btn-sm" onclick="addOnlineCity()">+ Add</button>
+        </div>
+        <div class="row" style="margin-top:10px" id="onlineCitiesList"></div>
+      </div>
+
+      <div class="card">
         <div class="section-head" style="margin-top:0">
           <h2>Training Days</h2>
           <div class="row">

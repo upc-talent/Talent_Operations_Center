@@ -85,11 +85,12 @@ async function bulkAssignSelected(){
   const countEl = document.getElementById('supBulkCount');
   for(const pid of pids){
     if(countEl) countEl.textContent = `Assigning ${done+1} of ${pids.length}…`;
-    await onAssignChange(pid, value);
+    await onAssignChange(pid, value, {quiet:true});
     done++;
   }
   selectedSupPids.clear();
   toast(`Assigned ${done} pharmacist(s)`,'ok');
+  renderSupervisorChips();
   renderSupervisorTable();
 }
 function currentSupervisorScope(){
@@ -300,7 +301,7 @@ function renderSupervisorTable(){
   let rows = own.map(p=>{
     i++;
     return `<tr>
-      <td><input type="checkbox" class="sup-select-cb" data-pid="${p.id}" ${selectedSupPids.has(p.id)?'checked':''} onchange="toggleSupSelection('${p.id}', this.checked)"></td>
+      <td class="sup-select-col"><input type="checkbox" class="sup-select-cb" data-pid="${p.id}" ${selectedSupPids.has(p.id)?'checked':''} onchange="toggleSupSelection('${p.id}', this.checked)"></td>
       ${nameCell(i, p)}
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
@@ -314,7 +315,7 @@ function renderSupervisorTable(){
   rows += pending.map(p=>{
     i++;
     return `<tr class="pending-row">
-      <td></td>
+      <td class="sup-select-col"></td>
       ${nameCell(i, p)}
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
@@ -401,7 +402,11 @@ function setAssignRowSaving(pid, saving){
     tag.remove();
   }
 }
-async function onAssignChange(pid, value){
+// opts.quiet: used by bulkAssignSelected to skip the per-person toast and full-table re-render (each row still
+// shows its own "Saving…" state) — the caller does one toast and one re-render after the whole batch instead of
+// after every person, which matters once you're assigning a dozen+ people in one go.
+async function onAssignChange(pid, value, opts){
+  const quiet = !!(opts && opts.quiet);
   if(!value){
     delete ops.assignments[pid];
     delete ops.attendance[pid];
@@ -411,7 +416,7 @@ async function onAssignChange(pid, value){
       if(isDayFull(rest, pid)){
         const capD = dayById(rest);
         toast(`This day is at full capacity (${dayCapacity(capD)}). Please choose another day.`, 'err');
-        renderSupervisorTable();
+        if(!quiet) renderSupervisorTable();
         return;
       }
       const day = dayById(rest);
@@ -428,7 +433,7 @@ async function onAssignChange(pid, value){
         setAssignRowSaving(pid, true);
         const ok2 = await setShared(K_OPS, ops);
         setAssignRowSaving(pid, false);
-        if(ok2){
+        if(ok2 && !quiet){
           toast(`You've reached your quota for this day — this assignment needs the trainer's approval first.`, 'info');
           renderSupervisorChips();
           renderSupervisorTable();
@@ -443,7 +448,7 @@ async function onAssignChange(pid, value){
   setAssignRowSaving(pid, true);
   const ok = await setShared(K_OPS, ops);
   setAssignRowSaving(pid, false);
-  if(ok){
+  if(ok && !quiet){
     toast('Saved','ok');
     renderSupervisorChips();
     renderSupervisorTable();

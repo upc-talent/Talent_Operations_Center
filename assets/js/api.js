@@ -181,7 +181,7 @@
     c.settings = clone(data.settings || {});
     if (key === 'training-config') {
       // a brand-new sheet has none of these yet — give every caller the shape the app code expects
-      ['trainerNames', 'coordinatorNames', 'trainingNames'].forEach(k => { if (!Array.isArray(c.settings[k])) c.settings[k] = []; });
+      ['trainerNames', 'coordinatorNames', 'trainingNames', 'onlineCities'].forEach(k => { if (!Array.isArray(c.settings[k])) c.settings[k] = []; });
       if (!c.settings.maxCapacity) c.settings.maxCapacity = 30;
     }
     return c;

@@ -32,7 +32,7 @@ async function undoCalendarChange(){
   trainingConfig = prev;
   const ok = await setShared(K_CONFIG, trainingConfig);
   updateUndoRedoButtons();
-  if(ok){ toast('Undone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); buildTrainerFilterBar(); }
+  if(ok){ toast('Undone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); renderOnlineCitiesList(); buildTrainerFilterBar(); }
 }
 async function redoCalendarChange(){
   if(!configRedoStack.length) return;
@@ -42,7 +42,7 @@ async function redoCalendarChange(){
   trainingConfig = next;
   const ok = await setShared(K_CONFIG, trainingConfig);
   updateUndoRedoButtons();
-  if(ok){ toast('Redone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); buildTrainerFilterBar(); }
+  if(ok){ toast('Redone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); renderOnlineCitiesList(); buildTrainerFilterBar(); }
 }
 
 async function handleCalendarDrop(e, iso){
@@ -595,7 +595,7 @@ function switchTrainerTab(id){
   document.querySelectorAll('#screen-trainer .tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===id));
   document.querySelectorAll('.trainer-tab').forEach(t=>t.classList.toggle('hidden', t.id!==id));
   if(id==='t-setup') renderSetupTab();
-  if(id==='t-approvals') renderApprovalsTab();
+  if(id==='t-approvals') renderApprovalsTab(true); // tab open: reuse recent data instead of a full reload
   if(id==='t-analytics') refreshAnalytics(true); // tab open: reuse recent data instead of a full reload
   if(id==='t-calendar') renderCalendar(true);
 }
@@ -628,6 +628,7 @@ function renderSetupTab(){
   renderTrainerNamesList();
   renderCoordinatorNamesList();
   renderTrainingNamesList();
+  renderOnlineCitiesList();
   buildDaysFilterBar();
   renderDaysTable();
   loadCompletionCourseList();
@@ -1041,6 +1042,56 @@ async function removeTrainingName(name){
   if(ok){ toast('Removed','ok'); renderTrainingNamesList(); }
 }
 
+function renderOnlineCitiesList(){
+  const box = document.getElementById('onlineCitiesList');
+  if(!box) return;
+  if(!trainingConfig.onlineCities.length){
+    box.innerHTML = `<span class="small-note">No online cities/regions added yet.</span>`;
+    return;
+  }
+  box.innerHTML = trainingConfig.onlineCities.map(n=>`
+    <span class="badge" style="background:${ONLINE_COLOR.bg};color:${ONLINE_COLOR.text};border:1px solid ${ONLINE_COLOR.border};display:inline-flex;align-items:center;gap:6px;">${esc(n)}
+      <button style="background:none;border:none;color:var(--navy);font-weight:800;padding:0 2px;" onclick="renameOnlineCity('${esc(n)}')">✏️</button>
+      <button style="background:none;border:none;color:var(--danger);font-weight:800;padding:0 2px;" onclick="removeOnlineCity('${esc(n)}')">✕</button>
+    </span>`).join('');
+}
+async function renameOnlineCity(oldName){
+  const newName = await promptText('Rename Online City/Region', 'Name', oldName);
+  if(!newName || newName===oldName) return;
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  if(trainingConfig.onlineCities.includes(newName)){ toast('That name already exists','err'); return; }
+  trainingConfig.onlineCities = trainingConfig.onlineCities.map(n=>n===oldName?newName:n);
+  // keep every online day that had the old name tagged in sync, so the Calendar numbering doesn't split in two
+  trainingConfig.dates.forEach(d=>{
+    if(d.isOnline && d.onlineCities && d.onlineCities.includes(oldName)){
+      d.onlineCities = d.onlineCities.map(c=>c===oldName?newName:c);
+    }
+  });
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){
+    toast('Renamed','ok');
+    renderOnlineCitiesList();
+    renderDaysTable(); renderCalendar();
+  }
+}
+async function addOnlineCity(){
+  const input = document.getElementById('newOnlineCity');
+  const name = input.value.trim();
+  if(!name){ toast('Enter a name','err'); return; }
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  if(trainingConfig.onlineCities.includes(name)){ toast('Already exists','err'); return; }
+  trainingConfig.onlineCities.push(name);
+  const ok = await setConfigWithHistory(trainingConfig);
+  input.value = '';
+  if(ok){ toast('Added','ok'); renderOnlineCitiesList(); }
+}
+async function removeOnlineCity(name){
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  trainingConfig.onlineCities = trainingConfig.onlineCities.filter(n=>n!==name);
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){ toast('Removed','ok'); renderOnlineCitiesList(); }
+}
+
 // defaults to date-ascending (the table's natural order), so the indicator/toggle direction always matches what's on screen
 let daysSortState = {key:'date', dir:1};
 function toggleDaysSort(key){
@@ -1199,7 +1250,7 @@ function openEditDayModal(dayId){
       </div>
       <div class="field"><label class="field-label">Coordinator (optional)</label><select id="editDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
       <div class="field">
-        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to.)</label>
+        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to. Manage the list in Setup → Online Cities / Regions.)</label>
         <div class="row" style="margin-bottom:6px;">
           <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-online-city-cb', true)">Select All</button>
           <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-online-city-cb', false)">Clear All</button>
@@ -1432,7 +1483,7 @@ function openAddDayModal(presetDate){
       </div>
       <div class="field"><label class="field-label">Coordinator (optional)</label><select id="newDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
       <div class="field">
-        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to.)</label>
+        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to. Manage the list in Setup → Online Cities / Regions.)</label>
         <div class="row" style="margin-bottom:6px;">
           <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('new-day-online-city-cb', true)">Select All</button>
           <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('new-day-online-city-cb', false)">Clear All</button>
@@ -2270,7 +2321,7 @@ async function updatePendingDot(leaveRequests){
 let apprSortState = {key:null, dir:1};
 function toggleApprovalsSort(key){
   if(apprSortState.key===key) apprSortState.dir*=-1; else { apprSortState.key=key; apprSortState.dir=1; }
-  renderApprovalsTab();
+  renderApprovalsTab(true); // re-sorting doesn't change the data, no need to refetch
 }
 let apprHistSortState = {key:null, dir:1};
 function toggleApprHistSort(key){
@@ -2360,8 +2411,12 @@ async function confirmRejectQuota(pid){
   }
 }
 
-async function renderLeaveRequests(){
-  leaveRequestsCache = await getShared(K_LEAVE_REQUESTS, []);
+let _leaveRequestsLoadedAt = 0;
+async function renderLeaveRequests(soft){
+  if(!(soft && _leaveRequestsLoadedAt && (Date.now()-_leaveRequestsLoadedAt) < CORE_DATA_SOFT_TTL_MS)){
+    leaveRequestsCache = await getShared(K_LEAVE_REQUESTS, []);
+    _leaveRequestsLoadedAt = Date.now();
+  }
   const tb = document.getElementById('leaveRequestsBody');
   if(!tb) return;
   const list = leaveRequestsCache.filter(lr=>lr.status==='Pending');
@@ -2420,9 +2475,9 @@ async function confirmRejectLeaveRequest(lrId){
   }
 }
 
-async function renderApprovalsTab(){
+async function renderApprovalsTab(soft){
   renderQuotaApprovals();
-  await renderLeaveRequests();
+  await renderLeaveRequests(soft);
   let list = pendingList.filter(p=>p.status==='Pending');
   list = genericSort(list, apprSortState, (p,k)=> k==='addedAt' ? p.addedAt : String(p[k]||'').toLowerCase());
   const tb = document.getElementById('approvalsTableBody');

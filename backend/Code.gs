@@ -673,7 +673,7 @@ function getConfig_(ctx) {
   var days = tList_(TABLES.days);
   var st = settings_();
   var settings = {};
-  ['maxCapacity', 'trainerNames', 'coordinatorNames', 'trainingNames', 'completionCourse', 'completionLastSynced'].forEach(function (k) {
+  ['maxCapacity', 'trainerNames', 'coordinatorNames', 'trainingNames', 'onlineCities', 'completionCourse', 'completionLastSynced'].forEach(function (k) {
     if (st.hasOwnProperty(k) && st[k] !== null) settings[k] = st[k];
   });
   if (ctx.role === 'supervisor') {

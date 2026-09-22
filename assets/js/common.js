@@ -133,9 +133,9 @@ function onlineGroupKey(d){
   return (d.onlineCities && d.onlineCities.length) ? 'ONLINE:'+[...d.onlineCities].sort().join('+') : '';
 }
 function onlineCityCheckboxesHtml(className, selectedCities){
-  const cities = [...new Set(masterData.map(p=>p.city).filter(Boolean))].sort();
+  const cities = (trainingConfig.onlineCities || []).slice().sort();
   selectedCities = selectedCities || [];
-  return cities.map(c=>`<label><input type="checkbox" class="${className}" value="${esc(c)}" ${selectedCities.includes(c)?'checked':''}> ${esc(c)}</label>`).join('') || '<span class="small-note">No cities found in the master data yet.</span>';
+  return cities.map(c=>`<label><input type="checkbox" class="${className}" value="${esc(c)}" ${selectedCities.includes(c)?'checked':''}> ${esc(c)}</label>`).join('') || '<span class="small-note">No online cities/regions added yet — add some in Setup.</span>';
 }
 
 function cityColorFor(day){
@@ -203,7 +203,7 @@ async function loadCoreData(soft){
   const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS], {
     [K_MASTER]: [],
     [K_PENDING]: [],
-    [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]},
+    [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[], onlineCities:[]},
     [K_OPS]: {assignments:{}, attendance:{}}
   });
   masterData = r[K_MASTER]; pendingList = r[K_PENDING]; trainingConfig = r[K_CONFIG]; ops = r[K_OPS];
@@ -211,6 +211,7 @@ async function loadCoreData(soft){
   if(!trainingConfig.trainerNames) trainingConfig.trainerNames = [];
   if(!trainingConfig.coordinatorNames) trainingConfig.coordinatorNames = [];
   if(!trainingConfig.trainingNames) trainingConfig.trainingNames = [];
+  if(!trainingConfig.onlineCities) trainingConfig.onlineCities = [];
   if(!trainingConfig.maxCapacity) trainingConfig.maxCapacity = 30;
   _coreDataLoadedAt = Date.now();
 }
@@ -833,6 +834,7 @@ async function exportTableImage(containerId, filename){
   if(typeof html2canvas === 'undefined'){ toast('Image export library failed to load — check your connection and try again','err'); return; }
   const chosenName = await promptForFilename(filename, 'png');
   if(!chosenName) return;
+  el.classList.add('exporting');
   try{
     const canvas = await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false});
     canvas.toBlob((blob)=>{
@@ -848,6 +850,7 @@ async function exportTableImage(containerId, filename){
       toast('Image downloaded','ok');
     }, 'image/png');
   }catch(e){ console.error('Image export error:', e); toast('Image export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err'); }
+  finally{ el.classList.remove('exporting'); }
 }
 async function exportTablePDF(containerId, filename){
   const el = document.getElementById(containerId);
@@ -855,6 +858,7 @@ async function exportTablePDF(containerId, filename){
   if(typeof html2canvas === 'undefined' || !window.jspdf){ toast('PDF export library failed to load — check your connection and try again','err'); return; }
   const chosenName = await promptForFilename(filename, 'pdf');
   if(!chosenName) return;
+  el.classList.add('exporting');
   try{
     const canvas = await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false});
     const { jsPDF } = window.jspdf;
@@ -872,4 +876,5 @@ async function exportTablePDF(containerId, filename){
     setTimeout(()=>URL.revokeObjectURL(pdfUrl), 5000);
     toast('PDF downloaded','ok');
   }catch(e){ console.error('PDF export error:', e); toast('PDF export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err'); }
+  finally{ el.classList.remove('exporting'); }
 }
