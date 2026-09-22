@@ -92,7 +92,7 @@ function shiftCalendarQuarter(delta){
   calendarBaseMonth += delta*3;
   while(calendarBaseMonth<0){ calendarBaseMonth+=12; calendarBaseYear--; }
   while(calendarBaseMonth>11){ calendarBaseMonth-=12; calendarBaseYear++; }
-  renderCalendar();
+  renderCalendar(true); // paging months changes nothing on the server — reuse the already-loaded data
 }
 function scrollToCalMonth(i){
   const el = document.getElementById('cal-month-'+i);
@@ -112,8 +112,8 @@ function computeCityInstanceNumbers(){
   return numbers;
 }
 
-async function renderCalendar(){
-  await loadCoreData();
+async function renderCalendar(soft){
+  await loadCoreData(soft);
   updateUndoRedoButtons();
   const now = new Date();
   if(calendarBaseYear===undefined){ calendarBaseYear = now.getFullYear(); calendarBaseMonth = now.getMonth(); }
@@ -585,8 +585,8 @@ function switchTrainerTab(id){
   document.querySelectorAll('.trainer-tab').forEach(t=>t.classList.toggle('hidden', t.id!==id));
   if(id==='t-setup') renderSetupTab();
   if(id==='t-approvals') renderApprovalsTab();
-  if(id==='t-analytics') refreshAnalytics();
-  if(id==='t-calendar') renderCalendar();
+  if(id==='t-analytics') refreshAnalytics(true); // tab open: reuse recent data instead of a full reload
+  if(id==='t-calendar') renderCalendar(true);
 }
 
 async function initTrainer(){
@@ -2411,8 +2411,8 @@ function setAnalyticsDim(dim){
   document.getElementById('dimHeader').textContent = labels[dim];
   renderAnalyticsTable();
 }
-async function refreshAnalytics(){
-  await loadCoreData();
+async function refreshAnalytics(soft){
+  await loadCoreData(soft);
   renderGlobalChips();
   renderAnalyticsTable();
   buildMasterFilterBar();

@@ -12,6 +12,14 @@ Goal: make sending/receiving data faster and the tool feel smoother **without ch
 - ✅ **1.5 Redraw only what changed** — **done.** The trainer row template is now a single shared function (`trainerRowCells` in `trainer.js`), used by both the full render and a new `updateTrainerRow`/`afterTrainerRowChange`, so a single-row refresh can never drift from a full redraw. Every attendance action (Attended/Absent/On Time/Late/Clear, both regular and split) refreshes only its own row instead of all ~1,450; it falls back to a full render only when sorted by the Attendance column (the one case a mark can reorder the table). Assignment changes keep the full render (they can change filter membership / ordering). Also: the per-row day dropdown is now built lazily — each `<select>` renders with one option and fills the full day list on first open (`fillAssignSelect` in `common.js`), and repeated `trainingConfig.dates.find(...)` scans were replaced by an id→day index (`dayById`).
   - Measured in `?mock=1` at full scale (1,450 pharmacists × 55 days): per-attendance-click redraw **~600 ms → 0.06 ms**; full table render **~600 ms → ~76 ms**; option DOM nodes at render **87,000 → 1,450**.
 
+**Partial 2.2 (no version counter yet, just a freshness window):** `loadCoreData()` in `common.js` now takes a `soft` flag —
+`soft=true` skips the fetch and reuses the in-memory data if it was loaded less than 30 s ago. Wired up only at the two
+call sites that don't follow a write: opening the Calendar or Analytics tab (`switchTrainerTab`), and paging months inside
+an already-open Calendar tab (`shiftCalendarQuarter`, which used to re-read the whole HeadCount tab just to change which
+months are visible). Every write-triggered call (undo/redo, add/edit/delete/move a day, the two "↻ Refresh" buttons) still
+calls `loadCoreData()`/`renderCalendar()`/`refreshAnalytics()` with no argument, so those are unchanged — still a forced,
+fresh read every time.
+
 **Extra server win (over-quota mirror gating):** `patchOps_` used to read and rewrite the Approvals-tab "Over-Quota Request" mirror on *every* operations save, including plain attendance marks that don't change the assignment. It now touches the mirror only when the assignment itself changed (`rec.hasOwnProperty('a')`), so the most common trainer action (marking attendance) no longer reads the Approvals tab at all. Verified via the mock harness: a `setAttendanceStatus` / split-attendance save touches only HeadCount + TrainingDays + Settings (no Approvals), while supervisor over-quota assign and trainer approve/reject still write/clear the mirror correctly.
 
 Verified in `?mock=1` against the real `Code.gs`: sign-in, assign/attendance/notes save (regular + split online), single-row refresh, sort-by-attendance and active-date-filter re-render behaviour, supervisor assign + lazy dropdown, and the server op-counts above all behave the same as before — only the request/call counts and render cost changed.

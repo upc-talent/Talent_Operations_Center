@@ -176,7 +176,14 @@ let pendingList = [];
 let trainingConfig = {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[]};
 let ops = {assignments:{}, attendance:{}};
 let leaveRequestsCache = [];
-async function loadCoreData(){
+let _coreDataLoadedAt = 0;
+const CORE_DATA_SOFT_TTL_MS = 30000; // matches the "≈30s" freshness window already planned in docs/PERFORMANCE_PLAN.md §Phase 2.2
+// soft=true: reuse the in-memory data if it was loaded less than CORE_DATA_SOFT_TTL_MS ago (no network call).
+// Only pass soft=true from call sites that are pure navigation/tab-open (nothing was just written); every
+// call site that follows a save, undo/redo, or an explicit "Refresh" click still calls this with no args,
+// which is unchanged (always hits the server), so no existing behaviour after a write can go stale.
+async function loadCoreData(soft){
+  if(soft && _coreDataLoadedAt && (Date.now() - _coreDataLoadedAt) < CORE_DATA_SOFT_TTL_MS) return;
   // one request for all four (a single round-trip; firing four at once made Google answer some with errors)
   const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS], {
     [K_MASTER]: [],
@@ -190,6 +197,7 @@ async function loadCoreData(){
   if(!trainingConfig.coordinatorNames) trainingConfig.coordinatorNames = [];
   if(!trainingConfig.trainingNames) trainingConfig.trainingNames = [];
   if(!trainingConfig.maxCapacity) trainingConfig.maxCapacity = 30;
+  _coreDataLoadedAt = Date.now();
 }
 
 async function loadLogo(){
