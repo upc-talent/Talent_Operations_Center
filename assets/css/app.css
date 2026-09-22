@@ -25,6 +25,14 @@ input,select,textarea{font-family:inherit;}
 .role-indicator button{background:transparent;border:1.5px solid rgba(255,255,255,.4);color:#fff;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;}
 .role-indicator button:hover{background:rgba(255,255,255,.15);}
 
+/* ── sync status pill (top bar): shows while the page is retrieving/sending data ────────────────────────── */
+.sync-status{display:none;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:5px 11px;border-radius:20px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);color:rgba(255,255,255,.9);white-space:nowrap;}
+.sync-status.show{display:inline-flex;}
+.sync-status .dot{width:7px;height:7px;border-radius:50%;background:var(--blue);flex-shrink:0;animation:syncPulse 1s ease-in-out infinite;}
+.sync-status.saving .dot{background:#ffc107;}
+.sync-status.saved .dot{background:var(--ok);animation:none;}
+@keyframes syncPulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+
 main{max-width:1800px;margin:0 auto;padding:20px 10px 60px;}
 
 /* ── role picker ────────────────────────── */

@@ -19,6 +19,7 @@
     </div>
   </div>
   <div class="role-indicator hidden" id="trainerBar">
+    <span class="sync-status" id="syncStatus"><span class="dot"></span><span class="txt"></span></span>
     <span class="badge">Trainer</span>
     <a class="home-link" href="index.html">← Home</a>
     <button type="button" onclick="trainerSignOut()">Sign out</button>
@@ -175,6 +176,7 @@
           <h2>Training Days</h2>
           <div class="row">
             <button class="btn btn-navy btn-sm" onclick="openAddDayModal()">+ Add Training Day</button>
+            <button class="btn btn-outline btn-sm" onclick="hideAllDays()">🙈 Hide All</button>
             <button class="btn btn-danger btn-sm" onclick="deleteAllDays()">🗑 Delete All</button>
           </div>
         </div>
@@ -326,6 +328,7 @@
       <div class="row" style="margin-bottom:10px;">
         <button class="btn btn-navy btn-sm" onclick="openAddDayModal()">+ Add Training Day</button>
         <button class="btn btn-navy btn-sm" onclick="openCalendarImportModal()">↻ Calendar Sync</button>
+        <button class="btn btn-outline btn-sm" onclick="hideAllDays()">🙈 Hide All</button>
         <button class="btn btn-danger btn-sm" onclick="deleteAllDays()">🗑 Delete All</button>
       </div>
       <p class="small-note" style="margin-bottom:8px;">Drag a training day onto another date to reschedule it.</p>

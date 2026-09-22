@@ -32,6 +32,30 @@
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  /* ───────────── status indicator (are we loading / saving right now?) ─────────────
+     Every request goes through transport(), so counting requests here (rather than
+     sprinkling flags through every click handler) covers the whole app in one place. */
+  let pendingReads = 0, pendingWrites = 0;
+  let flashState = null, flashTimer = null;
+  const statusListeners = [];
+  function computeStatus() {
+    if (pendingWrites > 0) return 'saving';
+    if (pendingReads > 0) return 'loading';
+    return flashState || 'idle';
+  }
+  function emitStatus() {
+    const s = computeStatus();
+    statusListeners.forEach(fn => { try { fn(s); } catch (e) {} });
+  }
+  // shows a brief confirmation once everything currently in flight has finished
+  function flashSaved() {
+    flashState = 'saved';
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { flashState = null; emitStatus(); }, 1400);
+    emitStatus();
+  }
+  window.onApiStatusChange = function (fn) { statusListeners.push(fn); fn(computeStatus()); };
+
   // One attempt. Anything that looks like a temporary Google / network hiccup is flagged `transient` so it can be retried.
   async function transportOnce(body) {
     if (!CFG.API_URL) throw new Error('Backend URL is not configured (assets/js/config.js).');
@@ -62,18 +86,26 @@
   // several requests hit at once. Every request here is safe to repeat (writes are per-record upserts/deletes),
   // so temporary failures are retried a couple of times before the user ever sees an error.
   async function transport(body) {
-    if (CFG.API_URL === 'mock') {
-      await loadMock();
-      return window.MockBackend.handle(body);
-    }
-    const waits = [700, 1800];
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await transportOnce(body);
-      } catch (e) {
-        if (!e.transient || attempt >= waits.length) throw e;
-        await sleep(waits[attempt]);
+    const isWrite = body.action === 'patch';
+    if (isWrite) pendingWrites++; else pendingReads++;
+    emitStatus();
+    try {
+      if (CFG.API_URL === 'mock') {
+        await loadMock();
+        return await window.MockBackend.handle(body);
       }
+      const waits = [700, 1800];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await transportOnce(body);
+        } catch (e) {
+          if (!e.transient || attempt >= waits.length) throw e;
+          await sleep(waits[attempt]);
+        }
+      }
+    } finally {
+      if (isWrite) pendingWrites--; else pendingReads--;
+      emitStatus();
     }
   }
 
@@ -277,6 +309,7 @@
       if (!Object.keys(patch.records).length && !Object.keys(patch.settings).length) return true;
       await API.call('patch', { key, records: patch.records, settings: patch.settings });
       snapshots[key] = newC;
+      flashSaved();
       return true;
     } catch (e) {
       console.error('storage save failed', key, e);

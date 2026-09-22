@@ -7,6 +7,12 @@
 (function () {
   const STORE_KEY = 'upc_mock_sheet_v1';
 
+  /* Call counters — how many Sheets / Cache / Properties / Lock operations one request performs (each is a slow
+     service call on real Apps Script, so this is the number to keep small). Read via MockBackend.lastStats. */
+  const STATS = { reads: 0, writes: 0, cellsRead: 0, cellsWritten: 0, cache: 0, props: 0, locks: 0, byTab: {} };
+  const resetStats = () => { Object.keys(STATS).forEach(k => { STATS[k] = (k === 'byTab') ? {} : 0; }); };
+  const tab = (n, k, v) => { const t = STATS.byTab[n] || (STATS.byTab[n] = { reads: 0, writes: 0 }); t[k] += (v || 1); };
+
   /* ───────────── synchronous SHA-256 / HMAC (Apps Script's Utilities is synchronous) ───────────── */
   const K = new Uint32Array([
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -56,13 +62,13 @@
     const sh = {
       _s: state,
       getName: () => state.name,
-      getMaxRows: () => state.maxRows,
-      getMaxColumns: () => state.maxCols,
-      getLastColumn() { let lc = 0; state.rows.forEach(r => { for (let c = (r || []).length; c > 0; c--) if (r[c-1] !== '' && r[c-1] != null) { lc = Math.max(lc, c); break; } }); return lc; },
-      getLastRow() { for (let r = state.rows.length - 1; r >= 0; r--) if ((state.rows[r] || []).some(v => v !== '' && v != null)) return r + 1; return 0; },
-      insertRowsAfter(pos, n) { for (let i = 0; i < n; i++) state.rows.splice(pos, 0, []); state.maxRows += n; },
+      getMaxRows: () => { STATS.reads++; tab(state.name,'reads'); return state.maxRows; },
+      getMaxColumns: () => { STATS.reads++; tab(state.name,'reads'); return state.maxCols; },
+      getLastColumn() { STATS.reads++; tab(state.name,'reads'); let lc = 0; state.rows.forEach(r => { for (let c = (r || []).length; c > 0; c--) if (r[c-1] !== '' && r[c-1] != null) { lc = Math.max(lc, c); break; } }); return lc; },
+      getLastRow() { STATS.reads++; tab(state.name,'reads'); for (let r = state.rows.length - 1; r >= 0; r--) if ((state.rows[r] || []).some(v => v !== '' && v != null)) return r + 1; return 0; },
+      insertRowsAfter(pos, n) { STATS.writes++; tab(state.name,'writes'); for (let i = 0; i < n; i++) state.rows.splice(pos, 0, []); state.maxRows += n; },
       insertColumnsAfter(pos, n) { state.maxCols += n; },
-      deleteRows(start, n) { state.rows.splice(start - 1, n); state.maxRows -= n; },
+      deleteRows(start, n) { STATS.writes++; tab(state.name,'writes'); state.rows.splice(start - 1, n); state.maxRows -= n; },
       hideColumns() {}, setFrozenRows() {},
       getDataRange() { const lr = sh.getLastRow(); let lc = 0; state.rows.forEach(r => { for (let c = (r || []).length; c > 0; c--) if (r[c-1] !== '' && r[c-1] != null) { lc = Math.max(lc, c); break; } }); return sh.getRange(1, 1, Math.max(lr, 1), Math.max(lc, 1)); },
       setValue(v) { return sh.getRange(1, 1).setValue(v); },
@@ -71,15 +77,16 @@
         if (r < 1 || c < 1 || r + nr - 1 > state.maxRows || c + nc - 1 > state.maxCols) throw new Error('The coordinates or dimensions of the range are invalid. (' + state.name + ' r' + r + ' c' + c + ' ' + nr + 'x' + nc + ')');
         const rng = {
           getValues() { return rng.getDisplayValues(); },
-          getDisplayValues() { const out = []; for (let i = 0; i < nr; i++) { const row = state.rows[r - 1 + i] || []; const o = []; for (let j = 0; j < nc; j++) { const v = row[c - 1 + j]; o.push(v == null ? '' : String(v)); } out.push(o); } return out; },
+          getDisplayValues() { STATS.reads++; STATS.cellsRead += nr * nc; tab(state.name,'reads'); const out = []; for (let i = 0; i < nr; i++) { const row = state.rows[r - 1 + i] || []; const o = []; for (let j = 0; j < nc; j++) { const v = row[c - 1 + j]; o.push(v == null ? '' : String(v)); } out.push(o); } return out; },
           getValue() { return rng.getDisplayValues()[0][0]; },
           setValues(vals) {
+            STATS.writes++; STATS.cellsWritten += nr * nc; tab(state.name,'writes');
             if (vals.length !== nr || (vals[0] || []).length !== nc) throw new Error('The number of rows/columns in the data does not match the range (' + vals.length + 'x' + (vals[0]||[]).length + ' vs ' + nr + 'x' + nc + ')');
             for (let i = 0; i < nr; i++) { const rr = state.rows[r - 1 + i] || (state.rows[r - 1 + i] = []); for (let j = 0; j < nc; j++) rr[c - 1 + j] = vals[i][j] == null ? '' : String(vals[i][j]); }
             return rng;
           },
           setValue(v) { const g = []; for (let i = 0; i < nr; i++) g.push(new Array(nc).fill(v)); return rng.setValues(g); },
-          setNumberFormat() { return rng; }, setFontWeight() { return rng; }, setBackground() { return rng; }, setFontColor() { return rng; }, copyTo() { return rng; }
+          setNumberFormat() { STATS.writes++; tab(state.name,'writes'); return rng; }, setFontWeight() { return rng; }, setBackground() { return rng; }, setFontColor() { return rng; }, copyTo() { return rng; }
         };
         return rng;
       }
@@ -98,12 +105,12 @@
     const props = store.props;
     return {
       SpreadsheetApp: { openById: () => ss, flush() {}, CopyPasteType: { PASTE_FORMAT: 1 } },
-      LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+      LockService: { getScriptLock: () => ({ waitLock() { STATS.locks++; }, releaseLock() {} }) },
       CacheService: { getScriptCache: () => ({
-        get: k => { const e = cache[k]; if (!e) return null; if (e.exp < Date.now()) { delete cache[k]; return null; } return e.v; },
-        put: (k, v, ttl) => { cache[k] = { v, exp: Date.now() + (ttl || 60) * 1000 }; },
+        get: k => { STATS.cache++; const e = cache[k]; if (!e) return null; if (e.exp < Date.now()) { delete cache[k]; return null; } return e.v; },
+        put: (k, v, ttl) => { STATS.cache++; cache[k] = { v, exp: Date.now() + (ttl || 60) * 1000 }; },
         remove: k => { delete cache[k]; } }) },
-      PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = v; } }) },
+      PropertiesService: { getScriptProperties: () => ({ getProperty: k => { STATS.props++; return (k in props ? props[k] : null); }, setProperty: (k, v) => { STATS.props++; props[k] = v; } }) },
       Utilities: {
         getUuid: () => crypto.randomUUID(),
         sleep() {},
@@ -188,7 +195,11 @@
       if (!booting) booting = boot();
       await booting;
       await new Promise(r => setTimeout(r, 120));   // feel like a network call
+      resetStats();
+      const t0 = performance.now();
       const out = gs.doPost({ postData: { contents: JSON.stringify(body) } });
+      MockBackend.lastStats = Object.assign({}, STATS, { ms: +(performance.now() - t0).toFixed(1), action: body.action + (body.key ? ':' + body.key : (body.keys ? ':' + body.keys.length + ' keys' : '')) });
+      (MockBackend.log = MockBackend.log || []).push(MockBackend.lastStats);
       persist();
       return JSON.parse(out.getContent());
     },

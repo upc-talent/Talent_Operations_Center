@@ -200,6 +200,22 @@ async function loadLogo(){
   box.innerHTML = logo ? `<img src="${logo}" alt="Logo">` : '<img src="assets/img/logo.png" alt="Talent Operations Center logo">';
 }
 
+/* ═══════════════════════════════ SYNC STATUS INDICATOR (top bar: loading / sending / saved) ═══════════════════════════════
+   Fed by assets/js/api.js, which tracks every request the page makes — so this covers the whole app
+   (every click that reads or saves data) without each function having to report its own status. */
+const SYNC_STATUS_LABELS = { loading:'Retrieving…', saving:'Sending…', saved:'Saved' };
+function initSyncStatusIndicator(){
+  const el = document.getElementById('syncStatus');
+  if(!el || typeof onApiStatusChange !== 'function') return;
+  const txt = el.querySelector('.txt');
+  onApiStatusChange(status=>{
+    el.classList.remove('loading','saving','saved');
+    if(status==='idle'){ el.classList.remove('show'); return; }
+    el.classList.add('show', status);
+    if(txt) txt.textContent = SYNC_STATUS_LABELS[status] || '';
+  });
+}
+
 /* ═══════════════════════════════ CAPACITY HELPERS ═══════════════════════════════ */
 function dayCount(dateId, excludingPid){
   return Object.entries(ops.assignments||{}).filter(([pid,a])=>a.type==='date' && a.dateId===dateId && pid!==excludingPid).length;
@@ -226,7 +242,7 @@ let trainerFilterState = { district:new Set(), areaManager:new Set(), city:new S
 let trainerSearchQ = '';
 let masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
 let masterSearchQ = '';
-let daysFilterState = { city:new Set(), type:new Set(), trainer:new Set(), visibleTo:new Set(), status:new Set() };
+let daysFilterState = { city:new Set(), type:new Set(), date:new Set(), trainer:new Set(), visibleTo:new Set(), status:new Set() };
 let daysSearchQ = '';
 let msOptionsCache = {};
 

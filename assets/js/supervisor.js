@@ -100,7 +100,7 @@ async function openSubmissionHistoryModal(){
   let notifs = await getShared(K_NOTIF, []);
   notifs = notifs.map(n=> (n.supervisor===currentSupervisor && !n.seenInHistory) ? {...n, seenInHistory:true} : n);
   await setShared(K_NOTIF, notifs);
-  await updateSubmissionHistoryDot();
+  await updateSubmissionHistoryDot(notifs);
 }
 
 async function checkSupervisorNotifications(){
@@ -114,10 +114,11 @@ async function checkSupervisorNotifications(){
     notifs = notifs.map(n=> (n.supervisor===currentSupervisor && !n.read) ? {...n, read:true} : n);
     await setShared(K_NOTIF, notifs);
   }
-  await updateSubmissionHistoryDot();
+  await updateSubmissionHistoryDot(notifs);
 }
-async function updateSubmissionHistoryDot(){
-  const notifs = await getShared(K_NOTIF, []);
+// `notifs`, when passed, is a freshly-loaded list the caller already has — avoids fetching it again just for the dot count.
+async function updateSubmissionHistoryDot(notifs){
+  if(!notifs) notifs = await getShared(K_NOTIF, []);
   const count = notifs.filter(n=>n.supervisor===currentSupervisor && !n.seenInHistory).length;
   const dot = document.getElementById('submissionHistoryDot');
   if(dot) dot.innerHTML = count>0 ? `<span class="dot-badge dot-badge-glow">${count}</span>` : '';
@@ -286,7 +287,6 @@ async function deletePendingPharmacist(pid){
 }
 
 async function onAssignChange(pid, value){
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   if(!value){
     delete ops.assignments[pid];
     delete ops.attendance[pid];
@@ -578,6 +578,7 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   API.init('supervisor');
   // if the server refuses a save (day full, deadline passed…) show the real state again
   APP_HOOKS.onSaveFailed = ()=>{ if(currentSupervisor) loadSupervisorView(true); };
+  initSyncStatusIndicator();
   loadLogo();
   await initSupervisor();
 });

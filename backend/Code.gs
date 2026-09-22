@@ -332,19 +332,32 @@ function supervisorNames_() {
   return out;
 }
 
-/** Writes cells. updates = [{row, cols:{colIndex:value}}]. All values are written as text. */
+/** Writes cells. updates = [{row, cols:{colIndex:value}, base?: existing row values (0-indexed)}].
+ * When `base` is supplied (the row's current values, read earlier in this same request), every cell between the
+ * lowest and highest changed column is written in ONE call — the untouched ones simply get their own current
+ * value back — instead of one call per contiguous run of changed columns. Column text format is set once when a
+ * column is created (see initHCLayout_/ensureTab_/setupSheets), so writes here don't need to reapply it. */
 function writeCells_(sh, updates) {
   if (!updates.length) return;
   if (updates.length <= 25) {
     updates.forEach(function (u) {
       var cols = Object.keys(u.cols).map(Number).sort(function (a, b) { return a - b; });
+      if (u.base) {
+        var minC = cols[0], maxC = cols[cols.length - 1];
+        var vals = [];
+        for (var c = minC; c <= maxC; c++) {
+          vals.push(String(u.cols.hasOwnProperty(c) ? (u.cols[c] == null ? '' : u.cols[c]) : (u.base[c - 1] == null ? '' : u.base[c - 1])));
+        }
+        sh.getRange(u.row, minC, 1, vals.length).setValues([vals]);
+        return;
+      }
       var i = 0;
       while (i < cols.length) {
         var j = i;
         while (j + 1 < cols.length && cols[j + 1] === cols[j] + 1) j++;
-        var vals = [];
-        for (var c = cols[i]; c <= cols[j]; c++) vals.push(String(u.cols[c] == null ? '' : u.cols[c]));
-        sh.getRange(u.row, cols[i], 1, vals.length).setNumberFormat('@').setValues([vals]);
+        var rvals = [];
+        for (var c2 = cols[i]; c2 <= cols[j]; c2++) rvals.push(String(u.cols[c2] == null ? '' : u.cols[c2]));
+        sh.getRange(u.row, cols[i], 1, rvals.length).setValues([rvals]);
         i = j + 1;
       }
     });
@@ -361,7 +374,7 @@ function writeCells_(sh, updates) {
     updates.forEach(function (u) {
       if (u.cols.hasOwnProperty(c)) vals[u.row - 2][0] = String(u.cols[c] == null ? '' : u.cols[c]);
     });
-    rng.setNumberFormat('@').setValues(vals);
+    rng.setValues(vals);
   });
 }
 
@@ -551,7 +564,7 @@ function tPatch_(t, records) {
     if (val === null) { if (byId[id]) deletes.push(byId[id].row); return; }
     var arr = t.toRow(val).map(function (x) { return x == null ? '' : String(x); });
     arr[0] = id;
-    if (byId[id]) rd.sh.getRange(byId[id].row, 1, 1, t.ncols).setNumberFormat('@').setValues([arr]);
+    if (byId[id]) rd.sh.getRange(byId[id].row, 1, 1, t.ncols).setValues([arr]);
     else appends.push(arr);
   });
   deleteRows_(rd.sh, deletes);
@@ -586,7 +599,7 @@ function patchSettings_(patch) {
   Object.keys(patch).forEach(function (k) {
     var text = JSON.stringify(patch[k] === undefined ? null : patch[k]);
     if (text.length > 49000) throw new Error('Value for "' + k + '" is too large to store (limit ~49,000 characters).');
-    if (rowOf[k]) sh.getRange(rowOf[k], 2).setNumberFormat('@').setValue(text);
+    if (rowOf[k]) sh.getRange(rowOf[k], 2).setValue(text);
     else {
       var r = sh.getLastRow() + 1;
       sh.getRange(r, 1, 1, 2).setNumberFormat('@').setValues([[k, text]]);
@@ -988,7 +1001,7 @@ function patchMaster_(records) {
       [HC.DISTRICT, HC.AREA, HC.CITY, HC.SUPERVISOR, HC.PHARMACY, HC.EMPID, HC.EMAIL, HC.NAME, HC.PHONE, HC.SCFHS, HC.COMPLETION, HC.NOTES].forEach(function (c) {
         if (tmp[c - 1] !== ex.v[c - 1]) cols[c] = tmp[c - 1];
       });
-      if (Object.keys(cols).length) updates.push({ row: ex.row, cols: cols });
+      if (Object.keys(cols).length) updates.push({ row: ex.row, cols: cols, base: ex.v });
     } else {
       appends.push(newHCRow_(id, m));
     }
@@ -1058,7 +1071,7 @@ function patchOps_(ctx, records) {
     }
 
     var cols = derivedCols_(a, t, days);
-    updates.push({ row: row.row, cols: cols });
+    updates.push({ row: row.row, cols: cols, base: row.v });
 
     var pending = a && a.type === 'date' && a.overQuota && !a.quotaApproved;
     mirrorUp['oq_' + id] = pending ? { pid: id, sup: sup, name: row.v[HC.NAME - 1], a: a } : null;
@@ -1143,7 +1156,7 @@ function refreshSessions_(dayIds) {
     var a = parseJson_(r.v[HC.ASSIGN - 1]);
     if (a && a.type === 'date' && set[a.dateId]) {
       var cols = derivedCols_(a, parseJson_(r.v[HC.ATT - 1]), days);
-      updates.push({ row: r.row, cols: cols });
+      updates.push({ row: r.row, cols: cols, base: r.v });
     }
   });
   writeCells_(hc.sh, updates);

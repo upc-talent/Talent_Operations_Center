@@ -1030,7 +1030,8 @@ async function removeTrainingName(name){
   if(ok){ toast('Removed','ok'); renderTrainingNamesList(); }
 }
 
-let daysSortState = {key:null, dir:1};
+// defaults to date-ascending (the table's natural order), so the indicator/toggle direction always matches what's on screen
+let daysSortState = {key:'date', dir:1};
 function toggleDaysSort(key){
   if(daysSortState.key===key) daysSortState.dir*=-1; else { daysSortState.key=key; daysSortState.dir=1; }
   renderDaysTable();
@@ -1062,16 +1063,12 @@ function renderDaysTable(){
     return;
   }
   let sortedDates = [...filteredDates];
-  if(daysSortState.key){
-    sortedDates.sort((a,b)=>{
-      const va = getDaysSortValue(a, daysSortState.key), vb = getDaysSortValue(b, daysSortState.key);
-      if(va<vb) return -1*daysSortState.dir;
-      if(va>vb) return 1*daysSortState.dir;
-      return 0;
-    });
-  } else {
-    sortedDates.sort((a,b)=>a.date.localeCompare(b.date));
-  }
+  sortedDates.sort((a,b)=>{
+    const va = getDaysSortValue(a, daysSortState.key), vb = getDaysSortValue(b, daysSortState.key);
+    if(va<vb) return -1*daysSortState.dir;
+    if(va>vb) return 1*daysSortState.dir;
+    return 0;
+  });
   tb.innerHTML = sortedDates.map((d,i)=>{
     const count = dayCount(d.id);
     const isActive = d.active!==false;
@@ -1606,6 +1603,23 @@ async function deleteAllDays(){
   }
 }
 
+async function hideAllDays(){
+  const visible = trainingConfig.dates.filter(d=>d.active!==false);
+  if(!visible.length){ toast('No visible training days to hide','info'); return; }
+  const go = await confirmDialog(`Hide all ${visible.length} visible training day(s) from supervisors? Existing assignments are not affected — you can unhide any day individually afterwards.`);
+  if(!go) return;
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  trainingConfig.dates.forEach(d=>{ d.active = false; });
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){
+    toast('All training days hidden from supervisors','ok');
+    buildDaysFilterBar();
+    renderDaysTable();
+    buildTrainerFilterBar();
+    renderCalendar();
+  }
+}
+
 function openDayStatusModal(dayId){
   const day = trainingConfig.dates.find(d=>d.id===dayId);
   if(!day) return;
@@ -1668,6 +1682,15 @@ function clearTrainerFilters(){
   renderTrainerTable();
 }
 
+/** Distinct training-day dates for the "Date" filter, sorted chronologically (ISO strings sort correctly as text) and labelled the same way the table shows them. */
+function daysDateFilterOptions(){
+  const seen = new Set();
+  return trainingConfig.dates
+    .map(d=>d.date)
+    .filter(v=>{ if(!v || seen.has(v)) return false; seen.add(v); return true; })
+    .sort()
+    .map(v=>({value:v, text: formatDate(v)}));
+}
 function buildDaysFilterBar(){
   const bar = document.getElementById('daysFilterBar');
   if(!bar) return;
@@ -1675,6 +1698,7 @@ function buildDaysFilterBar(){
     `<div class="filter-field search-field"><div class="search-box"><span>🔍</span><input type="text" class="big-search-input" id="daysSearchInput" value="${esc(daysSearchQ)}" oninput="onDaysSearch(this.value)" placeholder="Search city, training, trainer..."></div></div>` +
     renderMsFilter('days','city','City', distinctValues(trainingConfig.dates,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('days','type','Type', TRAINING_DAY_TYPES.map(v=>({value:v,text:v}))) +
+    renderMsFilter('days','date','Date', daysDateFilterOptions()) +
     renderMsFilter('days','trainer','Trainer(s)', distinctArrayValues(trainingConfig.dates,'trainerNames').map(v=>({value:v,text:v}))) +
     renderMsFilter('days','visibleTo','Visible To', distinctArrayValues(trainingConfig.dates,'visibleSupervisors').map(v=>({value:v,text:v}))) +
     renderMsFilter('days','status','Status', [{value:'active',text:'Active'},{value:'hidden',text:'Hidden'}]) +
@@ -1682,7 +1706,7 @@ function buildDaysFilterBar(){
 }
 function onDaysSearch(v){ daysSearchQ=v; renderDaysTable(); }
 function clearDaysFilters(){
-  daysFilterState = { city:new Set(), type:new Set(), trainer:new Set(), visibleTo:new Set(), status:new Set() };
+  daysFilterState = { city:new Set(), type:new Set(), date:new Set(), trainer:new Set(), visibleTo:new Set(), status:new Set() };
   daysSearchQ='';
   buildDaysFilterBar();
   renderDaysTable();
@@ -1691,6 +1715,7 @@ function dayMatchesFilters(d){
   const st = daysFilterState;
   if(st.city.size && !st.city.has((d.city||'').toString())) return false;
   if(st.type.size && !st.type.has(d.type||'Pharmacist Training')) return false;
+  if(st.date.size && !st.date.has(d.date)) return false;
   if(st.trainer.size && !(d.trainerNames||[]).some(n=>st.trainer.has(n))) return false;
   if(st.visibleTo.size && !(d.visibleSupervisors||[]).some(n=>st.visibleTo.has(n))) return false;
   if(st.status.size){
@@ -1814,7 +1839,6 @@ function attendanceCellHtml(p){
 }
 async function clearAttendanceStatus(pid){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   if(ops.attendance[pid]){
     delete ops.attendance[pid].status;
     delete ops.attendance[pid].punctuality;
@@ -1827,7 +1851,6 @@ async function clearAttendanceStatus(pid){
 }
 async function setSplitAttendanceStatus(pid, dayNum, status){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   const prev = ops.attendance[pid] || {};
   if(dayNum===2 && status==='Attended' && (!prev.day1 || prev.day1.status!=='Attended')){
     toast(`Can't mark Day 2 as Attended — Day 1 hasn't been completed yet. Have them make up Day 1 in another group first.`,'err');
@@ -1853,7 +1876,6 @@ async function setSplitAttendanceStatus(pid, dayNum, status){
 }
 async function setSplitPunctuality(pid, dayNum, punct){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   const prev = ops.attendance[pid] || {};
   const key = 'day'+dayNum;
   const prevSub = prev[key] || {status:'Attended'};
@@ -1912,7 +1934,6 @@ function renderTrainerTable(){
 }
 
 async function onTrainerAssignChange(pid, value){
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   if(!value){
     delete ops.assignments[pid];
     delete ops.attendance[pid];
@@ -1944,7 +1965,6 @@ function requireTrainerIdentity(){
 
 async function setAttendanceStatus(pid, status){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   const prev = ops.attendance[pid] || {};
   let record = {...prev, status, markedBy: currentTrainerIdentity, markedAt: nowIso()};
   if(status==='Attended'){
@@ -1960,7 +1980,6 @@ async function setAttendanceStatus(pid, status){
 }
 async function setPunctuality(pid, punct){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   const prev = ops.attendance[pid] || {status:'Attended'};
   let time = prev.time;
   if(punct==='Late' && !time) time = nowTimeStr();
@@ -1971,7 +1990,6 @@ async function setPunctuality(pid, punct){
 }
 async function onAttendanceTimeChange(pid, time){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   const prev = ops.attendance[pid] || {status:'Attended', punctuality:'Late'};
   ops.attendance[pid] = {...prev, time, markedBy: currentTrainerIdentity, markedAt: nowIso()};
   const ok = await setShared(K_OPS, ops);
@@ -1979,7 +1997,6 @@ async function onAttendanceTimeChange(pid, time){
 }
 async function onSplitAttendanceTimeChange(pid, dayNum, time){
   if(!requireTrainerIdentity()) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
   const prev = ops.attendance[pid] || {};
   const key = 'day'+dayNum;
   const prevSub = prev[key] || {status:'Attended', punctuality:'Late'};
@@ -1988,7 +2005,6 @@ async function onSplitAttendanceTimeChange(pid, dayNum, time){
   if(ok) toast('Arrival time updated','ok');
 }
 async function onPharmacistNoteChange(pid, note){
-  masterData = await getShared(K_MASTER, []);
   const p = masterData.find(m=>m.id===pid);
   if(!p) return;
   p.note = String(note||'').trim();
@@ -2005,10 +2021,11 @@ async function refreshTrainer(){
 }
 
 /* ═══════════════════════════════ APPROVALS ═══════════════════════════════ */
-async function updatePendingDot(){
+// `leaveRequests`, when passed, is a freshly-loaded list the caller already has — avoids fetching it again just for the dot count.
+async function updatePendingDot(leaveRequests){
   const n = pendingList.filter(p=>p.status==='Pending').length;
   const quotaCount = Object.values(ops.assignments||{}).filter(a=>a.type==='date' && a.overQuota && !a.quotaApproved).length;
-  const lr = await getShared(K_LEAVE_REQUESTS, []);
+  const lr = leaveRequests || await getShared(K_LEAVE_REQUESTS, []);
   const leaveCount = lr.filter(x=>x.status==='Pending').length;
   const total = n + quotaCount + leaveCount;
   const dot = document.getElementById('pendingDot');
@@ -2168,9 +2185,9 @@ async function confirmRejectLeaveRequest(lrId){
   }
 }
 
-function renderApprovalsTab(){
+async function renderApprovalsTab(){
   renderQuotaApprovals();
-  renderLeaveRequests();
+  await renderLeaveRequests();
   let list = pendingList.filter(p=>p.status==='Pending');
   list = genericSort(list, apprSortState, (p,k)=> k==='addedAt' ? p.addedAt : String(p[k]||'').toLowerCase());
   const tb = document.getElementById('approvalsTableBody');
@@ -2274,9 +2291,9 @@ async function approvePharmacist(pid){
   if(ok1 && ok2){
     await pushNotification(p.supervisor, displayName, 'Approved');
     toast('Approved and added to the master sheet','ok');
-    renderApprovalsTab();
+    await renderApprovalsTab();
     renderMasterPreview();
-    updatePendingDot();
+    updatePendingDot(leaveRequestsCache);
   }
 }
 function rejectPharmacist(pid){
@@ -2305,8 +2322,8 @@ async function confirmRejectPharmacist(pid){
   if(ok){
     if(item) await pushNotification(item.supervisor, item.displayName, 'Rejected', reason);
     toast('Rejected','ok');
-    renderApprovalsTab();
-    updatePendingDot();
+    await renderApprovalsTab();
+    updatePendingDot(leaveRequestsCache);
   }
 }
 async function reopenPharmacist(pid){
@@ -2329,9 +2346,9 @@ async function reopenPharmacist(pid){
   }
   if(ok1 && ok2){
     toast('Reopened — back in the Pending queue','ok');
-    renderApprovalsTab();
+    await renderApprovalsTab();
     renderMasterPreview();
-    updatePendingDot();
+    updatePendingDot(leaveRequestsCache);
   }
 }
 
@@ -2583,9 +2600,18 @@ function trainerSignOut(){
   closeModal();
   window.location.href = 'index.html';
 }
+async function resyncAfterSaveFailure(){
+  // a save was rejected (or failed) after acting on in-memory data — reload the real state so the screen matches the sheet
+  await loadCoreData();
+  buildTrainerFilterBar();
+  renderTrainerTable();
+  updatePendingDot();
+}
 window.addEventListener('DOMContentLoaded', async ()=>{
   API.init('trainer');
   APP_HOOKS.onAuthExpired = ()=>{ closeModal(); showLoginGate('Your session has ended — please sign in again.'); };
+  APP_HOOKS.onSaveFailed = ()=>{ if(!document.getElementById('screen-trainer').classList.contains('hidden')) resyncAfterSaveFailure(); };
+  initSyncStatusIndicator();
   if(await API.verifySession()) await startTrainerApp();
   else showLoginGate();
 });
