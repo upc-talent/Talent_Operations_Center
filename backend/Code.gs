@@ -1073,8 +1073,12 @@ function patchOps_(ctx, records) {
     var cols = derivedCols_(a, t, days);
     updates.push({ row: row.row, cols: cols, base: row.v });
 
-    var pending = a && a.type === 'date' && a.overQuota && !a.quotaApproved;
-    mirrorUp['oq_' + id] = pending ? { pid: id, sup: sup, name: row.v[HC.NAME - 1], a: a } : null;
+    // The over-quota mirror only needs touching when the ASSIGNMENT itself changed — a pure attendance/notes
+    // save leaves the pending state exactly as it was, so we skip it and avoid an extra Approvals-tab read/write.
+    if (rec.hasOwnProperty('a')) {
+      var pending = a && a.type === 'date' && a.overQuota && !a.quotaApproved;
+      mirrorUp['oq_' + id] = pending ? { pid: id, sup: sup, name: row.v[HC.NAME - 1], a: a } : null;
+    }
   });
 
   writeCells_(hc.sh, updates);

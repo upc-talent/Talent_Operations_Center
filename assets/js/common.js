@@ -228,11 +228,26 @@ function capacityStatus(count, max){
   return count>=max ? {cls:'danger', tag:'Full'} : {cls:'available', tag:'Available'};
 }
 function isDayFull(dateId, excludingPid){
-  const day = trainingConfig.dates.find(d=>d.id===dateId);
+  const day = dayById(dateId);
   return dayCount(dateId, excludingPid) >= dayCapacity(day);
 }
 function visibleDaysFor(supervisorName){
   return trainingConfig.dates.filter(d=>d.active!==false && d.visibleSupervisors && d.visibleSupervisors.includes(supervisorName));
+}
+
+/* Fast id → training-day lookup. Replaces repeated trainingConfig.dates.find(...) linear scans in the
+   render/sort hot paths (they ran O(rows × days) per redraw and O(comparisons × days) per sort).
+   The index is rebuilt whenever the dates array is replaced (undo/redo, reload) or changes length
+   (a day added/removed); in-place field edits keep the same day objects, so lookups stay current. */
+let _dayIndex = null, _dayIndexSrc = null, _dayIndexLen = -1;
+function dayById(id){
+  const arr = (typeof trainingConfig !== 'undefined' && trainingConfig.dates) || [];
+  if(_dayIndexSrc !== arr || _dayIndexLen !== arr.length){
+    _dayIndex = new Map();
+    for(const d of arr) _dayIndex.set(d.id, d);
+    _dayIndexSrc = arr; _dayIndexLen = arr.length;
+  }
+  return _dayIndex.get(id) || null;
 }
 
 /* ═══════════════════════════════ MULTI-SELECT FILTER WIDGET ═══════════════════════════════ */
@@ -416,7 +431,7 @@ function getSortValue(p, key){
     const a = ops.assignments[p.id];
     if(!a) return 'zzz_unassigned';
     if(a.type==='leave') return 'zz_leave_'+a.status;
-    const day = trainingConfig.dates.find(d=>d.id===a.dateId);
+    const day = dayById(a.dateId);
     return day ? day.date : 'zzzz_deleted';
   }
   if(key==='attendance'){
@@ -457,6 +472,12 @@ function isDeadlinePassed(day){
   return new Date() > dl;
 }
 
+/* The label shown for one training-day option — kept as a single helper so the collapsed (lazy) option and the
+   fully-expanded list can never drift apart. */
+function assignOptionLabel(d, enforceDeadline){
+  const passed = enforceDeadline && isDeadlinePassed(d);
+  return `${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed?' (Deadline passed)':''}`;
+}
 function assignmentOptionsHtml(pid, days, enforceDeadline){
   const current = ops.assignments[pid];
   let html = `<option value="" ${!current?'selected':''}>-- Not Assigned --</option>`;
@@ -465,7 +486,7 @@ function assignmentOptionsHtml(pid, days, enforceDeadline){
     const val = 'date:'+d.id;
     const sel = current && current.type==='date' && current.dateId===d.id ? 'selected' : '';
     const passed = enforceDeadline && isDeadlinePassed(d);
-    html += `<option value="${val}" ${sel} ${passed?'disabled':''}>${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed?' (Deadline passed)':''}</option>`;
+    html += `<option value="${val}" ${sel} ${passed?'disabled':''}>${assignOptionLabel(d, enforceDeadline)}</option>`;
   });
   html += `</optgroup><optgroup label="Other Status">`;
   LEAVE_STATUSES.forEach(s=>{
@@ -477,6 +498,40 @@ function assignmentOptionsHtml(pid, days, enforceDeadline){
   return html;
 }
 
+/* The single <option> a collapsed (not-yet-opened) assignment <select> shows. It mirrors exactly what the full
+   option list above would display as the selected value, so filling the rest of the list on open changes nothing
+   the user sees. */
+function currentAssignOptionHtml(pid, relevantDays, enforceDeadline){
+  const a = ops.assignments[pid];
+  if(a && a.type==='date'){
+    const d = relevantDays.find(x=>x.id===a.dateId);
+    if(d){
+      const passed = enforceDeadline && isDeadlinePassed(d);
+      return `<option value="date:${d.id}" selected${passed?' disabled':''}>${assignOptionLabel(d, enforceDeadline)}</option>`;
+    }
+  } else if(a && a.type==='leave'){
+    return `<option value="leave:${esc(a.status)}" selected>${esc(a.status)}</option>`;
+  }
+  return `<option value="" selected>-- Not Assigned --</option>`;
+}
+
+/* Fills the full day list into an assignment <select> the first time it is opened. Rendering every row's dropdown
+   with all training days up front created tens of thousands of <option> nodes (one dropdown per row × every day);
+   rendering one option per select and expanding on demand keeps the table light without changing the control. */
+function fillAssignSelect(sel){
+  if(sel.dataset.filled) return;
+  sel.dataset.filled = '1';
+  const pid = sel.dataset.pid;
+  const fn = sel.dataset.fn;
+  const online = sel.dataset.online === '1';
+  const enforceDeadline = fn === 'onAssignChange';
+  const src = (fn === 'onAssignChange') ? visibleDaysFor(currentSupervisor) : trainingConfig.dates;
+  const relevantDays = src.filter(d => !!d.isOnline === online);
+  const cur = sel.value;
+  sel.innerHTML = assignmentOptionsHtml(pid, relevantDays, enforceDeadline);
+  if(sel.value !== cur) sel.value = cur;
+}
+
 function dateCellHtml(p, editable, days, changeFn){
   const a = ops.assignments[p.id];
   let badge;
@@ -485,7 +540,7 @@ function dateCellHtml(p, editable, days, changeFn){
   } else if(a.type==='leave'){
     badge = `<span class="badge badge-leave">${esc(a.status)}</span>`;
   } else {
-    const day = trainingConfig.dates.find(d=>d.id===a.dateId);
+    const day = dayById(a.dateId);
     if(!day){
       badge = `<span class="badge badge-empty">Not Assigned</span>`;
     } else if(a.overQuota && !a.quotaApproved){
@@ -497,19 +552,19 @@ function dateCellHtml(p, editable, days, changeFn){
   if(!editable) return badge;
   const enforceDeadline = changeFn==='onAssignChange';
   const relevantDays = days.filter(d => !!d.isOnline === isOnlinePharmacist(p));
-  let html = `<div>${badge}<br><select class="assign-select" onchange="${changeFn}('${p.id}', this.value)">${assignmentOptionsHtml(p.id, relevantDays, enforceDeadline)}</select></div>`;
-  return html;
+  const collapsed = currentAssignOptionHtml(p.id, relevantDays, enforceDeadline);
+  return `<div>${badge}<br><select class="assign-select" data-pid="${p.id}" data-fn="${changeFn}" data-online="${isOnlinePharmacist(p)?1:0}" onfocus="fillAssignSelect(this)" onmousedown="fillAssignSelect(this)" onchange="${changeFn}('${p.id}', this.value)">${collapsed}</select></div>`;
 }
 
 function hasValidDateAssignment(p){
   const a = ops.assignments[p.id];
   if(!a || a.type!=='date') return false;
-  return !!trainingConfig.dates.find(d=>d.id===a.dateId);
+  return !!dayById(a.dateId);
 }
 function assignedDayForPerson(p){
   const a = ops.assignments[p.id];
   if(!a || a.type!=='date') return null;
-  return trainingConfig.dates.find(d=>d.id===a.dateId) || null;
+  return dayById(a.dateId);
 }
 function isSplitPerson(p){
   const day = assignedDayForPerson(p);
@@ -572,7 +627,7 @@ function buildMasterRow(p){
   const att = ops.attendance[p.id];
   let dateText = 'Not Assigned', conductedBy = '', statusText = 'Not Assigned', validDateAssignment = false;
   if(a && a.type==='date'){
-    const day = trainingConfig.dates.find(d=>d.id===a.dateId);
+    const day = dayById(a.dateId);
     if(day){
       dateText = day.city+' — '+dayDateLabel(day);
       conductedBy = (day.trainerNames||[]).join(', ');

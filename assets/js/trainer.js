@@ -1847,7 +1847,7 @@ async function clearAttendanceStatus(pid){
     delete ops.attendance[pid].day2;
   }
   const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Attendance cleared','ok'); renderTrainerTable(); }
+  if(ok){ toast('Attendance cleared','ok'); afterTrainerRowChange(pid); }
 }
 async function setSplitAttendanceStatus(pid, dayNum, status){
   if(!requireTrainerIdentity()) return;
@@ -1872,7 +1872,7 @@ async function setSplitAttendanceStatus(pid, dayNum, status){
   }
   ops.attendance[pid] = updated;
   const ok = await setShared(K_OPS, ops);
-  if(ok){ toast(dayNum===1 && status==='Absent' ? 'Day 1 recorded — Day 2 auto-marked Absent' : `Day ${dayNum} recorded`,'ok'); renderTrainerTable(); }
+  if(ok){ toast(dayNum===1 && status==='Absent' ? 'Day 1 recorded — Day 2 auto-marked Absent' : `Day ${dayNum} recorded`,'ok'); afterTrainerRowChange(pid); }
 }
 async function setSplitPunctuality(pid, dayNum, punct){
   if(!requireTrainerIdentity()) return;
@@ -1884,7 +1884,7 @@ async function setSplitPunctuality(pid, dayNum, punct){
   if(punct==='On Time') time = '';
   ops.attendance[pid] = {...prev, [key]: {...prevSub, punctuality: punct, time, markedBy: currentTrainerIdentity, markedAt: nowIso()}};
   const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Updated','ok'); renderTrainerTable(); }
+  if(ok){ toast('Updated','ok'); afterTrainerRowChange(pid); }
 }
 function arrivalCellHtml(p){
   if(!hasValidDateAssignment(p)) return '—';
@@ -1901,24 +1901,13 @@ function noteCellHtml(p){
   return `<input type="text" class="note-input" placeholder="Notes" value="${esc(note)}" onchange="onPharmacistNoteChange('${p.id}', this.value)">`;
 }
 
-function renderTrainerTable(){
-  document.getElementById('trainerTableTitle').textContent = trainerFilterState.date.size ? 'Filtered Records' : 'All Records';
-
-  let list = applyTrainerFilters(masterData);
-  list = applySort('trainer', list);
+// The cells of one trainer-table row. Single source of truth shared by the full render and the single-row
+// update below, so a row refreshed on its own always matches a full redraw.
+// Column order: Pharmacist Name (with row number), Email, Supervisor, District, Area Manager, City, Date, …
+function trainerRowCells(p, rownum){
   const days = trainingConfig.dates;
-  const tb = document.getElementById('trainerTableBody');
-  const dateId = singleSelectedDate();
-  if(dateId) renderSessionSummary(dateId);
-  if(!list.length){
-    tb.innerHTML = `<tr><td colspan="11" class="empty-msg">No records match the current filters</td></tr>`;
-    updateSortIndicators('trainer');
-    return;
-  }
-  // Column order: Pharmacist Name (with row number), Email, Supervisor, District, Area Manager, City, Date, …
-  tb.innerHTML = list.map((p,i)=>`
-    <tr>
-      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p.displayName)}</td>
+  return `
+      <td class="name-cell"><span class="rownum">${rownum}</span>${esc(p.displayName)}</td>
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
       <td>${esc(p.district||'—')}</td>
@@ -1928,9 +1917,44 @@ function renderTrainerTable(){
       <td>${completionCellHtml(p)}</td>
       <td class="no-truncate">${attendanceCellHtml(p)}</td>
       <td>${arrivalCellHtml(p)}</td>
-      <td>${noteCellHtml(p)}</td>
-    </tr>`).join('');
+      <td>${noteCellHtml(p)}</td>`;
+}
+
+function renderTrainerTable(){
+  document.getElementById('trainerTableTitle').textContent = trainerFilterState.date.size ? 'Filtered Records' : 'All Records';
+
+  let list = applyTrainerFilters(masterData);
+  list = applySort('trainer', list);
+  const tb = document.getElementById('trainerTableBody');
+  const dateId = singleSelectedDate();
+  if(dateId) renderSessionSummary(dateId);
+  if(!list.length){
+    tb.innerHTML = `<tr><td colspan="11" class="empty-msg">No records match the current filters</td></tr>`;
+    updateSortIndicators('trainer');
+    return;
+  }
+  tb.innerHTML = list.map((p,i)=>`<tr id="trrow_${p.id}">${trainerRowCells(p, i+1)}</tr>`).join('');
   updateSortIndicators('trainer');
+}
+
+// Refreshes just the one row that changed instead of redrawing all ~1,450. Falls back to a full render if the
+// row isn't on screen (e.g. filtered out).
+function updateTrainerRow(pid){
+  const tr = document.getElementById('trrow_'+pid);
+  const p = masterData.find(m=>m.id===pid);
+  if(!tr || !p){ renderTrainerTable(); return; }
+  const numEl = tr.querySelector('.rownum');
+  tr.innerHTML = trainerRowCells(p, numEl ? numEl.textContent : '');
+}
+
+// After an attendance change (which never changes which rows match the filters), update only that row.
+// A change can reorder the table only when it's sorted by the Attendance column, so fall back to a full
+// render in that one case to keep ordering identical to before.
+function afterTrainerRowChange(pid){
+  if(sortState.trainer.key === 'attendance'){ renderTrainerTable(); return; }
+  updateTrainerRow(pid);
+  const dateId = singleSelectedDate();
+  if(dateId) renderSessionSummary(dateId);
 }
 
 async function onTrainerAssignChange(pid, value){
@@ -1941,7 +1965,7 @@ async function onTrainerAssignChange(pid, value){
     const [type, rest] = value.split(':');
     if(type==='date'){
       if(isDayFull(rest, pid)){
-        const capD = trainingConfig.dates.find(d=>d.id===rest);
+        const capD = dayById(rest);
         const go = await confirmDialog(`This day is at full capacity (${dayCapacity(capD)}). As a trainer, you can still add this pharmacist over capacity — continue?`);
         if(!go){ renderTrainerTable(); return; }
       }
@@ -1976,7 +2000,7 @@ async function setAttendanceStatus(pid, status){
   }
   ops.attendance[pid] = record;
   const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Attendance recorded','ok'); renderTrainerTable(); }
+  if(ok){ toast('Attendance recorded','ok'); afterTrainerRowChange(pid); }
 }
 async function setPunctuality(pid, punct){
   if(!requireTrainerIdentity()) return;
@@ -1986,7 +2010,7 @@ async function setPunctuality(pid, punct){
   if(punct==='On Time') time = '';
   ops.attendance[pid] = {...prev, punctuality: punct, time, markedBy: currentTrainerIdentity, markedAt: nowIso()};
   const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Updated','ok'); renderTrainerTable(); }
+  if(ok){ toast('Updated','ok'); afterTrainerRowChange(pid); }
 }
 async function onAttendanceTimeChange(pid, time){
   if(!requireTrainerIdentity()) return;

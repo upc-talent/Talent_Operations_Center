@@ -294,12 +294,12 @@ async function onAssignChange(pid, value){
     const [type, rest] = value.split(':');
     if(type==='date'){
       if(isDayFull(rest, pid)){
-        const capD = trainingConfig.dates.find(d=>d.id===rest);
+        const capD = dayById(rest);
         toast(`This day is at full capacity (${dayCapacity(capD)}). Please choose another day.`, 'err');
         renderSupervisorTable();
         return;
       }
-      const day = trainingConfig.dates.find(d=>d.id===rest);
+      const day = dayById(rest);
       let overQuota = false;
       if(day && day.isOnline && day.supervisorQuotas && day.supervisorQuotas[currentSupervisor]!==undefined){
         const quota = day.supervisorQuotas[currentSupervisor];
