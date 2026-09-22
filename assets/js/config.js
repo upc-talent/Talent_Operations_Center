@@ -1,16 +1,21 @@
 /* ════════════════════════════════════════════════════════════════════
    App configuration — the ONLY place URLs live.
-   Note: anything shipped to a browser can be seen by a determined visitor, so the
-   backend URL is not a secret. What protects the data is the backend itself:
-   trainer actions need a signed login token, supervisor actions are scoped to
-   their own pharmacists, and the Google Sheet stays private.
+   Note: anything shipped to a browser can be seen by a determined visitor, so neither the
+   backend URL nor the anon key is a secret. What protects the data is the backend itself:
+   trainer actions need a signed login token, supervisor actions are scoped server-side to
+   their own pharmacists, and Row-Level Security stops the anon key touching any table directly.
    ════════════════════════════════════════════════════════════════════ */
 (function () {
-  const cfg = {
-    // Google Apps Script web app that reads/writes the app's Google Sheet
-    API_URL: 'https://script.google.com/macros/s/AKfycbxbLEHU-uRJhHtd9yT2nqiFi6trJEyvNS8zxKNkALhY_deI5U9VlrKF5AJJUsbPvSyU/exec',
+  const SUPABASE_URL = 'https://aoqgabdsayaqgqroscdw.supabase.co';
 
-    // Existing LMS completion-report source (used by Trainer > Setup > "Sync Now")
+  const cfg = {
+    // Supabase is the single source of truth: a Postgres database behind the "api" Edge Function.
+    SUPABASE_URL,
+    SUPABASE_ANON: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvcWdhYmRzYXlhcWdxcm9zY2R3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNzI5NzYsImV4cCI6MjEwNTY0ODk3Nn0.xJ_aTcn6XtYbQGRi_DjlczgVRG7JV5gpi7RYwUxOH4s',
+    API_URL: SUPABASE_URL + '/functions/v1/api',
+
+    // Course-completion report source (used by Trainer > Setup > "Sync Now"). This is a separate,
+    // read-only reporting service — not the app's database.
     COMPLETION_REPORTS_URL: 'https://script.google.com/macros/s/AKfycbzLmYSVLykZNjjYKWeWxhJOlsHoDNKzxlGH8zg931_rr6y4VHTPxqNVj5W7zFvWNTuS/exec',
 
     // Landing-page cards
@@ -23,15 +28,6 @@
 
     BASE: ''   // path prefix for dev helpers (leave empty)
   };
-
-  // Local development: open any page with ?mock=1 to run against an in-browser fake sheet
-  // (no real data, nothing leaves your machine). ?mock=0 switches it back off.
-  try {
-    const q = new URLSearchParams(location.search).get('mock');
-    if (q === '1') sessionStorage.setItem('upc_mock', '1');
-    if (q === '0') sessionStorage.removeItem('upc_mock');
-    if (sessionStorage.getItem('upc_mock') === '1') cfg.API_URL = 'mock';
-  } catch (e) {}
 
   window.APP_CONFIG = cfg;
 })();

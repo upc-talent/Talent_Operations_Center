@@ -74,8 +74,10 @@
         </div>
       </div>
       <div id="trainerCard" class="card">
+        <div id="bulkBar-trainer" class="bulk-bar"></div>
         <div class="table-wrap"><table id="trainerTable">
           <thead><tr>
+            <th class="sel-cell no-sort"><input type="checkbox" id="bulkAll-trainer" onclick="bulkToggleAll('trainer', this.checked)" title="Select all shown"></th>
             <th onclick="toggleSort('trainer','displayName')">Pharmacist Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
             <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
             <th onclick="toggleSort('trainer','supervisor')">Supervisor <span class="sort-ind" id="sort-trainer-supervisor"></span></th>
@@ -172,16 +174,6 @@
       </div>
 
       <div class="card">
-        <div class="section-head" style="margin-top:0"><h2>Online Cities / Regions</h2></div>
-        <p class="small-note">Custom labels for grouping online sessions (e.g. "North", "South") — add them once here, then just tick them off when adding or editing an online training day. Feeds the Calendar tab's numbering, e.g. "Online North 1".</p>
-        <div class="row">
-          <input type="text" id="newOnlineCity" placeholder="e.g. North">
-          <button class="btn btn-navy btn-sm" onclick="addOnlineCity()">+ Add</button>
-        </div>
-        <div class="row" style="margin-top:10px" id="onlineCitiesList"></div>
-      </div>
-
-      <div class="card">
         <div class="section-head" style="margin-top:0">
           <h2>Training Days</h2>
           <div class="row">
@@ -191,17 +183,10 @@
           </div>
         </div>
         <div class="filter-bar" id="daysFilterBar" style="margin-bottom:14px;"></div>
-        <div class="row hidden" id="daysBulkBar" style="margin-bottom:10px;align-items:center;gap:8px;">
-          <span class="small-note" id="daysBulkCount" style="font-weight:600;"></span>
-          <button class="btn btn-outline btn-sm" onclick="hideSelectedDays()">🙈 Hide</button>
-          <button class="btn btn-outline btn-sm" onclick="unhideSelectedDays()">👁 Unhide</button>
-          <button class="btn btn-navy btn-sm" onclick="openBulkAssignModal()">👤 Assign…</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteSelectedDays()">🗑 Delete</button>
-          <button class="btn btn-outline btn-sm" onclick="clearDaySelection()">Clear selection</button>
-        </div>
+        <div id="bulkBar-days" class="bulk-bar"></div>
         <div class="table-wrap"><table>
           <thead><tr>
-            <th class="no-sort"><input type="checkbox" id="daysSelectAllCb" onchange="toggleAllDaySelection(this.checked)" title="Select all"></th>
+            <th class="sel-cell no-sort"><input type="checkbox" id="bulkAll-days" onclick="bulkToggleAll('days', this.checked)" title="Select all shown"></th>
             <th class="no-sort">#</th>
             <th onclick="toggleDaysSort('date')">Date <span class="sort-ind" id="sort-days-date"></span></th>
             <th onclick="toggleDaysSort('city')">City / Type <span class="sort-ind" id="sort-days-city"></span></th>
@@ -218,7 +203,7 @@
     <!-- APPROVALS TAB -->
     <div id="t-approvals" class="trainer-tab hidden">
       <div class="section-head" style="margin-top:0"><h2>Over-Quota Assignments Awaiting Approval</h2></div>
-      <p class="small-note" style="margin-bottom:8px">A supervisor assigned a pharmacist to a training day after reaching their quota for that day. Approve to let it count, or reject to send them back to Not Assigned.</p>
+      <p class="small-note" style="margin-bottom:8px">A supervisor assigned a pharmacist to an online day after reaching their quota for that day. Approve to let it count, or reject to send them back to Not Assigned.</p>
       <div class="card">
         <div class="table-wrap"><table>
           <thead><tr><th>Pharmacist Name</th><th>Email</th><th>Supervisor</th><th>Day</th><th style="min-width:170px">Action</th></tr></thead>
@@ -346,7 +331,7 @@
       </div>
       <div class="row" style="margin-bottom:10px;">
         <button class="btn btn-navy btn-sm" onclick="openAddDayModal()">+ Add Training Day</button>
-        <button class="btn btn-navy btn-sm" onclick="openCalendarImportModal()">↻ Calendar Sync</button>
+        <button class="btn btn-navy btn-sm" onclick="openCalendarImportModal()">⬆ Import Calendar</button>
         <button class="btn btn-outline btn-sm" onclick="hideAllDays()">🙈 Hide All</button>
         <button class="btn btn-danger btn-sm" onclick="deleteAllDays()">🗑 Delete All</button>
       </div>

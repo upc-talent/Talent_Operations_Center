@@ -120,6 +120,14 @@ label.field-label{font-size:11px;color:var(--muted);font-weight:700;margin-botto
 .chip-status .num{font-size:15px;margin-top:3px;}
 .chip-status .tag{font-size:9.5px;padding:2px 8px;margin-top:4px;}
 
+/* ── bulk selection (checkbox column + action bar) ───────────────────── */
+.sel-cell{width:36px;text-align:center;padding-left:6px;padding-right:6px;}
+.sel-cell input[type=checkbox]{width:16px;height:16px;cursor:pointer;vertical-align:middle;}
+.bulk-bar{display:none;align-items:center;gap:9px;flex-wrap:wrap;background:#eaf1fb;border:1.5px solid var(--blue);border-radius:10px;padding:9px 13px;margin-bottom:12px;}
+.bulk-bar.show{display:flex;}
+.bulk-bar .bulk-count{font-weight:800;font-size:12.5px;color:var(--navy);margin-right:2px;}
+.bulk-bar select{padding:7px 9px;border-radius:8px;border:1.5px solid var(--border);background:#fff;font-size:12.5px;color:var(--text);max-width:280px;}
+
 /* ── filter bar (matches report-tool style) ─────────────────────────── */
 .filter-bar{background:var(--card);border:1.5px solid var(--border);border-radius:10px;padding:11px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;position:relative;z-index:5;}
 .filter-bar .field-label{display:none;}
@@ -297,13 +305,9 @@ p.small-note{margin:0 0 6px;}
 .login-btn{margin-top:18px;padding:11px 16px;font-size:14px;}
 .login-back{margin-top:14px;text-align:center;color:var(--muted);font-size:12.5px;text-decoration:none;}
 .login-back:hover{color:var(--navy);text-decoration:underline;}
-/* Notes column on the supervisor page (the pharmacist's note from the HeadCount sheet) */
+/* Notes column on the supervisor page (the pharmacist's note from the roster) */
 .sup-note{display:inline-block;white-space:normal;min-width:160px;max-width:340px;background:var(--warn-bg);color:var(--warn);border-left:3px solid var(--warn);padding:5px 9px;border-radius:6px;font-weight:600;font-size:12.5px;line-height:1.45;}
 
 /* Pharmacist name column: small grey row number in front of the name */
 .rownum{display:inline-block;min-width:24px;margin-right:6px;color:var(--muted);font-size:11px;font-weight:600;}
 .name-cell{font-weight:600;color:var(--navy);}
-
-/* Selection checkboxes (bulk actions) are a UI control, not part of a table's content — hide them while
-   an Image/PDF export is capturing the DOM (see exportTableImage/exportTablePDF in common.js). */
-.exporting .sup-select-col{display:none!important;}

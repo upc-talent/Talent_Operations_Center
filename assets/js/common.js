@@ -123,21 +123,6 @@ const FALLBACK_PALETTE = [
 ];
 const ONLINE_COLOR = {code:'MIX', ...COLOR_PALETTE.grey};
 
-/* Online days can be tagged with one or more cities (for Calendar-tab grouping/labeling only, e.g.
-   "Online North 1" — colour always stays grey; this never affects capacity/visibility, which still uses
-   visibleSupervisors. Untagged online days (the old default) fall back to the plain "Mix" label as before. */
-function onlineCitiesLabel(d){
-  return (d.onlineCities && d.onlineCities.length) ? d.onlineCities.join(' + ') : '';
-}
-function onlineGroupKey(d){
-  return (d.onlineCities && d.onlineCities.length) ? 'ONLINE:'+[...d.onlineCities].sort().join('+') : '';
-}
-function onlineCityCheckboxesHtml(className, selectedCities){
-  const cities = (trainingConfig.onlineCities || []).slice().sort();
-  selectedCities = selectedCities || [];
-  return cities.map(c=>`<label><input type="checkbox" class="${className}" value="${esc(c)}" ${selectedCities.includes(c)?'checked':''}> ${esc(c)}</label>`).join('') || '<span class="small-note">No online cities/regions added yet — add some in Setup.</span>';
-}
-
 function cityColorFor(day){
   if(day.isOnline) return ONLINE_COLOR;
   const code = cityCodeFor(day.city || '');
@@ -191,19 +176,12 @@ let pendingList = [];
 let trainingConfig = {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[]};
 let ops = {assignments:{}, attendance:{}};
 let leaveRequestsCache = [];
-let _coreDataLoadedAt = 0;
-const CORE_DATA_SOFT_TTL_MS = 30000; // matches the "≈30s" freshness window already planned in docs/PERFORMANCE_PLAN.md §Phase 2.2
-// soft=true: reuse the in-memory data if it was loaded less than CORE_DATA_SOFT_TTL_MS ago (no network call).
-// Only pass soft=true from call sites that are pure navigation/tab-open (nothing was just written); every
-// call site that follows a save, undo/redo, or an explicit "Refresh" click still calls this with no args,
-// which is unchanged (always hits the server), so no existing behaviour after a write can go stale.
-async function loadCoreData(soft){
-  if(soft && _coreDataLoadedAt && (Date.now() - _coreDataLoadedAt) < CORE_DATA_SOFT_TTL_MS) return;
-  // one request for all four (a single round-trip; firing four at once made Google answer some with errors)
+async function loadCoreData(){
+  // one request for all four (a single round-trip instead of four)
   const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS], {
     [K_MASTER]: [],
     [K_PENDING]: [],
-    [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[], onlineCities:[]},
+    [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]},
     [K_OPS]: {assignments:{}, attendance:{}}
   });
   masterData = r[K_MASTER]; pendingList = r[K_PENDING]; trainingConfig = r[K_CONFIG]; ops = r[K_OPS];
@@ -211,9 +189,30 @@ async function loadCoreData(soft){
   if(!trainingConfig.trainerNames) trainingConfig.trainerNames = [];
   if(!trainingConfig.coordinatorNames) trainingConfig.coordinatorNames = [];
   if(!trainingConfig.trainingNames) trainingConfig.trainingNames = [];
-  if(!trainingConfig.onlineCities) trainingConfig.onlineCities = [];
   if(!trainingConfig.maxCapacity) trainingConfig.maxCapacity = 30;
-  _coreDataLoadedAt = Date.now();
+}
+
+/* ═══════════════════════════════ OPTIMISTIC BACKGROUND SAVE ═══════════════════════════════
+   The screen is updated immediately by the caller; this persists the change in the background so a click never
+   waits on the ~½‑second network round‑trip. Rapid changes are COALESCED — while one save is in flight, further
+   changes just mark the key dirty and are captured by a single follow‑up save (setShared always diffs the current
+   value against the last saved snapshot, so one request carries everything pending). On failure, setShared() fires
+   APP_HOOKS.onSaveFailed, which reloads the real state and re‑renders — reverting the optimistic change. The
+   floating sync pill (Sending…/Saved) is driven by the requests themselves, so it still reflects what's happening. */
+const _saveQueue = {};
+function saveShared(key, getValue){
+  const s = _saveQueue[key] || (_saveQueue[key] = { saving:false, dirty:false });
+  if(s.saving){ s.dirty = true; return; }
+  s.saving = true;
+  (async ()=>{
+    try{
+      do{
+        s.dirty = false;
+        const ok = await setShared(key, getValue());
+        if(!ok) break;   // onSaveFailed already reloaded the true state; stop coalescing
+      } while(s.dirty);
+    } finally { s.saving = false; }
+  })();
 }
 
 async function loadLogo(){
@@ -239,15 +238,6 @@ function initSyncStatusIndicator(){
     if(txt) txt.textContent = SYNC_STATUS_LABELS[status] || '';
   });
 }
-// Safety net alongside the per-row "Saving…" state: warns before leaving/closing the tab while a save
-// (any save, on either page) is still in flight, so a save doesn't get silently abandoned mid-request.
-(function(){
-  let lastApiStatus = 'idle';
-  if(typeof onApiStatusChange === 'function') onApiStatusChange(s=>{ lastApiStatus = s; });
-  window.addEventListener('beforeunload', function(e){
-    if(lastApiStatus==='saving'){ e.preventDefault(); e.returnValue = ''; }
-  });
-})();
 
 /* ═══════════════════════════════ CAPACITY HELPERS ═══════════════════════════════ */
 function dayCount(dateId, excludingPid){
@@ -305,6 +295,92 @@ function rerenderScope(scope){
   else if(scope==='trainer') renderTrainerTable();
   else if(scope==='days') renderDaysTable();
   else renderMasterSheetPreview();
+}
+
+/* ═══════════════════════════════ BULK SELECTION (checkboxes + action bar) ═══════════════════════════════
+   Shared by the trainer records table, the days table and the supervisor table. Each row carries a checkbox;
+   when anything is selected a bar (#bulkBar-<scope>) shows the count and the actions. The per-scope ACTION
+   functions (bulkApplyTrainerAssign / bulkApplySupAssign / bulkDeletePharmacists / bulkDays) live in the page
+   that owns that table. Selection is kept in a Set and pruned to the currently-visible rows on every full render,
+   so "what's selected" always matches what's on screen. */
+const bulkSel = { trainer:new Set(), sup:new Set(), days:new Set() };
+const bulkVisible = { trainer:[], sup:[], days:[] };
+
+function bulkCheckboxCell(scope, id){
+  const checked = bulkSel[scope].has(id) ? 'checked' : '';
+  return `<td class="sel-cell"><input type="checkbox" class="rowsel rowsel-${scope}" ${checked} onclick="event.stopPropagation(); bulkToggle('${scope}','${id}',this.checked)"></td>`;
+}
+function bulkToggle(scope, id, checked){
+  if(checked) bulkSel[scope].add(id); else bulkSel[scope].delete(id);
+  updateBulkBar(scope);
+}
+function bulkToggleAll(scope, checked){
+  bulkVisible[scope].forEach(id=>{ if(checked) bulkSel[scope].add(id); else bulkSel[scope].delete(id); });
+  document.querySelectorAll('.rowsel-'+scope).forEach(cb=>{ cb.checked = checked; });
+  updateBulkBar(scope);
+}
+function bulkClear(scope){
+  bulkSel[scope].clear();
+  document.querySelectorAll('.rowsel-'+scope).forEach(cb=>{ cb.checked = false; });
+  updateBulkBar(scope);
+}
+// Called by each render with the ids it just drew — updates the "select all" state and drops selections that
+// scrolled out of the current filter.
+function bulkSyncAfterRender(scope, visibleIds){
+  bulkVisible[scope] = visibleIds;
+  const vis = new Set(visibleIds);
+  [...bulkSel[scope]].forEach(id=>{ if(!vis.has(id)) bulkSel[scope].delete(id); });
+  updateBulkBar(scope);
+}
+function syncBulkHeader(scope){
+  const h = document.getElementById('bulkAll-'+scope);
+  if(!h) return;
+  const total = bulkVisible[scope].length;
+  const sel = bulkVisible[scope].filter(id=>bulkSel[scope].has(id)).length;
+  h.checked = total>0 && sel===total;
+  h.indeterminate = sel>0 && sel<total;
+}
+function bulkAssignOptions(scope){
+  const days = (scope==='sup') ? visibleDaysFor(currentSupervisor) : (trainingConfig.dates||[]);
+  let html = `<option value="">— Assign selected to… —</option><optgroup label="Training Days">`;
+  days.forEach(d=>{
+    const passed = (scope==='sup' && isDeadlinePassed(d)) ? ' (Deadline passed)' : '';
+    html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed}</option>`;
+  });
+  html += `</optgroup><optgroup label="Other Status">`;
+  LEAVE_STATUSES.forEach(s=>{ html += `<option value="leave:${esc(s)}">${esc(s)}</option>`; });
+  html += `</optgroup><option value="__none__">Not Assigned (unassign)</option>`;
+  return html;
+}
+function updateBulkBar(scope){
+  const bar = document.getElementById('bulkBar-'+scope);
+  if(!bar) return;
+  const n = bulkSel[scope].size;
+  if(!n){ bar.classList.remove('show'); bar.innerHTML=''; syncBulkHeader(scope); return; }
+  if(bar.classList.contains('show')){
+    // already built — just update the count so we don't reset the user's dropdown choice
+    const c = bar.querySelector('.bulk-count'); if(c) c.textContent = n+' selected';
+    syncBulkHeader(scope);
+    return;
+  }
+  let html = `<span class="bulk-count">${n} selected</span>`;
+  if(scope==='days'){
+    html += `<button class="btn btn-outline btn-sm" onclick="bulkDays('hide')">🙈 Hide</button>`
+          + `<button class="btn btn-outline btn-sm" onclick="bulkDays('unhide')">👁 Unhide</button>`
+          + `<button class="btn btn-danger btn-sm" onclick="bulkDays('delete')">🗑 Delete</button>`;
+  } else {
+    html += `<select id="bulkAssignSelect-${scope}">${bulkAssignOptions(scope)}</select>`
+          + `<button class="btn btn-navy btn-sm" onclick="bulkApplyAssign('${scope}')">Apply</button>`;
+    if(scope==='trainer') html += `<button class="btn btn-danger btn-sm" onclick="bulkDeletePharmacists()">🗑 Delete from roster</button>`;
+  }
+  html += `<button class="btn btn-outline btn-sm" onclick="bulkClear('${scope}')">Clear</button>`;
+  bar.innerHTML = html;
+  bar.classList.add('show');
+  syncBulkHeader(scope);
+}
+function bulkApplyAssign(scope){
+  if(scope==='sup') bulkApplySupAssign();
+  else bulkApplyTrainerAssign();
 }
 function distinctArrayValues(list, key){
   const set = new Set();
@@ -834,7 +910,6 @@ async function exportTableImage(containerId, filename){
   if(typeof html2canvas === 'undefined'){ toast('Image export library failed to load — check your connection and try again','err'); return; }
   const chosenName = await promptForFilename(filename, 'png');
   if(!chosenName) return;
-  el.classList.add('exporting');
   try{
     const canvas = await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false});
     canvas.toBlob((blob)=>{
@@ -850,7 +925,6 @@ async function exportTableImage(containerId, filename){
       toast('Image downloaded','ok');
     }, 'image/png');
   }catch(e){ console.error('Image export error:', e); toast('Image export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err'); }
-  finally{ el.classList.remove('exporting'); }
 }
 async function exportTablePDF(containerId, filename){
   const el = document.getElementById(containerId);
@@ -858,7 +932,6 @@ async function exportTablePDF(containerId, filename){
   if(typeof html2canvas === 'undefined' || !window.jspdf){ toast('PDF export library failed to load — check your connection and try again','err'); return; }
   const chosenName = await promptForFilename(filename, 'pdf');
   if(!chosenName) return;
-  el.classList.add('exporting');
   try{
     const canvas = await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false});
     const { jsPDF } = window.jspdf;
@@ -876,5 +949,4 @@ async function exportTablePDF(containerId, filename){
     setTimeout(()=>URL.revokeObjectURL(pdfUrl), 5000);
     toast('PDF downloaded','ok');
   }catch(e){ console.error('PDF export error:', e); toast('PDF export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err'); }
-  finally{ el.classList.remove('exporting'); }
 }

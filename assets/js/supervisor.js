@@ -8,91 +8,6 @@ function switchSupTrack(track){
   renderSupervisorChips();
   renderSupervisorTable();
 }
-// Show a track's tab only if this supervisor actually has pharmacists in it; if only one track applies,
-// hide the tab strip entirely and land straight on that track (no functional change — same data, same scope logic).
-function updateSupTrackTabsVisibility(){
-  const own = masterData.filter(p=>p.supervisor===currentSupervisor);
-  const hasOffline = own.some(p=>!isOnlinePharmacist(p));
-  const hasOnline = own.some(p=>isOnlinePharmacist(p));
-  const wrap = document.getElementById('supTrackTabsWrap');
-  const offBtn = document.getElementById('supTrackTab-offline');
-  const onBtn = document.getElementById('supTrackTab-online');
-  if(offBtn) offBtn.classList.toggle('hidden', !hasOffline);
-  if(onBtn) onBtn.classList.toggle('hidden', !hasOnline);
-  if(wrap) wrap.classList.toggle('hidden', !(hasOffline && hasOnline));
-  // land on whichever track this supervisor actually has; only matters when one side is empty
-  if(!hasOffline && hasOnline) supTrack = 'online';
-  else if(hasOffline && !hasOnline) supTrack = 'offline';
-  else if(supTrack!=='online' && supTrack!=='offline') supTrack = 'offline';
-  if(offBtn) offBtn.classList.toggle('active', supTrack==='offline');
-  if(onBtn) onBtn.classList.toggle('active', supTrack==='online');
-}
-/* Multi-select for bulk-assigning a date to several pharmacists at once. */
-let selectedSupPids = new Set();
-function updateSupBulkBar(){
-  const bar = document.getElementById('supBulkBar');
-  const countEl = document.getElementById('supBulkCount');
-  const selectAllCb = document.getElementById('supSelectAllCb');
-  const sel = document.getElementById('supBulkAssignSelect');
-  if(!bar) return;
-  const n = selectedSupPids.size;
-  bar.classList.toggle('hidden', n===0);
-  if(countEl) countEl.textContent = n===1 ? '1 pharmacist selected' : `${n} pharmacists selected`;
-  if(selectAllCb){
-    const visibleIds = [...document.querySelectorAll('.sup-select-cb')].map(cb=>cb.dataset.pid);
-    const visibleSelected = visibleIds.filter(id=>selectedSupPids.has(id));
-    selectAllCb.checked = visibleIds.length>0 && visibleSelected.length===visibleIds.length;
-    selectAllCb.indeterminate = visibleSelected.length>0 && visibleSelected.length<visibleIds.length;
-  }
-  // Everyone currently shown is on the same track (online/offline), so one shared list of relevant days works for all of them.
-  if(sel && n>0){
-    const days = visibleDaysFor(currentSupervisor).filter(d => !!d.isOnline === (supTrack==='online'));
-    const cur = sel.value;
-    sel.innerHTML = `<option value="">-- Choose a training day --</option>` + days.map(d=>{
-      const val = 'date:'+d.id;
-      return `<option value="${val}">${assignOptionLabel(d, true)}</option>`;
-    }).join('');
-    if([...sel.options].some(o=>o.value===cur)) sel.value = cur;
-  }
-}
-function toggleSupSelection(pid, checked){
-  if(checked) selectedSupPids.add(pid); else selectedSupPids.delete(pid);
-  updateSupBulkBar();
-}
-function toggleAllSupSelection(checked){
-  document.querySelectorAll('.sup-select-cb').forEach(cb=>{
-    const id = cb.dataset.pid;
-    cb.checked = checked;
-    if(checked) selectedSupPids.add(id); else selectedSupPids.delete(id);
-  });
-  updateSupBulkBar();
-}
-function clearSupSelection(){
-  selectedSupPids.clear();
-  renderSupervisorTable();
-}
-// Applies the chosen day to every selected pharmacist, one at a time (same call as a single manual pick), so
-// each person gets the same capacity/quota/deadline checks — and the same per-row "Saving…" state — a supervisor
-// would get assigning them one by one. Sequential on purpose: capacity is checked against the running count,
-// so if a day fills up partway through, the remaining people correctly get the "day full" message instead of
-// all being silently over-booked.
-async function bulkAssignSelected(){
-  const value = document.getElementById('supBulkAssignSelect').value;
-  if(!value){ toast('Choose a training day first','err'); return; }
-  const pids = [...selectedSupPids].filter(pid=>currentSupervisorScope().some(p=>p.id===pid));
-  if(!pids.length) return;
-  let done = 0;
-  const countEl = document.getElementById('supBulkCount');
-  for(const pid of pids){
-    if(countEl) countEl.textContent = `Assigning ${done+1} of ${pids.length}…`;
-    await onAssignChange(pid, value, {quiet:true});
-    done++;
-  }
-  selectedSupPids.clear();
-  toast(`Assigned ${done} pharmacist(s)`,'ok');
-  renderSupervisorChips();
-  renderSupervisorTable();
-}
 function currentSupervisorScope(){
   return masterData.filter(p=>p.supervisor===currentSupervisor && isOnlinePharmacist(p) === (supTrack==='online'));
 }
@@ -145,7 +60,6 @@ async function loadSupervisorView(silent){
   document.getElementById('supTitle').textContent = 'Pharmacists — ' + name;
   document.getElementById('capHintSup').textContent = trainingConfig.maxCapacity;
 
-  updateSupTrackTabsVisibility();
   renderSupervisorChips();
   buildSupervisorFilterBar();
   renderSupervisorTable();
@@ -286,13 +200,10 @@ function renderSupervisorTable(){
   own = applySort('sup', own);
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
-  // drop selections that fell out of scope (track switch, filter change, pharmacist removed) so the count stays accurate
-  const ownIds = new Set(own.map(p=>p.id));
-  selectedSupPids.forEach(id=>{ if(!ownIds.has(id)) selectedSupPids.delete(id); });
   if(!own.length && !pending.length){
     tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
-    updateSupBulkBar();
+    bulkSyncAfterRender('sup', []);
     return;
   }
   let i = 0;
@@ -301,7 +212,7 @@ function renderSupervisorTable(){
   let rows = own.map(p=>{
     i++;
     return `<tr>
-      <td class="sup-select-col"><input type="checkbox" class="sup-select-cb" data-pid="${p.id}" ${selectedSupPids.has(p.id)?'checked':''} onchange="toggleSupSelection('${p.id}', this.checked)"></td>
+      ${bulkCheckboxCell('sup', p.id)}
       ${nameCell(i, p)}
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
@@ -315,7 +226,7 @@ function renderSupervisorTable(){
   rows += pending.map(p=>{
     i++;
     return `<tr class="pending-row">
-      <td class="sup-select-col"></td>
+      <td class="sel-cell"></td>
       ${nameCell(i, p)}
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
@@ -331,7 +242,53 @@ function renderSupervisorTable(){
   }).join('');
   tb.innerHTML = rows;
   updateSortIndicators('sup');
-  updateSupBulkBar();
+  bulkSyncAfterRender('sup', own.map(p=>p.id));
+}
+
+/* ═══════════════════════════════ BULK ASSIGN (SUPERVISOR) ═══════════════════════════════ */
+// Assign / set-leave / unassign the selected pharmacists. Respects the same rules the single-row dropdown does
+// (online↔offline, deadline, capacity, quota) and skips any that don't fit, reporting the counts.
+function bulkApplySupAssign(){
+  const sel = document.getElementById('bulkAssignSelect-sup');
+  const value = sel ? sel.value : '';
+  if(!value){ toast('Choose what to assign first','err'); return; }
+  const people = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
+  if(!people.length) return;
+  let done = 0, skipped = 0, pending = 0;
+  if(value==='__none__'){
+    people.forEach(p=>{ delete ops.assignments[p.id]; delete ops.attendance[p.id]; done++; });
+  } else {
+    const [type, rest] = value.split(':');
+    if(type==='leave'){
+      people.forEach(p=>{ ops.assignments[p.id] = {type:'leave', status:rest, assignedBy:currentSupervisor, assignedAt:nowIso()}; delete ops.attendance[p.id]; done++; });
+    } else {
+      const day = dayById(rest);
+      if(!day || day.active===false){ toast('That training day is not open.','err'); return; }
+      if(isDeadlinePassed(day)){ toast('The deadline for that training day has passed.','err'); return; }
+      const cap = dayCapacity(day);
+      let count = dayCount(rest);   // everyone currently on the day
+      const quota = (day.supervisorQuotas && day.supervisorQuotas[currentSupervisor]!==undefined) ? Number(day.supervisorQuotas[currentSupervisor]) : null;
+      let mine = masterData.filter(m=>m.supervisor===currentSupervisor && ops.assignments[m.id]?.type==='date' && ops.assignments[m.id]?.dateId===rest).length;
+      people.forEach(p=>{
+        if(isOnlinePharmacist(p) !== !!day.isOnline){ skipped++; return; }   // wrong type for this day
+        const alreadyHere = ops.assignments[p.id]?.type==='date' && ops.assignments[p.id]?.dateId===rest;
+        if(alreadyHere) return;   // no-op
+        if(count >= cap){ skipped++; return; }   // day full
+        const overQuota = quota!==null && mine>=quota;
+        ops.assignments[p.id] = {type:'date', dateId:rest, assignedBy:currentSupervisor, assignedAt:nowIso(), overQuota, quotaApproved:!overQuota};
+        delete ops.attendance[p.id];
+        count++; mine++; done++; if(overQuota) pending++;
+      });
+    }
+  }
+  bulkSel.sup.clear();
+  renderSupervisorChips();
+  renderSupervisorTable();
+  saveShared(K_OPS, ()=>ops);
+  let msg = `Updated ${done} pharmacist(s)`;
+  if(pending) msg += ` (${pending} over quota — pending trainer approval)`;
+  if(skipped) msg += `, skipped ${skipped} (day full or wrong type)`;
+  toast(msg, (skipped||pending)?'info':'ok');
 }
 
 function openEditPendingModal(pid){
@@ -379,34 +336,7 @@ async function deletePendingPharmacist(pid){
   if(ok){ toast('Deleted','ok'); renderSupervisorChips(); renderSupervisorTable(); }
 }
 
-// The native <select> already shows the newly picked value the instant it's chosen (that's just the browser) —
-// but the save to the sheet is a separate, slower round-trip. Without this, the row looks "done" the whole time
-// it's actually still in flight, which is how a pick gets missed if a supervisor moves on too quickly.
-// This pins a visible "Saving…" state (and locks the control) to the exact row until that save is confirmed.
-function setAssignRowSaving(pid, saving){
-  const sel = document.querySelector(`.assign-select[data-pid="${pid}"]`);
-  if(!sel) return;
-  sel.disabled = saving;
-  const wrap = sel.closest('div');
-  if(!wrap) return;
-  let tag = wrap.querySelector('.row-saving-tag');
-  if(saving){
-    if(!tag){
-      tag = document.createElement('span');
-      tag.className = 'row-saving-tag small-note';
-      tag.style.cssText = 'margin-left:6px;color:var(--pending,#b8860b);white-space:nowrap;';
-      tag.textContent = '⏳ Saving…';
-      wrap.appendChild(tag);
-    }
-  } else if(tag){
-    tag.remove();
-  }
-}
-// opts.quiet: used by bulkAssignSelected to skip the per-person toast and full-table re-render (each row still
-// shows its own "Saving…" state) — the caller does one toast and one re-render after the whole batch instead of
-// after every person, which matters once you're assigning a dozen+ people in one go.
-async function onAssignChange(pid, value, opts){
-  const quiet = !!(opts && opts.quiet);
+async function onAssignChange(pid, value){
   if(!value){
     delete ops.assignments[pid];
     delete ops.attendance[pid];
@@ -416,7 +346,7 @@ async function onAssignChange(pid, value, opts){
       if(isDayFull(rest, pid)){
         const capD = dayById(rest);
         toast(`This day is at full capacity (${dayCapacity(capD)}). Please choose another day.`, 'err');
-        if(!quiet) renderSupervisorTable();
+        renderSupervisorTable();
         return;
       }
       const day = dayById(rest);
@@ -429,30 +359,20 @@ async function onAssignChange(pid, value, opts){
         if(currentCount >= quota) overQuota = true;
       }
       ops.assignments[pid] = {type:'date', dateId:rest, assignedBy:currentSupervisor, assignedAt: nowIso(), overQuota, quotaApproved: !overQuota};
-      if(overQuota){
-        setAssignRowSaving(pid, true);
-        const ok2 = await setShared(K_OPS, ops);
-        setAssignRowSaving(pid, false);
-        if(ok2 && !quiet){
-          toast(`You've reached your quota for this day — this assignment needs the trainer's approval first.`, 'info');
-          renderSupervisorChips();
-          renderSupervisorTable();
-        }
-        return;
-      }
+      renderSupervisorChips();
+      renderSupervisorTable();
+      toast(overQuota ? `You've reached your quota for this day — this assignment needs the trainer's approval first.` : 'Saved', overQuota ? 'info' : 'ok');
+      saveShared(K_OPS, ()=>ops);
+      return;
     } else {
       ops.assignments[pid] = {type:'leave', status:rest, assignedBy:currentSupervisor, assignedAt: nowIso()};
       delete ops.attendance[pid];
     }
   }
-  setAssignRowSaving(pid, true);
-  const ok = await setShared(K_OPS, ops);
-  setAssignRowSaving(pid, false);
-  if(ok && !quiet){
-    toast('Saved','ok');
-    renderSupervisorChips();
-    renderSupervisorTable();
-  }
+  renderSupervisorChips();
+  renderSupervisorTable();
+  toast('Saved','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 function openAddPharmacistModal(){
   const own = currentSupervisorScope();

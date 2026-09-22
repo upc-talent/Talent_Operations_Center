@@ -3,7 +3,7 @@
    ------------------------------------------------------------------
    The app code was written against a tiny key/value store
    (getShared / setShared). This file keeps that interface but talks to
-   the Google Apps Script backend, and — importantly — sends only the
+   the Supabase backend, and — importantly — sends only the
    RECORDS THAT CHANGED (a diff against what this page last read), so two
    people saving different rows at the same time no longer overwrite each other.
    ════════════════════════════════════════════════════════════════════ */
@@ -15,21 +15,6 @@
   window.APP_HOOKS = APP_HOOKS;
 
   /* ───────────── transport ───────────── */
-  let mockLoading = null;
-  function loadMock() {
-    if (window.MockBackend) return Promise.resolve();
-    if (!mockLoading) {
-      mockLoading = new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = (CFG.BASE || '') + 'dev/mock-backend.js';
-        s.onload = resolve;
-        s.onerror = () => reject(new Error('Could not load the dev mock backend'));
-        document.head.appendChild(s);
-      });
-    }
-    return mockLoading;
-  }
-
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   /* ───────────── status indicator (are we loading / saving right now?) ─────────────
@@ -56,13 +41,17 @@
   }
   window.onApiStatusChange = function (fn) { statusListeners.push(fn); fn(computeStatus()); };
 
-  // One attempt. Anything that looks like a temporary Google / network hiccup is flagged `transient` so it can be retried.
+  // One attempt. Anything that looks like a temporary server / network hiccup is flagged `transient` so it can be retried.
   async function transportOnce(body) {
     if (!CFG.API_URL) throw new Error('Backend URL is not configured (assets/js/config.js).');
     let res;
     try {
-      // Plain-text body keeps this a "simple" request, so Apps Script needs no CORS pre-flight.
-      res = await fetch(CFG.API_URL, { method: 'POST', body: JSON.stringify(body), redirect: 'follow' });
+      // The anon key only lets the request REACH the Edge Function; all real auth (trainer token /
+      // supervisor scope) is enforced inside it. The function answers the CORS pre-flight.
+      res = await fetch(CFG.API_URL, {
+        method: 'POST', redirect: 'follow', body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json', 'apikey': CFG.SUPABASE_ANON, 'Authorization': 'Bearer ' + CFG.SUPABASE_ANON }
+      });
     } catch (e) {
       const err = new Error('Network problem — check your connection');
       err.transient = true;
@@ -76,28 +65,38 @@
     try {
       return await res.json();
     } catch (e) {
-      const err = new Error('Google returned an unexpected page');   // an HTML error page instead of JSON
+      const err = new Error('The server returned an unexpected response');   // an HTML error page instead of JSON
       err.transient = true;
       throw err;
     }
   }
 
-  // Google Apps Script occasionally answers a perfectly good request with a 404 / 5xx / HTML page, mostly when
+  // A serverless backend can occasionally answer a perfectly good request with a 5xx / HTML page, mostly when
   // several requests hit at once. Every request here is safe to repeat (writes are per-record upserts/deletes),
   // so temporary failures are retried a couple of times before the user ever sees an error.
+  // Open any page with ?debug=1 to log, per request, how long the round-trip took versus how long the server
+  // itself spent (`_ms`) — that is what tells you whether a slow moment is the network or the database.
+  const DEBUG = (() => { try { return new URLSearchParams(location.search).get('debug') === '1'; } catch (e) { return false; } })();
+  function logTiming(body, t0, out) {
+    if (!DEBUG) return;
+    const label = body.action + (body.key ? ':' + body.key : (body.keys ? ':' + body.keys.length + ' keys' : ''));
+    const rt = Math.round((performance.now ? performance.now() : Date.now()) - t0);
+    const server = out && out._ms != null ? out._ms : null;
+    console.log('[api] ' + label + ' — ' + rt + 'ms round-trip' + (server != null ? ' (' + server + 'ms server, ' + Math.max(rt - server, 0) + 'ms network)' : ''));
+  }
+
   async function transport(body) {
     const isWrite = body.action === 'patch';
     if (isWrite) pendingWrites++; else pendingReads++;
     emitStatus();
+    const t0 = performance.now ? performance.now() : Date.now();
     try {
-      if (CFG.API_URL === 'mock') {
-        await loadMock();
-        return await window.MockBackend.handle(body);
-      }
       const waits = [700, 1800];
       for (let attempt = 0; ; attempt++) {
         try {
-          return await transportOnce(body);
+          const out = await transportOnce(body);
+          logTiming(body, t0, out);
+          return out;
         } catch (e) {
           if (!e.transient || attempt >= waits.length) throw e;
           await sleep(waits[attempt]);
@@ -155,8 +154,6 @@
     },
 
     async supervisorNames() { return (await API.call('supervisors')).names || []; },
-    async calendarGrid() { return (await API.call('calendarGrid')).values || []; },
-    async syncCalendar() { return (await API.call('syncCalendar')).summary || {}; },
     async venues() { return (await API.call('venues')).venues || []; }
   };
   window.API = API;
@@ -181,7 +178,7 @@
     c.settings = clone(data.settings || {});
     if (key === 'training-config') {
       // a brand-new sheet has none of these yet — give every caller the shape the app code expects
-      ['trainerNames', 'coordinatorNames', 'trainingNames', 'onlineCities'].forEach(k => { if (!Array.isArray(c.settings[k])) c.settings[k] = []; });
+      ['trainerNames', 'coordinatorNames', 'trainingNames'].forEach(k => { if (!Array.isArray(c.settings[k])) c.settings[k] = []; });
       if (!c.settings.maxCapacity) c.settings.maxCapacity = 30;
     }
     return c;
@@ -272,8 +269,8 @@
     }
   };
 
-  /** Loads several keys in ONE request (much lighter on Google than parallel requests). Falls back to one-by-one
-      loading if the deployed script is an older version that doesn't know "getMany". */
+  /** Loads several keys in ONE request (one round-trip instead of several). Falls back to one-by-one
+      loading if the deployed backend is an older version that doesn't know "getMany". */
   window.getSharedMany = async function (keys, fallbacks) {
     fallbacks = fallbacks || {};
     try {

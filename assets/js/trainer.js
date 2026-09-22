@@ -32,7 +32,7 @@ async function undoCalendarChange(){
   trainingConfig = prev;
   const ok = await setShared(K_CONFIG, trainingConfig);
   updateUndoRedoButtons();
-  if(ok){ toast('Undone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); renderOnlineCitiesList(); buildTrainerFilterBar(); }
+  if(ok){ toast('Undone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); buildTrainerFilterBar(); }
 }
 async function redoCalendarChange(){
   if(!configRedoStack.length) return;
@@ -42,7 +42,7 @@ async function redoCalendarChange(){
   trainingConfig = next;
   const ok = await setShared(K_CONFIG, trainingConfig);
   updateUndoRedoButtons();
-  if(ok){ toast('Redone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); renderOnlineCitiesList(); buildTrainerFilterBar(); }
+  if(ok){ toast('Redone','ok'); renderCalendar(); buildDaysFilterBar(); renderDaysTable(); renderTrainerNamesList(); renderCoordinatorNamesList(); renderTrainingNamesList(); buildTrainerFilterBar(); }
 }
 
 async function handleCalendarDrop(e, iso){
@@ -92,7 +92,7 @@ function shiftCalendarQuarter(delta){
   calendarBaseMonth += delta*3;
   while(calendarBaseMonth<0){ calendarBaseMonth+=12; calendarBaseYear--; }
   while(calendarBaseMonth>11){ calendarBaseMonth-=12; calendarBaseYear++; }
-  renderCalendar(true); // paging months changes nothing on the server — reuse the already-loaded data
+  renderCalendar();
 }
 function scrollToCalMonth(i){
   const el = document.getElementById('cal-month-'+i);
@@ -101,28 +101,19 @@ function scrollToCalMonth(i){
 
 /* Sequential per-city instance numbers for calendar labels, e.g. ABH 1, ABH 2, ABH 3 — in date order */
 function computeCityInstanceNumbers(){
-  const byGroup = {};
-  const numbers = {};
+  const byCity = {};
   const nonOnline = trainingConfig.dates.filter(d=>!d.isOnline).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const numbers = {};
   nonOnline.forEach(d=>{
     const code = cityColorFor(d).code;
-    byGroup[code] = (byGroup[code]||0) + 1;
-    numbers[d.id] = byGroup[code];
-  });
-  // Online days with cities tagged get their own counter, grouped by the exact set of cities tagged
-  // (so "North" and "North + Taif" count separately). A split online training shares one id across both
-  // of its calendar cells, so both halves automatically get the same number here — nothing else needed.
-  const onlineGrouped = trainingConfig.dates.filter(d=>d.isOnline && onlineGroupKey(d)).slice().sort((a,b)=>a.date.localeCompare(b.date));
-  onlineGrouped.forEach(d=>{
-    const key = onlineGroupKey(d);
-    byGroup[key] = (byGroup[key]||0) + 1;
-    numbers[d.id] = byGroup[key];
+    byCity[code] = (byCity[code]||0) + 1;
+    numbers[d.id] = byCity[code];
   });
   return numbers;
 }
 
-async function renderCalendar(soft){
-  await loadCoreData(soft);
+async function renderCalendar(){
+  await loadCoreData();
   updateUndoRedoButtons();
   const now = new Date();
   if(calendarBaseYear===undefined){ calendarBaseYear = now.getFullYear(); calendarBaseMonth = now.getMonth(); }
@@ -195,9 +186,7 @@ function renderCalendarMonth(year, month, sectionIdx, instanceNumbers){
       const count = dayCount(d.id);
       const num = instanceNumbers[d.id];
       const isActive = d.active!==false;
-      const label = d.isOnline
-        ? (onlineCitiesLabel(d) ? `Online ${onlineCitiesLabel(d)}${num?' '+num:''}` : (d.trainingName || c.code))
-        : ((num ? `${c.code} ${num}` : c.code));
+      const label = d.isOnline ? (d.trainingName || c.code) : ((num ? `${c.code} ${num}` : c.code));
       const trainerLine = (d.trainerNames && d.trainerNames.length) ? `<br><span style="font-weight:400;">${esc(d.trainerNames.join(', '))}</span>` : '';
       const dayTag = isContinuation ? '<br><span style="font-weight:400;font-size:8.5px;opacity:.8;">· Day 2</span>' : '';
       const dragAttrs = isContinuation ? '' : `draggable="true" ondragstart="event.stopPropagation(); dragDayId='${d.id}'; event.dataTransfer.effectAllowed='move'; this.classList.add('cal-event-dragging');" ondragend="dragDayId=null; this.classList.remove('cal-event-dragging'); document.querySelectorAll('.cal-cell-dragover').forEach(el=>el.classList.remove('cal-cell-dragover'));"`;
@@ -274,46 +263,14 @@ const CAL_CODE_PATTERNS = [
 ];
 function openCalendarImportModal(){
   showModal(`
-    <h3>Calendar sync</h3>
-    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;background:#f7faff;">
-      <p class="small-note" style="margin:0 0 8px;"><b>Automatic.</b> The "2026 - Q4 Training Calendar" tab of your Google Sheet is read by the server whenever the app loads (at most once a minute). New trainings appear for supervisors on their own; a training that moves keeps its assigned pharmacists; one removed from the sheet is hidden, never deleted. Anything you set here (visible-to, quotas, capacity, deadline, venue) is kept.</p>
-      <button class="btn btn-navy btn-sm" onclick="syncCalendarNow()">↻ Sync now</button>
-    </div>
-    <details style="margin-bottom:10px;">
-      <summary class="small-note" style="cursor:pointer;">Advanced: import from an Excel file instead</summary>
-      <p class="small-note" style="margin-top:8px;">Weekly grid layout: a row of weekday dates ("Tue 8 Sep"), a row of city/training codes beneath, and a row of trainer names beneath that. "MIX" codes become online trainings. Unrecognized codes (holidays, "Salaries"…) are skipped.</p>
-      <div class="field"><input type="file" id="calImportFile" accept=".xlsx,.xls"></div>
-      <button class="btn btn-outline btn-sm" onclick="confirmCalendarImport()">Import File</button>
-    </details>
+    <h3>Import calendar</h3>
+    <p class="small-note" style="margin-top:-6px;">Bring a quarter's training days in from your planning spreadsheet. Existing days keep everything you set here (visible-to, quotas, capacity, deadline, venue) — a day whose code already exists is updated, not duplicated.</p>
+    <p class="small-note">Expected weekly grid layout: a row of weekday dates ("Tue 8 Sep"), a row of city/training codes beneath, and a row of trainer names beneath that. "MIX" codes become online trainings. Unrecognized codes (holidays, "Salaries"…) are skipped.</p>
+    <div class="field"><input type="file" id="calImportFile" accept=".xlsx,.xls"></div>
     <div class="modal-actions">
-      <button class="btn btn-outline btn-sm" onclick="closeModal()">Close</button>
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="confirmCalendarImport()">Import File</button>
     </div>`, 'max-width:600px;');
-}
-
-/* Ask the server to re-read the calendar tab right now (it also does this by itself). */
-async function syncCalendarNow(){
-  closeModal();
-  toast('Reading the calendar tab…','info');
-  try{
-    const s = (await API.syncCalendar()) || {};
-    await renderCalendar();
-    buildDaysFilterBar(); renderDaysTable(); buildTrainerFilterBar(); renderTrainerNamesList();
-    const li = t => `<li style="margin:5px 0;">${t}</li>`;
-    let items = '';
-    if(s.added) items += li(`<b>${s.added}</b> new training day(s) added.`);
-    if(s.updated) items += li(`<b>${s.updated}</b> training day(s) updated from the calendar (dates / trainers).`);
-    if(s.reactivated) items += li(`${s.reactivated} training day(s) that came back into the calendar were re-opened.`);
-    if(s.deactivated) items += li(`<b>${s.deactivated}</b> training day(s) are no longer in the calendar and were hidden from supervisors (their assignments are kept).`);
-    if(s.trainersAdded && s.trainersAdded.length) items += li(`Added to your trainer roster: <b>${esc(s.trainersAdded.join(', '))}</b>.`);
-    if(s.unmatched && s.unmatched.length) items += li(`No supervisor found yet for: <b>${esc(s.unmatched.join(', '))}</b> — set "Visible to" on those days, or add that city's pharmacists to HeadCount.`);
-    if(s.skipped && s.skipped.length) items += li(`Not trainings, so not imported: ${esc(s.skipped.join(', '))}.`);
-    if(!items) items = li('Everything was already up to date.');
-    showModal(`<h3>Calendar synced</h3><ul style="padding-left:18px;font-size:13px;line-height:1.55;">${items}</ul>
-      <div class="modal-actions"><button class="btn btn-navy btn-sm" onclick="closeModal()">OK</button></div>`, 'max-width:560px;');
-  }catch(err){
-    console.error(err);
-    toast('Could not sync the calendar: '+(err.message||''), 'err');
-  }
 }
 async function confirmCalendarImport(){
   const file = document.getElementById('calImportFile').files[0];
@@ -407,7 +364,7 @@ function parseCalendarAoa(aoa){
     lastMixDay[d.trainingName] = dayMs(d.date);
     return true;
   });
-  // identity of each entry = its code (same rule as the server's calendar sync); repeats are numbered
+  // identity of each entry = its code, so re-importing updates the same day instead of duplicating it; repeats are numbered
   const codeCount = {};
   days.forEach(d=>{ codeCount[d.code] = (codeCount[d.code]||0)+1; if(codeCount[d.code]>1) d.code += '#'+codeCount[d.code]; });
   return {importedDays:days, skippedNames:[...skippedNames]};
@@ -549,7 +506,7 @@ function showColumnMappingModal(headerRow, autoIndices, totalRows){
 let currentTrainerIdentity = '';
 
 /* ═══════════════════════════════ LOGO ═══════════════════════════════ */
-// Google Sheets cells hold ~50,000 characters, so the logo is shrunk before it is stored.
+// The logo is stored as a data URL in a single settings value, so it is shrunk before it is saved.
 function shrinkLogo(dataUrl, maxSide, quality){
   return new Promise((resolve, reject)=>{
     const img = new Image();
@@ -595,9 +552,9 @@ function switchTrainerTab(id){
   document.querySelectorAll('#screen-trainer .tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===id));
   document.querySelectorAll('.trainer-tab').forEach(t=>t.classList.toggle('hidden', t.id!==id));
   if(id==='t-setup') renderSetupTab();
-  if(id==='t-approvals') renderApprovalsTab(true); // tab open: reuse recent data instead of a full reload
-  if(id==='t-analytics') refreshAnalytics(true); // tab open: reuse recent data instead of a full reload
-  if(id==='t-calendar') renderCalendar(true);
+  if(id==='t-approvals') renderApprovalsTab();
+  if(id==='t-analytics') refreshAnalytics();
+  if(id==='t-calendar') renderCalendar();
 }
 
 async function initTrainer(){
@@ -628,7 +585,6 @@ function renderSetupTab(){
   renderTrainerNamesList();
   renderCoordinatorNamesList();
   renderTrainingNamesList();
-  renderOnlineCitiesList();
   buildDaysFilterBar();
   renderDaysTable();
   loadCompletionCourseList();
@@ -1042,56 +998,6 @@ async function removeTrainingName(name){
   if(ok){ toast('Removed','ok'); renderTrainingNamesList(); }
 }
 
-function renderOnlineCitiesList(){
-  const box = document.getElementById('onlineCitiesList');
-  if(!box) return;
-  if(!trainingConfig.onlineCities.length){
-    box.innerHTML = `<span class="small-note">No online cities/regions added yet.</span>`;
-    return;
-  }
-  box.innerHTML = trainingConfig.onlineCities.map(n=>`
-    <span class="badge" style="background:${ONLINE_COLOR.bg};color:${ONLINE_COLOR.text};border:1px solid ${ONLINE_COLOR.border};display:inline-flex;align-items:center;gap:6px;">${esc(n)}
-      <button style="background:none;border:none;color:var(--navy);font-weight:800;padding:0 2px;" onclick="renameOnlineCity('${esc(n)}')">✏️</button>
-      <button style="background:none;border:none;color:var(--danger);font-weight:800;padding:0 2px;" onclick="removeOnlineCity('${esc(n)}')">✕</button>
-    </span>`).join('');
-}
-async function renameOnlineCity(oldName){
-  const newName = await promptText('Rename Online City/Region', 'Name', oldName);
-  if(!newName || newName===oldName) return;
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  if(trainingConfig.onlineCities.includes(newName)){ toast('That name already exists','err'); return; }
-  trainingConfig.onlineCities = trainingConfig.onlineCities.map(n=>n===oldName?newName:n);
-  // keep every online day that had the old name tagged in sync, so the Calendar numbering doesn't split in two
-  trainingConfig.dates.forEach(d=>{
-    if(d.isOnline && d.onlineCities && d.onlineCities.includes(oldName)){
-      d.onlineCities = d.onlineCities.map(c=>c===oldName?newName:c);
-    }
-  });
-  const ok = await setConfigWithHistory(trainingConfig);
-  if(ok){
-    toast('Renamed','ok');
-    renderOnlineCitiesList();
-    renderDaysTable(); renderCalendar();
-  }
-}
-async function addOnlineCity(){
-  const input = document.getElementById('newOnlineCity');
-  const name = input.value.trim();
-  if(!name){ toast('Enter a name','err'); return; }
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  if(trainingConfig.onlineCities.includes(name)){ toast('Already exists','err'); return; }
-  trainingConfig.onlineCities.push(name);
-  const ok = await setConfigWithHistory(trainingConfig);
-  input.value = '';
-  if(ok){ toast('Added','ok'); renderOnlineCitiesList(); }
-}
-async function removeOnlineCity(name){
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  trainingConfig.onlineCities = trainingConfig.onlineCities.filter(n=>n!==name);
-  const ok = await setConfigWithHistory(trainingConfig);
-  if(ok){ toast('Removed','ok'); renderOnlineCitiesList(); }
-}
-
 // defaults to date-ascending (the table's natural order), so the indicator/toggle direction always matches what's on screen
 let daysSortState = {key:'date', dir:1};
 function toggleDaysSort(key){
@@ -1111,59 +1017,21 @@ function updateDaysSortIndicators(){
   });
 }
 
-/* Multi-select for bulk actions (hide/unhide/assign/delete) on the Training Days table. */
-let selectedDayIds = new Set();
-function updateDaysBulkBar(){
-  const bar = document.getElementById('daysBulkBar');
-  const countEl = document.getElementById('daysBulkCount');
-  const selectAllCb = document.getElementById('daysSelectAllCb');
-  if(!bar) return;
-  const n = selectedDayIds.size;
-  bar.classList.toggle('hidden', n===0);
-  if(countEl) countEl.textContent = n===1 ? '1 day selected' : `${n} days selected`;
-  if(selectAllCb){
-    const visibleIds = [...document.querySelectorAll('.day-select-cb')].map(cb=>cb.dataset.day);
-    const visibleSelected = visibleIds.filter(id=>selectedDayIds.has(id));
-    selectAllCb.checked = visibleIds.length>0 && visibleSelected.length===visibleIds.length;
-    selectAllCb.indeterminate = visibleSelected.length>0 && visibleSelected.length<visibleIds.length;
-  }
-}
-function toggleDaySelection(dayId, checked){
-  if(checked) selectedDayIds.add(dayId); else selectedDayIds.delete(dayId);
-  updateDaysBulkBar();
-}
-function toggleAllDaySelection(checked){
-  // only the rows currently visible under the active filters/sort — not every day in the sheet
-  document.querySelectorAll('.day-select-cb').forEach(cb=>{
-    const id = cb.dataset.day;
-    cb.checked = checked;
-    if(checked) selectedDayIds.add(id); else selectedDayIds.delete(id);
-  });
-  updateDaysBulkBar();
-}
-function clearDaySelection(){
-  selectedDayIds.clear();
-  renderDaysTable();
-}
 function renderDaysTable(){
   const tb = document.getElementById('daysTableBody');
   if(!trainingConfig.dates.length){
-    selectedDayIds.clear();
     tb.innerHTML = `<tr><td colspan="8" class="empty-msg"><div class="ic">📅</div>No training days configured yet</td></tr>`;
     updateDaysSortIndicators();
-    updateDaysBulkBar();
+    bulkSyncAfterRender('days', []);
     return;
   }
   const filteredDates = trainingConfig.dates.filter(dayMatchesFilters);
   if(!filteredDates.length){
     tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No training days match the current filters</td></tr>`;
     updateDaysSortIndicators();
-    updateDaysBulkBar();
+    bulkSyncAfterRender('days', []);
     return;
   }
-  // drop selected ids that no longer exist (deleted elsewhere) so the bar's count stays accurate
-  const liveIds = new Set(trainingConfig.dates.map(d=>d.id));
-  selectedDayIds.forEach(id=>{ if(!liveIds.has(id)) selectedDayIds.delete(id); });
   let sortedDates = [...filteredDates];
   sortedDates.sort((a,b)=>{
     const va = getDaysSortValue(a, daysSortState.key), vb = getDaysSortValue(b, daysSortState.key);
@@ -1179,7 +1047,7 @@ function renderDaysTable(){
     const typeText = d.type || 'Pharmacist Training';
     const onlineText = d.isOnline ? `<br><span class="badge badge-date">Online — ${d.onlineFormat==='fullday'?'1 day':'split, 2 days'}${d.coordinator?' — '+esc(d.coordinator):''}</span>${d.zoomLink?` <a href="${esc(d.zoomLink)}" target="_blank" style="font-size:10.5px;">Zoom link</a>`:''}` : '';
     return `<tr style="${isActive?'':'opacity:.55;'}">
-      <td><input type="checkbox" class="day-select-cb" data-day="${d.id}" ${selectedDayIds.has(d.id)?'checked':''} onchange="toggleDaySelection('${d.id}', this.checked)"></td>
+      ${bulkCheckboxCell('days', d.id)}
       <td>${i+1}</td>
       <td>${dayDateLabel(d)} ${isActive?'':'<span class="badge badge-empty">Hidden</span>'}</td>
       <td><span class="city-badge">${esc(d.city)}</span>${d.trainingName?'<br><span class="small-note">'+esc(d.trainingName)+'</span>':''}<br><span class="badge badge-leave">${esc(typeText)}</span>${onlineText}</td>
@@ -1196,7 +1064,7 @@ function renderDaysTable(){
     </tr>`;
   }).join('');
   updateDaysSortIndicators();
-  updateDaysBulkBar();
+  bulkSyncAfterRender('days', sortedDates.map(d=>d.id));
 }
 
 function openEditDayModal(dayId){
@@ -1249,15 +1117,17 @@ function openEditDayModal(dayId){
         <p class="small-note" id="editDaySplitPreview" style="margin-top:6px;color:var(--navy);font-weight:600;"></p>
       </div>
       <div class="field"><label class="field-label">Coordinator (optional)</label><select id="editDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
-      <div class="field">
-        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to. Manage the list in Setup → Online Cities / Regions.)</label>
-        <div class="row" style="margin-bottom:6px;">
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-online-city-cb', true)">Select All</button>
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-online-city-cb', false)">Clear All</button>
-        </div>
-        <div class="checkbox-list" style="max-height:140px;">${onlineCityCheckboxesHtml('edit-day-online-city-cb', day.onlineCities)}</div>
-      </div>
       <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="editDayZoomLink" value="${esc(day.zoomLink||'')}" placeholder="https://zoom.us/j/..."></div>
+    </div>
+    <div class="field">
+      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
+      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works for both in-person and online days.</p>
+      <div class="checkbox-list" style="max-height:160px;">
+        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
+          <label style="justify-content:space-between;" data-quota-row="edit" data-sup="${esc(n)}" class="${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'':'hidden'}"><span>${esc(n)}</span><input type="number" class="edit-day-quota-input" data-sup="${esc(n)}" value="${(day.supervisorQuotas&&day.supervisorQuotas[n])||''}" style="width:70px;" min="0" placeholder="∞"></label>
+        `).join('') || '<span class="small-note">No supervisors found.</span>'}
+        <span class="small-note" id="editQuotaEmptyMsg">Check supervisors in "Visible to" below to set a quota for each.</span>
+      </div>
     </div>
     <div class="field">
       <label class="field-label">Visible to (optional)</label>
@@ -1267,16 +1137,6 @@ function openEditDayModal(dayId){
         <button type="button" class="btn btn-outline btn-sm" onclick="autoSelectCitySupervisors(readCityFieldValue('editDayCity','editDayCityCustom'))">Auto-select by city</button>
       </div>
       <div class="checkbox-list">${supCheckboxes}</div>
-    </div>
-    <div class="field">
-      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
-      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works the same for online and in-person training days.</p>
-      <div class="checkbox-list" style="max-height:160px;">
-        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
-          <label style="justify-content:space-between;" data-quota-row="edit" data-sup="${esc(n)}" class="${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'':'hidden'}"><span>${esc(n)}</span><input type="number" class="edit-day-quota-input" data-sup="${esc(n)}" value="${(day.supervisorQuotas&&day.supervisorQuotas[n])||''}" style="width:70px;" min="0" placeholder="∞"></label>
-        `).join('') || '<span class="small-note">No supervisors found.</span>'}
-        <span class="small-note" id="editQuotaEmptyMsg">Check supervisors in "Visible to" above to set a quota for each.</span>
-      </div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-danger btn-sm" style="margin-right:auto;" onclick="deleteDay('${dayId}', ${dayCount(dayId)})">🗑 Delete This Day</button>
@@ -1348,9 +1208,9 @@ async function confirmEditDay(dayId){
   const isOnline = document.getElementById('editDayIsOnline').checked;
   const onlineFormat = isOnline ? document.getElementById('editDayOnlineFormat').value : '';
   const coordinator = isOnline ? document.getElementById('editDayCoordinator').value : '';
-  const onlineCities = isOnline ? [...document.querySelectorAll('.edit-day-online-city-cb:checked')].map(cb=>cb.value) : [];
   const zoomLink = isOnline ? document.getElementById('editDayZoomLink').value.trim() : '';
   const venue = document.getElementById('editDayVenue').value.trim();
+  // Quotas apply to in-person days as well as online ones.
   const supervisorQuotas = {};
   {
     const visibleForQuota = new Set([...document.querySelectorAll('.edit-day-sup-cb:checked')].map(cb=>cb.value));
@@ -1375,7 +1235,7 @@ async function confirmEditDay(dayId){
   if(day){
     Object.assign(day, {
       date, city, trainingName, type, capacity: (capVal && capVal>0) ? capVal : null, deadline, active,
-      trainerNames, isOnline, onlineFormat, coordinator, onlineCities, zoomLink, venue, supervisorQuotas, visibleSupervisors
+      trainerNames, isOnline, onlineFormat, coordinator, zoomLink, venue, supervisorQuotas, visibleSupervisors
     });
   }
   const ok = await setConfigWithHistory(trainingConfig);
@@ -1424,7 +1284,7 @@ function autoSelectCitySupervisors(cityForMatch){
 
 const TRAINING_DAY_TYPES = ['Pharmacist Training','Onboarding','HQ'];
 
-/* Venues come from the "Venues" tab of the Google Sheet (city → recommended hotel/venue). */
+/* Venues come from the `venues` table (city → recommended hotel/venue). */
 let venueList = [];
 async function loadVenues(){
   try{ venueList = await API.venues(); }catch(e){ console.error(e); venueList = []; }
@@ -1482,15 +1342,17 @@ function openAddDayModal(presetDate){
         <p class="small-note" id="newDaySplitPreview" style="margin-top:6px;color:var(--navy);font-weight:600;"></p>
       </div>
       <div class="field"><label class="field-label">Coordinator (optional)</label><select id="newDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
-      <div class="field">
-        <label class="field-label">Cities for this online session (optional — select one or more; used to group &amp; number it in the Calendar tab, e.g. "Online North 1". Separate from the City field above, and doesn't affect capacity or Visible-to. Manage the list in Setup → Online Cities / Regions.)</label>
-        <div class="row" style="margin-bottom:6px;">
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('new-day-online-city-cb', true)">Select All</button>
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('new-day-online-city-cb', false)">Clear All</button>
-        </div>
-        <div class="checkbox-list" style="max-height:140px;">${onlineCityCheckboxesHtml('new-day-online-city-cb')}</div>
-      </div>
       <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="newDayZoomLink" placeholder="https://zoom.us/j/..."></div>
+    </div>
+    <div class="field">
+      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
+      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works for both in-person and online days.</p>
+      <div class="checkbox-list" style="max-height:160px;">
+        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
+          <label style="justify-content:space-between;" data-quota-row="new" data-sup="${esc(n)}" class="hidden"><span>${esc(n)}</span><input type="number" class="new-day-quota-input" data-sup="${esc(n)}" style="width:70px;" min="0" placeholder="∞"></label>
+        `).join('') || '<span class="small-note">No supervisors found.</span>'}
+        <span class="small-note" id="newQuotaEmptyMsg">Check supervisors in "Visible to" below to set a quota for each.</span>
+      </div>
     </div>
     <div class="field">
       <label class="field-label">Visible to (optional — select which supervisors can see these days)</label>
@@ -1500,16 +1362,6 @@ function openAddDayModal(presetDate){
         <button type="button" class="btn btn-outline btn-sm" onclick="autoSelectByCityGeneric('newDayCity','day-sup-cb')">Auto-select by city</button>
       </div>
       <div class="checkbox-list">${checkboxes}</div>
-    </div>
-    <div class="field">
-      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
-      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works the same for online and in-person training days.</p>
-      <div class="checkbox-list" style="max-height:160px;">
-        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
-          <label style="justify-content:space-between;" data-quota-row="new" data-sup="${esc(n)}" class="hidden"><span>${esc(n)}</span><input type="number" class="new-day-quota-input" data-sup="${esc(n)}" style="width:70px;" min="0" placeholder="∞"></label>
-        `).join('') || '<span class="small-note">No supervisors found.</span>'}
-        <span class="small-note" id="newQuotaEmptyMsg">Check supervisors in "Visible to" above to set a quota for each.</span>
-      </div>
     </div>
     <div class="field">
       <label class="field-label">Optional: Upload expected attendee list (Excel with an Email column)</label>
@@ -1556,9 +1408,9 @@ async function confirmAddDay(){
   const isOnline = document.getElementById('newDayIsOnline').checked;
   const onlineFormat = isOnline ? document.getElementById('newDayOnlineFormat').value : '';
   const coordinator = isOnline ? document.getElementById('newDayCoordinator').value : '';
-  const onlineCities = isOnline ? [...document.querySelectorAll('.new-day-online-city-cb:checked')].map(cb=>cb.value) : [];
   const zoomLink = isOnline ? document.getElementById('newDayZoomLink').value.trim() : '';
   const venue = document.getElementById('newDayVenue').value.trim();
+  // Quotas apply to in-person days as well as online ones.
   const supervisorQuotas = {};
   {
     const visibleForQuota = new Set([...document.querySelectorAll('.day-sup-cb:checked')].map(cb=>cb.value));
@@ -1587,7 +1439,7 @@ async function confirmAddDay(){
   uniqueDates.forEach(date=>{
     const id = uid('day');
     newDayIds.push(id);
-    trainingConfig.dates.push({id, date, city, trainingName, type, deadline, trainerNames, isOnline, onlineFormat, coordinator, onlineCities, zoomLink, venue, supervisorQuotas, visibleSupervisors, active:true});
+    trainingConfig.dates.push({id, date, city, trainingName, type, deadline, trainerNames, isOnline, onlineFormat, coordinator, zoomLink, venue, supervisorQuotas, visibleSupervisors, active:true});
   });
   const ok = await setConfigWithHistory(trainingConfig);
   closeModal();
@@ -1742,143 +1594,91 @@ async function hideAllDays(){
   }
 }
 
-/* ═══════════════ Bulk actions on the selected Training Days (same effect as the single-day actions above,
-   applied to every id in selectedDayIds in one save instead of one request per day) ═══════════════ */
-async function hideSelectedDays(){
-  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id) && d.active!==false);
-  if(!targets.length){ toast('No visible days in your selection','info'); return; }
-  const go = await confirmDialog(`Hide ${targets.length} selected training day(s) from supervisors? Existing assignments are not affected.`);
-  if(!go) return;
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  trainingConfig.dates.forEach(d=>{ if(selectedDayIds.has(d.id)) d.active = false; });
-  const ok = await setConfigWithHistory(trainingConfig);
-  if(ok){
-    toast(`${targets.length} training day(s) hidden`,'ok');
-    selectedDayIds.clear();
-    buildDaysFilterBar();
-    renderDaysTable();
-    buildTrainerFilterBar();
-    renderCalendar();
+/* ═══════════════════════════════ BULK ACTIONS (TRAINER) ═══════════════════════════════ */
+// Assign / set-leave / unassign the selected pharmacists in the Records table.
+function bulkApplyTrainerAssign(){
+  const sel = document.getElementById('bulkAssignSelect-trainer');
+  const value = sel ? sel.value : '';
+  if(!value){ toast('Choose what to assign first','err'); return; }
+  const ids = [...bulkSel.trainer];
+  if(!ids.length) return;
+  let done = 0, skipped = 0;
+  const by = 'Trainer'+(currentTrainerIdentity?' ('+currentTrainerIdentity+')':'');
+  if(value==='__none__'){
+    ids.forEach(pid=>{ delete ops.assignments[pid]; delete ops.attendance[pid]; done++; });
+  } else {
+    const [type, rest] = value.split(':');
+    if(type==='date'){
+      const day = dayById(rest);
+      if(!day){ toast('That day no longer exists','err'); return; }
+      ids.forEach(pid=>{
+        const p = masterData.find(m=>m.id===pid);
+        if(!p) return;
+        if(!!day.isOnline !== isOnlinePharmacist(p)){ skipped++; return; }   // online↔offline must match the day
+        const prev = ops.assignments[pid];
+        if(!prev || prev.type!=='date' || prev.dateId!==rest) delete ops.attendance[pid];
+        ops.assignments[pid] = {type:'date', dateId:rest, assignedBy:by, assignedAt:nowIso()};
+        done++;
+      });
+    } else {
+      ids.forEach(pid=>{ ops.assignments[pid] = {type:'leave', status:rest, assignedBy:by, assignedAt:nowIso()}; delete ops.attendance[pid]; done++; });
+    }
   }
+  bulkSel.trainer.clear();
+  renderTrainerTable();
+  saveShared(K_OPS, ()=>ops);
+  toast(`Updated ${done} pharmacist(s)` + (skipped?`, skipped ${skipped} (online/offline mismatch)`:''), skipped?'info':'ok');
 }
-async function unhideSelectedDays(){
-  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id) && d.active===false);
-  if(!targets.length){ toast('No hidden days in your selection','info'); return; }
-  const go = await confirmDialog(`Unhide ${targets.length} selected training day(s)?`);
+
+async function bulkDeletePharmacists(){
+  const ids = [...bulkSel.trainer];
+  if(!ids.length) return;
+  const go = await confirmDialog(`Permanently delete ${ids.length} pharmacist(s) from the roster? Their assignment and attendance are removed too. This cannot be undone.`);
   if(!go) return;
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  trainingConfig.dates.forEach(d=>{ if(selectedDayIds.has(d.id)) d.active = true; });
-  const ok = await setConfigWithHistory(trainingConfig);
-  if(ok){
-    toast(`${targets.length} training day(s) unhidden`,'ok');
-    selectedDayIds.clear();
-    buildDaysFilterBar();
-    renderDaysTable();
-    buildTrainerFilterBar();
-    renderCalendar();
+  const idset = new Set(ids);
+  masterData = masterData.filter(p=>!idset.has(p.id));
+  ids.forEach(pid=>{ delete ops.assignments[pid]; delete ops.attendance[pid]; });
+  bulkSel.trainer.clear();
+  buildTrainerFilterBar();
+  renderTrainerTable();
+  saveShared(K_MASTER, ()=>masterData);
+  saveShared(K_OPS, ()=>ops);
+  toast(`Deleted ${ids.length} pharmacist(s)`,'ok');
+}
+
+// Hide / Unhide / Delete the selected training days.
+async function bulkDays(action){
+  const ids = [...bulkSel.days];
+  if(!ids.length) return;
+  if(action==='delete'){
+    const go = await confirmDialog(`Delete ${ids.length} training day(s)? Anyone assigned to them moves back to Not Assigned. This cannot be undone.`);
+    if(!go) return;
   }
-}
-async function deleteSelectedDays(){
-  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id));
-  if(!targets.length) return;
-  const affected = targets.reduce((sum,d)=>sum+dayCount(d.id), 0);
-  const msg = affected>0
-    ? `${affected} pharmacist assignment(s) across these ${targets.length} day(s) will move back to Not Assigned. Delete ${targets.length} selected training day(s)?`
-    : `Delete ${targets.length} selected training day(s)?`;
-  const go = await confirmDialog(msg);
-  if(!go) return;
-  const ids = new Set(selectedDayIds);
+  const idset = new Set(ids);
   trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  trainingConfig.dates = trainingConfig.dates.filter(d=>!ids.has(d.id));
-  const ok = await setConfigWithHistory(trainingConfig);
-  if(ok){
-    ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
-    let cleaned = false;
-    Object.keys(ops.assignments).forEach(pid=>{
-      if(ops.assignments[pid].type==='date' && ids.has(ops.assignments[pid].dateId)){
-        delete ops.assignments[pid];
-        delete ops.attendance[pid];
-        cleaned = true;
-      }
-    });
-    if(cleaned) await setShared(K_OPS, ops);
-    toast(`${ids.size} training day(s) deleted`,'ok');
-    selectedDayIds.clear();
-    buildDaysFilterBar();
-    renderDaysTable();
-    renderCalendar();
-    buildTrainerFilterBar();
+  if(action==='delete'){
+    trainingConfig.dates = trainingConfig.dates.filter(d=>!idset.has(d.id));
+  } else {
+    const active = action==='unhide';
+    trainingConfig.dates.forEach(d=>{ if(idset.has(d.id)) d.active = active; });
   }
-}
-// Bulk "Assign…": sets Trainer(s), Visible-to supervisors and/or Coordinator identically across every
-// selected day — each field only touches the days if its own checkbox is ticked, so (for example) picking
-// trainers doesn't accidentally clear Visible-to on days you only meant to reassign a trainer for.
-function openBulkAssignModal(){
-  const targets = trainingConfig.dates.filter(d=>selectedDayIds.has(d.id));
-  if(!targets.length) return;
-  const supNames = sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
-  const supCheckboxes = supNames.map(n=>`<label><input type="checkbox" class="bulk-sup-cb" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found.</span>';
-  const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="bulk-trainer-cb" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet.</span>';
-  const coordinatorOptions = trainingConfig.coordinatorNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
-  showModal(`
-    <h3>Assign — ${targets.length} selected day(s)</h3>
-    <p class="small-note">Only the fields you tick below are changed; everything else on these days is left as it is. This replaces the existing value on each selected day (it doesn't add to it).</p>
-    <div class="field">
-      <label class="toggle-label"><input type="checkbox" id="bulkApplyTrainers" onchange="document.getElementById('bulkTrainerBlock').classList.toggle('hidden', !this.checked)"> Set Trainer(s)</label>
-      <div id="bulkTrainerBlock" class="hidden" style="margin-top:8px;">
-        <div class="row" style="margin-bottom:6px;">
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-trainer-cb', true)">Select All</button>
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-trainer-cb', false)">Clear All</button>
-        </div>
-        <div class="checkbox-list" style="max-height:120px;">${trainerCheckboxes}</div>
-      </div>
-    </div>
-    <div class="field">
-      <label class="toggle-label"><input type="checkbox" id="bulkApplyCoordinator" onchange="document.getElementById('bulkCoordinatorBlock').classList.toggle('hidden', !this.checked)"> Set Coordinator</label>
-      <div id="bulkCoordinatorBlock" class="hidden" style="margin-top:8px;">
-        <select id="bulkCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select>
-      </div>
-    </div>
-    <div class="field">
-      <label class="toggle-label"><input type="checkbox" id="bulkApplyVisible" onchange="document.getElementById('bulkVisibleBlock').classList.toggle('hidden', !this.checked)"> Set Visible to</label>
-      <div id="bulkVisibleBlock" class="hidden" style="margin-top:8px;">
-        <div class="row" style="margin-bottom:6px;">
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-sup-cb', true)">Select All</button>
-          <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-sup-cb', false)">Clear All</button>
-        </div>
-        <div class="checkbox-list">${supCheckboxes}</div>
-      </div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-navy btn-sm" onclick="confirmBulkAssign()">Apply to ${targets.length} day(s)</button>
-    </div>`);
-}
-async function confirmBulkAssign(){
-  const applyTrainers = document.getElementById('bulkApplyTrainers').checked;
-  const applyCoordinator = document.getElementById('bulkApplyCoordinator').checked;
-  const applyVisible = document.getElementById('bulkApplyVisible').checked;
-  if(!applyTrainers && !applyCoordinator && !applyVisible){ toast('Tick at least one field to set','err'); return; }
-  const trainerNames = [...document.querySelectorAll('.bulk-trainer-cb:checked')].map(cb=>cb.value);
-  const coordinator = document.getElementById('bulkCoordinator').value;
-  const visibleSupervisors = [...document.querySelectorAll('.bulk-sup-cb:checked')].map(cb=>cb.value);
-  const ids = new Set(selectedDayIds);
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  trainingConfig.dates.forEach(d=>{
-    if(!ids.has(d.id)) return;
-    if(applyTrainers) d.trainerNames = trainerNames;
-    if(applyCoordinator) d.coordinator = coordinator;
-    if(applyVisible) d.visibleSupervisors = visibleSupervisors;
-  });
+  bulkSel.days.clear();
   const ok = await setConfigWithHistory(trainingConfig);
   if(ok){
-    toast(`Applied to ${ids.size} day(s)`,'ok');
-    closeModal();
-    selectedDayIds.clear();
+    if(action==='delete'){
+      ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+      let cleaned = false;
+      Object.keys(ops.assignments).forEach(pid=>{
+        const a = ops.assignments[pid];
+        if(a.type==='date' && idset.has(a.dateId)){ delete ops.assignments[pid]; delete ops.attendance[pid]; cleaned = true; }
+      });
+      if(cleaned) await setShared(K_OPS, ops);
+    }
     buildDaysFilterBar();
     renderDaysTable();
     buildTrainerFilterBar();
     renderCalendar();
+    toast(action==='delete' ? `Deleted ${ids.length} day(s)` : (action==='unhide' ? `Unhid ${ids.length} day(s)` : `Hid ${ids.length} day(s)`), 'ok');
   }
 }
 
@@ -2108,8 +1908,9 @@ async function clearAttendanceStatus(pid){
     delete ops.attendance[pid].day1;
     delete ops.attendance[pid].day2;
   }
-  const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Attendance cleared','ok'); afterTrainerRowChange(pid); }
+  afterTrainerRowChange(pid);
+  toast('Attendance cleared','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 async function setSplitAttendanceStatus(pid, dayNum, status){
   if(!requireTrainerIdentity()) return;
@@ -2133,8 +1934,9 @@ async function setSplitAttendanceStatus(pid, dayNum, status){
     updated.day2 = {status:'Absent', markedBy: currentTrainerIdentity, markedAt: nowIso()};
   }
   ops.attendance[pid] = updated;
-  const ok = await setShared(K_OPS, ops);
-  if(ok){ toast(dayNum===1 && status==='Absent' ? 'Day 1 recorded — Day 2 auto-marked Absent' : `Day ${dayNum} recorded`,'ok'); afterTrainerRowChange(pid); }
+  afterTrainerRowChange(pid);
+  toast(dayNum===1 && status==='Absent' ? 'Day 1 recorded — Day 2 auto-marked Absent' : `Day ${dayNum} recorded`,'ok');
+  saveShared(K_OPS, ()=>ops);
 }
 async function setSplitPunctuality(pid, dayNum, punct){
   if(!requireTrainerIdentity()) return;
@@ -2145,8 +1947,9 @@ async function setSplitPunctuality(pid, dayNum, punct){
   if(punct==='Late' && !time) time = nowTimeStr();
   if(punct==='On Time') time = '';
   ops.attendance[pid] = {...prev, [key]: {...prevSub, punctuality: punct, time, markedBy: currentTrainerIdentity, markedAt: nowIso()}};
-  const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Updated','ok'); afterTrainerRowChange(pid); }
+  afterTrainerRowChange(pid);
+  toast('Updated','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 function arrivalCellHtml(p){
   if(!hasValidDateAssignment(p)) return '—';
@@ -2155,7 +1958,7 @@ function arrivalCellHtml(p){
   if(!att || att.status!=='Attended' || (att.punctuality||'On Time')!=='Late') return '—';
   return `<input type="time" value="${att.time||''}" style="width:85px" onchange="onAttendanceTimeChange('${p.id}', this.value)">`;
 }
-// The note is the pharmacist's "Notes" cell in the HeadCount tab: what the trainer types here is written to the sheet,
+// The note is the pharmacist's `note` on the roster: what the trainer types here is saved with the pharmacist,
 // and anything typed in the sheet shows here — and to the pharmacist's supervisor on the supervisor page.
 function noteCellHtml(p){
   const att = ops.attendance[p.id];
@@ -2169,6 +1972,7 @@ function noteCellHtml(p){
 function trainerRowCells(p, rownum){
   const days = trainingConfig.dates;
   return `
+      ${bulkCheckboxCell('trainer', p.id)}
       <td class="name-cell"><span class="rownum">${rownum}</span>${esc(p.displayName)}</td>
       <td>${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
@@ -2191,12 +1995,14 @@ function renderTrainerTable(){
   const dateId = singleSelectedDate();
   if(dateId) renderSessionSummary(dateId);
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="11" class="empty-msg">No records match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="12" class="empty-msg">No records match the current filters</td></tr>`;
     updateSortIndicators('trainer');
+    bulkSyncAfterRender('trainer', []);
     return;
   }
   tb.innerHTML = list.map((p,i)=>`<tr id="trrow_${p.id}">${trainerRowCells(p, i+1)}</tr>`).join('');
   updateSortIndicators('trainer');
+  bulkSyncAfterRender('trainer', list.map(p=>p.id));
 }
 
 // Refreshes just the one row that changed instead of redrawing all ~1,450. Falls back to a full render if the
@@ -2241,8 +2047,9 @@ async function onTrainerAssignChange(pid, value){
       delete ops.attendance[pid];
     }
   }
-  const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Saved','ok'); renderTrainerTable(); }
+  renderTrainerTable();
+  toast('Saved','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 
 function requireTrainerIdentity(){
@@ -2261,8 +2068,9 @@ async function setAttendanceStatus(pid, status){
     record.time = '';
   }
   ops.attendance[pid] = record;
-  const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Attendance recorded','ok'); afterTrainerRowChange(pid); }
+  afterTrainerRowChange(pid);
+  toast('Attendance recorded','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 async function setPunctuality(pid, punct){
   if(!requireTrainerIdentity()) return;
@@ -2271,15 +2079,16 @@ async function setPunctuality(pid, punct){
   if(punct==='Late' && !time) time = nowTimeStr();
   if(punct==='On Time') time = '';
   ops.attendance[pid] = {...prev, punctuality: punct, time, markedBy: currentTrainerIdentity, markedAt: nowIso()};
-  const ok = await setShared(K_OPS, ops);
-  if(ok){ toast('Updated','ok'); afterTrainerRowChange(pid); }
+  afterTrainerRowChange(pid);
+  toast('Updated','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 async function onAttendanceTimeChange(pid, time){
   if(!requireTrainerIdentity()) return;
   const prev = ops.attendance[pid] || {status:'Attended', punctuality:'Late'};
   ops.attendance[pid] = {...prev, time, markedBy: currentTrainerIdentity, markedAt: nowIso()};
-  const ok = await setShared(K_OPS, ops);
-  if(ok) toast('Arrival time updated','ok');
+  toast('Arrival time updated','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 async function onSplitAttendanceTimeChange(pid, dayNum, time){
   if(!requireTrainerIdentity()) return;
@@ -2287,15 +2096,15 @@ async function onSplitAttendanceTimeChange(pid, dayNum, time){
   const key = 'day'+dayNum;
   const prevSub = prev[key] || {status:'Attended', punctuality:'Late'};
   ops.attendance[pid] = {...prev, [key]: {...prevSub, time, markedBy: currentTrainerIdentity, markedAt: nowIso()}};
-  const ok = await setShared(K_OPS, ops);
-  if(ok) toast('Arrival time updated','ok');
+  toast('Arrival time updated','ok');
+  saveShared(K_OPS, ()=>ops);
 }
 async function onPharmacistNoteChange(pid, note){
   const p = masterData.find(m=>m.id===pid);
   if(!p) return;
   p.note = String(note||'').trim();
-  const ok = await setShared(K_MASTER, masterData);
-  if(ok) toast('Note saved — the pharmacist\'s supervisor can see it','ok');
+  toast('Note saved — the pharmacist\'s supervisor can see it','ok');
+  saveShared(K_MASTER, ()=>masterData);
 }
 
 async function refreshTrainer(){
@@ -2321,7 +2130,7 @@ async function updatePendingDot(leaveRequests){
 let apprSortState = {key:null, dir:1};
 function toggleApprovalsSort(key){
   if(apprSortState.key===key) apprSortState.dir*=-1; else { apprSortState.key=key; apprSortState.dir=1; }
-  renderApprovalsTab(true); // re-sorting doesn't change the data, no need to refetch
+  renderApprovalsTab();
 }
 let apprHistSortState = {key:null, dir:1};
 function toggleApprHistSort(key){
@@ -2411,12 +2220,8 @@ async function confirmRejectQuota(pid){
   }
 }
 
-let _leaveRequestsLoadedAt = 0;
-async function renderLeaveRequests(soft){
-  if(!(soft && _leaveRequestsLoadedAt && (Date.now()-_leaveRequestsLoadedAt) < CORE_DATA_SOFT_TTL_MS)){
-    leaveRequestsCache = await getShared(K_LEAVE_REQUESTS, []);
-    _leaveRequestsLoadedAt = Date.now();
-  }
+async function renderLeaveRequests(){
+  leaveRequestsCache = await getShared(K_LEAVE_REQUESTS, []);
   const tb = document.getElementById('leaveRequestsBody');
   if(!tb) return;
   const list = leaveRequestsCache.filter(lr=>lr.status==='Pending');
@@ -2475,9 +2280,9 @@ async function confirmRejectLeaveRequest(lrId){
   }
 }
 
-async function renderApprovalsTab(soft){
+async function renderApprovalsTab(){
   renderQuotaApprovals();
-  await renderLeaveRequests(soft);
+  await renderLeaveRequests();
   let list = pendingList.filter(p=>p.status==='Pending');
   list = genericSort(list, apprSortState, (p,k)=> k==='addedAt' ? p.addedAt : String(p[k]||'').toLowerCase());
   const tb = document.getElementById('approvalsTableBody');
@@ -2677,8 +2482,8 @@ function setAnalyticsDim(dim){
   document.getElementById('dimHeader').textContent = labels[dim];
   renderAnalyticsTable();
 }
-async function refreshAnalytics(soft){
-  await loadCoreData(soft);
+async function refreshAnalytics(){
+  await loadCoreData();
   renderGlobalChips();
   renderAnalyticsTable();
   buildMasterFilterBar();
