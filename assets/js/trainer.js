@@ -1207,16 +1207,6 @@ function openEditDayModal(dayId){
         <div class="checkbox-list" style="max-height:140px;">${onlineCityCheckboxesHtml('edit-day-online-city-cb', day.onlineCities)}</div>
       </div>
       <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="editDayZoomLink" value="${esc(day.zoomLink||'')}" placeholder="https://zoom.us/j/..."></div>
-      <div class="field">
-        <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
-        <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval.</p>
-        <div class="checkbox-list" style="max-height:160px;">
-          ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
-            <label style="justify-content:space-between;" data-quota-row="edit" data-sup="${esc(n)}" class="${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'':'hidden'}"><span>${esc(n)}</span><input type="number" class="edit-day-quota-input" data-sup="${esc(n)}" value="${(day.supervisorQuotas&&day.supervisorQuotas[n])||''}" style="width:70px;" min="0" placeholder="∞"></label>
-          `).join('') || '<span class="small-note">No supervisors found.</span>'}
-          <span class="small-note" id="editQuotaEmptyMsg">Check supervisors in "Visible to" below to set a quota for each.</span>
-        </div>
-      </div>
     </div>
     <div class="field">
       <label class="field-label">Visible to (optional)</label>
@@ -1226,6 +1216,16 @@ function openEditDayModal(dayId){
         <button type="button" class="btn btn-outline btn-sm" onclick="autoSelectCitySupervisors(readCityFieldValue('editDayCity','editDayCityCustom'))">Auto-select by city</button>
       </div>
       <div class="checkbox-list">${supCheckboxes}</div>
+    </div>
+    <div class="field">
+      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
+      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works the same for online and in-person training days.</p>
+      <div class="checkbox-list" style="max-height:160px;">
+        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
+          <label style="justify-content:space-between;" data-quota-row="edit" data-sup="${esc(n)}" class="${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'':'hidden'}"><span>${esc(n)}</span><input type="number" class="edit-day-quota-input" data-sup="${esc(n)}" value="${(day.supervisorQuotas&&day.supervisorQuotas[n])||''}" style="width:70px;" min="0" placeholder="∞"></label>
+        `).join('') || '<span class="small-note">No supervisors found.</span>'}
+        <span class="small-note" id="editQuotaEmptyMsg">Check supervisors in "Visible to" above to set a quota for each.</span>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-danger btn-sm" style="margin-right:auto;" onclick="deleteDay('${dayId}', ${dayCount(dayId)})">🗑 Delete This Day</button>
@@ -1301,7 +1301,7 @@ async function confirmEditDay(dayId){
   const zoomLink = isOnline ? document.getElementById('editDayZoomLink').value.trim() : '';
   const venue = document.getElementById('editDayVenue').value.trim();
   const supervisorQuotas = {};
-  if(isOnline){
+  {
     const visibleForQuota = new Set([...document.querySelectorAll('.edit-day-sup-cb:checked')].map(cb=>cb.value));
     document.querySelectorAll('.edit-day-quota-input').forEach(inp=>{
       const v = parseInt(inp.value);
@@ -1440,16 +1440,6 @@ function openAddDayModal(presetDate){
         <div class="checkbox-list" style="max-height:140px;">${onlineCityCheckboxesHtml('new-day-online-city-cb')}</div>
       </div>
       <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="newDayZoomLink" placeholder="https://zoom.us/j/..."></div>
-      <div class="field">
-        <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
-        <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval.</p>
-        <div class="checkbox-list" style="max-height:160px;">
-          ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
-            <label style="justify-content:space-between;" data-quota-row="new" data-sup="${esc(n)}" class="hidden"><span>${esc(n)}</span><input type="number" class="new-day-quota-input" data-sup="${esc(n)}" style="width:70px;" min="0" placeholder="∞"></label>
-          `).join('') || '<span class="small-note">No supervisors found.</span>'}
-          <span class="small-note" id="newQuotaEmptyMsg">Check supervisors in "Visible to" below to set a quota for each.</span>
-        </div>
-      </div>
     </div>
     <div class="field">
       <label class="field-label">Visible to (optional — select which supervisors can see these days)</label>
@@ -1459,6 +1449,16 @@ function openAddDayModal(presetDate){
         <button type="button" class="btn btn-outline btn-sm" onclick="autoSelectByCityGeneric('newDayCity','day-sup-cb')">Auto-select by city</button>
       </div>
       <div class="checkbox-list">${checkboxes}</div>
+    </div>
+    <div class="field">
+      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
+      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works the same for online and in-person training days.</p>
+      <div class="checkbox-list" style="max-height:160px;">
+        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
+          <label style="justify-content:space-between;" data-quota-row="new" data-sup="${esc(n)}" class="hidden"><span>${esc(n)}</span><input type="number" class="new-day-quota-input" data-sup="${esc(n)}" style="width:70px;" min="0" placeholder="∞"></label>
+        `).join('') || '<span class="small-note">No supervisors found.</span>'}
+        <span class="small-note" id="newQuotaEmptyMsg">Check supervisors in "Visible to" above to set a quota for each.</span>
+      </div>
     </div>
     <div class="field">
       <label class="field-label">Optional: Upload expected attendee list (Excel with an Email column)</label>
@@ -1509,7 +1509,7 @@ async function confirmAddDay(){
   const zoomLink = isOnline ? document.getElementById('newDayZoomLink').value.trim() : '';
   const venue = document.getElementById('newDayVenue').value.trim();
   const supervisorQuotas = {};
-  if(isOnline){
+  {
     const visibleForQuota = new Set([...document.querySelectorAll('.day-sup-cb:checked')].map(cb=>cb.value));
     document.querySelectorAll('.new-day-quota-input').forEach(inp=>{
       const v = parseInt(inp.value);
@@ -1840,7 +1840,7 @@ function openDayStatusModal(dayId){
     const assignedList = own.filter(p=>ops.assignments[p.id]?.type==='date' && ops.assignments[p.id]?.dateId===dayId);
     const assignedToThisDay = assignedList.length;
     const remainingOverall = own.filter(p=>!ops.assignments[p.id]).length;
-    const quota = (day.isOnline && day.supervisorQuotas && day.supervisorQuotas[sup]!==undefined) ? day.supervisorQuotas[sup] : null;
+    const quota = (day.supervisorQuotas && day.supervisorQuotas[sup]!==undefined) ? day.supervisorQuotas[sup] : null;
     const hasPendingApproval = assignedList.some(p=>ops.assignments[p.id].overQuota && !ops.assignments[p.id].quotaApproved);
     let statusText, badgeStyle;
     if(assignedToThisDay===0){

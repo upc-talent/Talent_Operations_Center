@@ -240,7 +240,7 @@ function renderSupervisorChips(){
         ? `<span class="tag" style="display:inline-block;margin:0;background:${passed?'var(--danger-bg)':'rgba(255,255,255,.6)'};color:${passed?'var(--danger)':'inherit'};">Deadline: ${formatDateTime(d.deadline)}${passed?' — Passed':''}</span>`
         : '';
       let quotaHtml = '';
-      if(d.isOnline && d.supervisorQuotas && d.supervisorQuotas[currentSupervisor]!==undefined){
+      if(d.supervisorQuotas && d.supervisorQuotas[currentSupervisor]!==undefined){
         const quota = d.supervisorQuotas[currentSupervisor];
         const mine = own.filter(p=>ops.assignments[p.id]?.type==='date' && ops.assignments[p.id]?.dateId===d.id).length;
         const remaining = Math.max(quota-mine, 0);
@@ -416,7 +416,7 @@ async function onAssignChange(pid, value){
       }
       const day = dayById(rest);
       let overQuota = false;
-      if(day && day.isOnline && day.supervisorQuotas && day.supervisorQuotas[currentSupervisor]!==undefined){
+      if(day && day.supervisorQuotas && day.supervisorQuotas[currentSupervisor]!==undefined){
         const quota = day.supervisorQuotas[currentSupervisor];
         const currentCount = Object.entries(ops.assignments||{}).filter(([opid,a])=>
           opid!==pid && a.type==='date' && a.dateId===rest && masterData.find(m=>m.id===opid)?.supervisor===currentSupervisor

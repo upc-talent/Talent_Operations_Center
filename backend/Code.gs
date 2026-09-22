@@ -1110,7 +1110,7 @@ function validateSupervisorAssignment_(ctx, row, oldA, newA, days, counts, supCo
     if ((counts[newA.dateId] || 0) >= cap) throw new Error('That training day is full (' + cap + ').');
   }
   var out = { type: 'date', dateId: newA.dateId, assignedBy: ctx.who, assignedAt: sameDay && oldA.assignedAt ? oldA.assignedAt : nowIso_(), overQuota: false, quotaApproved: true };
-  if (day.isOnline && day.supervisorQuotas && day.supervisorQuotas.hasOwnProperty(ctx.who)) {
+  if (day.supervisorQuotas && day.supervisorQuotas.hasOwnProperty(ctx.who)) {
     if (sameDay && oldA.overQuota) {
       out.overQuota = true; out.quotaApproved = !!oldA.quotaApproved;   // keep the trainer's earlier decision
     } else {
