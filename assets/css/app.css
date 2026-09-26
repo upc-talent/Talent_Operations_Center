@@ -311,3 +311,27 @@ p.small-note{margin:0 0 6px;}
 /* Pharmacist name column: small grey row number in front of the name */
 .rownum{display:inline-block;min-width:24px;margin-right:6px;color:var(--muted);font-size:11px;font-weight:600;}
 .name-cell{font-weight:600;color:var(--navy);}
+
+/* Training days hidden from supervisors: the details are dimmed, but the checkbox and action buttons stay at full
+   strength because the trainer can still edit and use a hidden day. */
+.day-hidden-row td:not(.sel-cell):not(.day-actions){opacity:.6;}
+/* Numbered short label of a training day (JED N 2, Online QAS 1 …) */
+.day-num-tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:800;background:var(--navy);color:#fff;letter-spacing:.2px;}
+
+/* "Clear All Data" warning */
+.arabic-warning{font-size:20px;font-weight:800;color:var(--danger);text-align:center;margin:14px 0;padding:12px;border:2px dashed var(--danger);border-radius:10px;background:var(--danger-bg);line-height:1.6;}
+
+/* Attendance on the supervisor page */
+.badge-att-ok{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok);}
+.locked-note{margin-top:4px;font-size:10.5px;font-weight:700;color:var(--ok);}
+
+/* Clickable Pharmacist Status cards */
+.chip-click{cursor:pointer;transition:transform .12s ease, box-shadow .12s ease;}
+.chip-click:hover,.chip-click:focus-visible{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,50,97,.18);outline:none;}
+.chip-more{margin-top:6px;font-size:10.5px;font-weight:700;opacity:.85;}
+
+/* Edit Selected pharmacists */
+.edit-sel-table input{padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;}
+.edit-sel-table td{padding-top:5px;padding-bottom:5px;}
+.chg-from{color:var(--muted);text-decoration:line-through;}
+.chg-to{color:var(--navy);font-weight:700;}

@@ -67,6 +67,7 @@
       <div class="section-head">
         <h2 id="trainerTableTitle">All Records</h2>
         <div class="row">
+          <button class="btn btn-outline btn-sm" onclick="openEditSelectedPharmacists()" title="Tick pharmacists in the table, then edit their details">✏️ Edit Selected</button>
           <button class="btn btn-outline btn-sm" onclick="refreshTrainer()">↻ Refresh</button>
           <button class="btn btn-navy btn-sm" onclick="exportAttendanceExcel()">⬇ Excel</button>
           <button class="btn btn-navy btn-sm" onclick="exportTableImage('trainerCard','training-attendance')">📷 Image</button>
@@ -108,7 +109,8 @@
 
       <div class="card">
         <div class="section-head" style="margin-top:0"><h2>Master Pharmacist Data (Excel Upload)</h2></div>
-        <p class="small-note">Expected columns (name match is flexible): <b>District, Area Manager, City, Supervisor Name, Pharmacy No., User/Employee ID, Username (Email), Display Name (Pharmacist name), Phone number (Whatsapp), SCFHS</b>. You'll see a column-mapping preview before anything is saved. Uploading replaces the current list entirely; rows are de-duplicated by email.</p>
+        <p class="small-note">Expected columns (name match is flexible): <b>District, Area Manager, City, Supervisor Name, Pharmacy No., User/Employee ID, Username (Email), Display Name (Pharmacist name), Phone number (Whatsapp), SCFHS</b> — plus optional <b>Date, Attendance Status, Notes</b>. The Master Sheet file from Analytics &amp; Export has exactly these columns, so it can be uploaded straight back.</p>
+        <p class="small-note">Pharmacists already in the tool are recognised (by email, employee ID, or name + supervisor) and keep their training day and attendance; duplicate rows are skipped. You'll see a column-mapping preview and a summary before anything is saved.</p>
         <div class="row" style="margin-top:8px">
           <input type="file" id="masterFileInput" accept=".xlsx,.xls,.csv" onchange="handleMasterUpload(this)">
           <button class="btn btn-outline btn-sm" onclick="clearMasterData()">🗑 Clear All Data</button>
@@ -304,13 +306,17 @@
         <div class="filter-bar" id="masterFilterBar"></div>
         <div class="table-wrap"><table id="masterSheetPreviewTable">
           <thead><tr>
-            <th onclick="toggleSort('master','displayName')">Pharmacist Name <span class="sort-ind" id="sort-master-displayName"></span></th>
-            <th onclick="toggleSort('master','email')">Email <span class="sort-ind" id="sort-master-email"></span></th>
-            <th onclick="toggleSort('master','supervisor')">Supervisor <span class="sort-ind" id="sort-master-supervisor"></span></th>
             <th onclick="toggleSort('master','district')">District <span class="sort-ind" id="sort-master-district"></span></th>
             <th onclick="toggleSort('master','areaManager')">Area Manager <span class="sort-ind" id="sort-master-areaManager"></span></th>
             <th onclick="toggleSort('master','city')">City <span class="sort-ind" id="sort-master-city"></span></th>
+            <th onclick="toggleSort('master','supervisor')">Supervisor Name <span class="sort-ind" id="sort-master-supervisor"></span></th>
             <th onclick="toggleSort('master','date')">Date <span class="sort-ind" id="sort-master-date"></span></th>
+            <th onclick="toggleSort('master','pharmacyNo')">Pharmacy No. <span class="sort-ind" id="sort-master-pharmacyNo"></span></th>
+            <th onclick="toggleSort('master','employeeId')">User/Employee ID <span class="sort-ind" id="sort-master-employeeId"></span></th>
+            <th onclick="toggleSort('master','email')">Username (Email) <span class="sort-ind" id="sort-master-email"></span></th>
+            <th onclick="toggleSort('master','displayName')">Display Name (Pharmacist name) <span class="sort-ind" id="sort-master-displayName"></span></th>
+            <th onclick="toggleSort('master','phone')">Phone number (Whatsapp) <span class="sort-ind" id="sort-master-phone"></span></th>
+            <th onclick="toggleSort('master','scfhs')">SCFHS <span class="sort-ind" id="sort-master-scfhs"></span></th>
             <th onclick="toggleSort('master','attendance')">Attendance Status <span class="sort-ind" id="sort-master-attendance"></span></th>
             <th class="no-sort">Notes</th>
           </tr></thead>

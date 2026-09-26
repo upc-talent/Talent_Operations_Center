@@ -390,32 +390,55 @@ async function patchKey(ctx: Ctx, req: any) {
   return { ok: true };
 }
 
-/* ---------- master roster (trainer only) ---------- */
+/* ---------- master roster (trainer only) ----------
+   One transaction, a few set-based statements: a roster upload of ~1,500 people is all-or-nothing (a failure can't
+   leave half the old list next to half the new one, i.e. duplicates) and takes 3 round trips instead of ~3,000. */
 async function patchMaster(records: Record<string, any>) {
   const ids = Object.keys(records);
   if (!ids.length) return;
-  const existing = new Set((await sql`select id from pharmacists where id in ${sql(ids)}`).map((r: any) => r.id));
-  for (const id of ids) {
-    const m = records[id];
-    if (m === null) { await sql`delete from pharmacists where id = ${id}`; continue; }
-    const completion = (m.completionPct === undefined || m.completionPct === null) ? null : String(m.completionPct);
-    if (existing.has(id)) {
-      // Update master fields only — never touch assignment/attendance. Note only when the caller sent one.
-      await sql`update pharmacists set
-        district = ${m.district || ""}, area_manager = ${m.areaManager || ""}, city = ${m.city || ""},
-        supervisor = ${m.supervisor || ""}, pharmacy_no = ${m.pharmacyNo || ""}, employee_id = ${m.employeeId || ""},
-        email = ${m.email || ""}, display_name = ${m.displayName || ""}, phone = ${m.phone || ""},
-        scfhs = ${m.scfhs || ""}, completion_pct = ${completion}
-        where id = ${id}`;
-      if (m.note !== undefined) await sql`update pharmacists set note = ${m.note === null ? "" : String(m.note)} where id = ${id}`;
-    } else {
-      await sql`insert into pharmacists
-        (id, district, area_manager, city, supervisor, pharmacy_no, employee_id, email, display_name, phone, scfhs, note, completion_pct)
-        values (${id}, ${m.district || ""}, ${m.areaManager || ""}, ${m.city || ""}, ${m.supervisor || ""},
-          ${m.pharmacyNo || ""}, ${m.employeeId || ""}, ${m.email || ""}, ${m.displayName || ""}, ${m.phone || ""},
-          ${m.scfhs || ""}, ${m.note === undefined || m.note === null ? "" : String(m.note)}, ${completion})`;
+  const del = ids.filter((id) => records[id] === null);
+  const upserts = ids.filter((id) => records[id] !== null);
+  const s = (v: unknown) => (v === undefined || v === null ? "" : String(v));
+  const cols = (list: string[]) => {
+    const pick = (f: (m: any) => unknown) => list.map((id) => f(records[id]));
+    return {
+      district: pick((m) => s(m.district)), area: pick((m) => s(m.areaManager)), city: pick((m) => s(m.city)),
+      sup: pick((m) => s(m.supervisor)), pharmacy: pick((m) => s(m.pharmacyNo)), emp: pick((m) => s(m.employeeId)),
+      email: pick((m) => s(m.email)), name: pick((m) => s(m.displayName)), phone: pick((m) => s(m.phone)),
+      scfhs: pick((m) => s(m.scfhs)), note: pick((m) => s(m.note)),
+      noteSet: pick((m) => (m.note !== undefined ? "1" : "0")),   // a note is only written when the caller sent one
+      completion: pick((m) => (m.completionPct === undefined || m.completionPct === null) ? null : String(m.completionPct)),
+    };
+  };
+  await sql.begin(async (tx: any) => {
+    if (del.length) await tx`delete from pharmacists where id = any(${del}::text[])`;
+    if (!upserts.length) return;
+    const existing = new Set((await tx`select id from pharmacists where id = any(${upserts}::text[])`).map((r: any) => r.id));
+    const upd = upserts.filter((id) => existing.has(id));
+    const ins = upserts.filter((id) => !existing.has(id));
+    if (upd.length) {
+      // Master fields only — assignment/attendance are never touched here.
+      const c = cols(upd);
+      await tx`update pharmacists p set
+          district = d.district, area_manager = d.area, city = d.city, supervisor = d.sup, pharmacy_no = d.pharmacy,
+          employee_id = d.emp, email = d.email, display_name = d.name, phone = d.phone, scfhs = d.scfhs,
+          completion_pct = d.completion, note = case when d.note_set = '1' then d.note else p.note end
+        from (select unnest(${upd}::text[]) as id, unnest(${c.district}::text[]) as district, unnest(${c.area}::text[]) as area,
+                     unnest(${c.city}::text[]) as city, unnest(${c.sup}::text[]) as sup, unnest(${c.pharmacy}::text[]) as pharmacy,
+                     unnest(${c.emp}::text[]) as emp, unnest(${c.email}::text[]) as email, unnest(${c.name}::text[]) as name,
+                     unnest(${c.phone}::text[]) as phone, unnest(${c.scfhs}::text[]) as scfhs, unnest(${c.note}::text[]) as note,
+                     unnest(${c.noteSet}::text[]) as note_set, unnest(${c.completion}::text[]) as completion) d
+        where p.id = d.id`;
     }
-  }
+    if (ins.length) {
+      const c = cols(ins);
+      await tx`insert into pharmacists
+          (id, district, area_manager, city, supervisor, pharmacy_no, employee_id, email, display_name, phone, scfhs, note, completion_pct)
+        select * from unnest(${ins}::text[], ${c.district}::text[], ${c.area}::text[], ${c.city}::text[], ${c.sup}::text[],
+                             ${c.pharmacy}::text[], ${c.emp}::text[], ${c.email}::text[], ${c.name}::text[], ${c.phone}::text[],
+                             ${c.scfhs}::text[], ${c.note}::text[], ${c.completion}::text[])`;
+    }
+  });
 }
 
 /* ---------- assignments & attendance ---------- */
@@ -485,6 +508,10 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
       if (ctx.role === "supervisor") {
         if (sup !== ctx.who) throw new Error("Not allowed: that pharmacist belongs to another supervisor.");
         if (Object.prototype.hasOwnProperty.call(rec, "t") && rec.t !== null) throw new Error("Only trainers can record attendance.");
+        // Once a pharmacist has attended, only the training team may change their assignment (or clear the attendance).
+        if (hasAttended(curT) && ((Object.prototype.hasOwnProperty.call(rec, "a") && !sameAssignment(curA, rec.a)) || Object.prototype.hasOwnProperty.call(rec, "t"))) {
+          throw new Error("This pharmacist already attended their training — only the training team can change it.");
+        }
         if (Object.prototype.hasOwnProperty.call(rec, "a")) {
           bump(curA, sup, -1);
           try {
@@ -512,6 +539,18 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
                where p.id = d.id`;
     }
   });
+}
+
+// Fully attended: a single-day status of Attended, or both days of a split online training attended.
+function hasAttended(t: any): boolean {
+  if (!t || typeof t !== "object") return false;
+  if (t.status === "Attended") return true;
+  return !!(t.day1 && t.day1.status === "Attended" && t.day2 && t.day2.status === "Attended");
+}
+function sameAssignment(a: any, b: any): boolean {
+  if (!a || !b) return !a && !b;
+  if (a.type !== b.type) return false;
+  return a.type === "date" ? a.dateId === b.dateId : a.status === b.status;
 }
 
 function validateSupervisorAssignment(ctx: Ctx, row: any, oldA: any, newA: any, days: Record<string, any>, counts: Record<string, number>, supCounts: Record<string, Record<string, number>>, defaultCap: number) {

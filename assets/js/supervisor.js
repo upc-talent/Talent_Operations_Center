@@ -8,6 +8,21 @@ function switchSupTrack(track){
   renderSupervisorChips();
   renderSupervisorTable();
 }
+// Only show the Offline / Online tab when this supervisor actually has pharmacists of that kind (both show if they have none).
+function updateSupTrackTabs(){
+  const mine = masterData.filter(p=>p.supervisor===currentSupervisor);
+  const hasOnline = mine.some(isOnlinePharmacist);
+  const hasOffline = mine.some(p=>!isOnlinePharmacist(p));
+  const showOffline = hasOffline || !hasOnline;
+  const showOnline = hasOnline || !hasOffline;
+  if(supTrack==='offline' && !showOffline) supTrack = 'online';
+  if(supTrack==='online' && !showOnline) supTrack = 'offline';
+  const off = document.getElementById('supTrackTab-offline'), on = document.getElementById('supTrackTab-online');
+  off.classList.toggle('hidden', !showOffline);
+  on.classList.toggle('hidden', !showOnline);
+  off.classList.toggle('active', supTrack==='offline');
+  on.classList.toggle('active', supTrack==='online');
+}
 function currentSupervisorScope(){
   return masterData.filter(p=>p.supervisor===currentSupervisor && isOnlinePharmacist(p) === (supTrack==='online'));
 }
@@ -60,6 +75,7 @@ async function loadSupervisorView(silent){
   document.getElementById('supTitle').textContent = 'Pharmacists — ' + name;
   document.getElementById('capHintSup').textContent = trainingConfig.maxCapacity;
 
+  updateSupTrackTabs();
   renderSupervisorChips();
   buildSupervisorFilterBar();
   renderSupervisorTable();
@@ -138,10 +154,11 @@ function renderSupervisorChips(){
   const notAssignedTotal = own.filter(p=>!ops.assignments[p.id]).length;
   const assignedButAbsent = own.filter(p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent').length;
   const pct = n => total ? Math.round((n/total)*100)+'% of total' : '—';
-  overviewEl.innerHTML = `
-    <div class="chip chip-lg chip-status ok"><div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div></div>
-    <div class="chip chip-lg chip-status neutral"><div class="lbl">Not Assigned</div><div class="num">${notAssignedTotal}</div><div class="tag">${pct(notAssignedTotal)}</div></div>
-    <div class="chip chip-lg chip-status danger"><div class="lbl">Assigned but Absent</div><div class="num">${assignedButAbsent}</div><div class="tag">${pct(assignedButAbsent)}</div></div>`;
+  const card = (kind, cls, inner) => `<div class="chip chip-lg chip-status ${cls} chip-click" role="button" tabindex="0" title="Show these pharmacists" onclick="openSupStatusList('${kind}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSupStatusList('${kind}');}">${inner}<div class="chip-more">View list ›</div></div>`;
+  overviewEl.innerHTML =
+    card('attended', 'ok', `<div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div>`) +
+    card('notAssigned', 'neutral', `<div class="lbl">Not Assigned</div><div class="num">${notAssignedTotal}</div><div class="tag">${pct(notAssignedTotal)}</div>`) +
+    card('absent', 'danger', `<div class="lbl">Assigned but Absent</div><div class="num">${assignedButAbsent}</div><div class="tag">${pct(assignedButAbsent)}</div>`);
 
   if(!days.length){
     daysEl.innerHTML = `<p class="small-note">No ${supTrack} training days have been assigned to you yet.</p>`;
@@ -180,6 +197,34 @@ function renderSupervisorChips(){
   statusEl.innerHTML = statusHtml;
 }
 
+// The pharmacists behind each Pharmacist Status card — the same rules the card counts use.
+const SUP_STATUS_LISTS = {
+  attended:    {title:'Attended',            test:p=>hasAttendedTraining(p)},
+  notAssigned: {title:'Not Assigned',        test:p=>!ops.assignments[p.id]},
+  absent:      {title:'Assigned but Absent', test:p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent'}
+};
+function openSupStatusList(kind){
+  const def = SUP_STATUS_LISTS[kind];
+  if(!def) return;
+  const list = applySort('sup', currentSupervisorScope().filter(def.test));
+  const rows = list.length ? list.map((p,i)=>`<tr>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p.displayName)}</td>
+      <td>${esc(p.email||'—')}</td>
+      <td>${esc(p.district||'—')}</td>
+      <td>${esc(p.areaManager||'—')}</td>
+      <td>${cityCellHtml(p)}</td>
+      <td class="no-truncate">${dateCellHtml(p, false, [], 'onAssignChange')}</td>
+      <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
+    </tr>`).join('') : `<tr><td colspan="7" class="empty-msg">No pharmacists in this group</td></tr>`;
+  showModal(`<h3>${esc(def.title)} — ${list.length} pharmacist(s)</h3>
+    <p class="small-note" style="margin-top:-8px;">${supTrack==='online'?'Online':'Offline'} pharmacists of ${esc(currentSupervisor)}.</p>
+    <div class="table-wrap" style="max-height:60vh;"><table>
+      <thead><tr><th>Pharmacist Name</th><th>Email</th><th>District</th><th>Area Manager</th><th>City</th><th>Date</th><th>Attendance Status</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="closeModal()">Close</button></div>`, 'max-width:980px;');
+}
+
 function applySupFilters(list){
   return list.filter(p=>{
     if(!inSet(p.district, supFilterState.district)) return false;
@@ -201,16 +246,20 @@ function renderSupervisorTable(){
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
   if(!own.length && !pending.length){
-    tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No pharmacists match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="10" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
     bulkSyncAfterRender('sup', []);
     return;
   }
   let i = 0;
-  // Column order: Pharmacist Name (with its row number), Email, Supervisor, District, Area Manager, City, Date, Notes
+  // Column order: Pharmacist Name (with its row number), Email, Supervisor, District, Area Manager, City, Date, Attendance Status, Notes
   const nameCell = (n, p) => `<td class="name-cell"><span class="rownum">${n}</span>${esc(p.displayName)}</td>`;
   let rows = own.map(p=>{
     i++;
+    // Someone who attended can't be moved to another day (or a leave status) by the supervisor — the server refuses it too.
+    const dateHtml = hasAttendedTraining(p)
+      ? `${dateCellHtml(p, false, days, 'onAssignChange')}<div class="locked-note" title="This pharmacist already attended the training. Only the training team can change it.">🔒 Attended — can't be reassigned</div>`
+      : dateCellHtml(p, true, days, 'onAssignChange');
     return `<tr>
       ${bulkCheckboxCell('sup', p.id)}
       ${nameCell(i, p)}
@@ -219,7 +268,8 @@ function renderSupervisorTable(){
       <td>${esc(p.district||'—')}</td>
       <td>${esc(p.areaManager||'—')}</td>
       <td>${cityCellHtml(p)}</td>
-      <td class="no-truncate">${dateCellHtml(p, true, days, 'onAssignChange')}</td>
+      <td class="no-truncate">${dateHtml}</td>
+      <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
       <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
@@ -238,6 +288,7 @@ function renderSupervisorTable(){
         <button class="btn btn-danger btn-sm" style="margin-top:4px;" onclick="deletePendingPharmacist('${p.id}')">Delete</button>
       </td>
       <td></td>
+      <td></td>
     </tr>`;
   }).join('');
   tb.innerHTML = rows;
@@ -252,8 +303,12 @@ function bulkApplySupAssign(){
   const sel = document.getElementById('bulkAssignSelect-sup');
   const value = sel ? sel.value : '';
   if(!value){ toast('Choose what to assign first','err'); return; }
-  const people = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
-  if(!people.length) return;
+  const selected = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
+  if(!selected.length) return;
+  // pharmacists who already attended are never changed by a supervisor
+  const people = selected.filter(p=>!hasAttendedTraining(p));
+  const attendedSkipped = selected.length - people.length;
+  if(!people.length){ toast('All selected pharmacists already attended their training — only the training team can change them.','err'); return; }
   let done = 0, skipped = 0, pending = 0;
   if(value==='__none__'){
     people.forEach(p=>{ delete ops.assignments[p.id]; delete ops.attendance[p.id]; done++; });
@@ -288,7 +343,8 @@ function bulkApplySupAssign(){
   let msg = `Updated ${done} pharmacist(s)`;
   if(pending) msg += ` (${pending} over quota — pending trainer approval)`;
   if(skipped) msg += `, skipped ${skipped} (day full or wrong type)`;
-  toast(msg, (skipped||pending)?'info':'ok');
+  if(attendedSkipped) msg += `, skipped ${attendedSkipped} (already attended)`;
+  toast(msg, (skipped||pending||attendedSkipped)?'info':'ok');
 }
 
 function openEditPendingModal(pid){
@@ -337,6 +393,12 @@ async function deletePendingPharmacist(pid){
 }
 
 async function onAssignChange(pid, value){
+  const person = masterData.find(m=>m.id===pid);
+  if(person && hasAttendedTraining(person)){
+    toast('This pharmacist already attended their training — only the training team can change it.','err');
+    renderSupervisorTable();
+    return;
+  }
   if(!value){
     delete ops.assignments[pid];
     delete ops.attendance[pid];

@@ -48,6 +48,7 @@ supabase/
   README.md           Setup + redeploy runbook, performance notes
 dev/serve.ps1         Tiny static server (PowerShell HttpListener) — the PC has NO Node or Python
 docs/PROJECT_HANDOFF.md   this file
+docs/WORK_SUMMARY.md      record of the Sept 2026 changes (what, why, measured results, open items)
 README.md             Overview, data model, security model
 ```
 
@@ -130,6 +131,22 @@ Every response includes `_ms`, the server's own execution time.
 - New pharmacists and Annual Leave requests are submitted by supervisors and **only take effect on trainer
   approval** (bulk-add and annual-leave Excel templates exist).
 - City colours/codes: JED N/S = blue, JAZ/BAH/ABH/TAIF = green, MAD/MEC = yellow, RUH/EAST = purple, Online = grey.
+- **Hidden days are hidden from supervisors only.** Trainers still see, edit and assign them (marked "hidden from
+  supervisors" in dropdowns; dashed border in the calendar). Supervisors never receive them in their lists.
+- **Attended = locked for supervisors.** Once a pharmacist is fully attended (both days for a split online training),
+  a supervisor can't change their day/leave status or clear it — enforced in the UI and in `patchOps`
+  (`hasAttended`). Trainers can still change it. "Partial" is not locked (a make-up day is still needed).
+- **Day labels are numbered per group** in date order (`computeDayLabels` in trainer.js): in-person by city code
+  (JED N 1, JED N 2…), online by training name else city (Online QAS 1, Online QAS 2…); a split online training
+  counts once; names already ending in a number ("Mix 3") are kept. Display only — nothing is stored.
+- **Master Sheet export = upload format.** Analytics & Export → Master Sheet columns (District … SCFHS, Attendance
+  Status, Notes) are exactly what Setup → Master Pharmacist Data accepts. The upload matches each row to an existing
+  pharmacist (email → employee ID → name+supervisor), so they keep their id, day and attendance; duplicate rows are
+  skipped; "Date" / "Attendance Status" text is read back into assignments and attendance (blank / "Not Assigned"
+  leaves what's recorded). The trainer chooses whether people missing from the file are kept or removed.
+  When two days share a city and date, the Date text gets the training name, e.g. `Online — 5 - 6 October 26 (Mix 4)`.
+- **Edit Selected** (Attendance tab): tick pharmacists → edit their master details in a grid → review a before/after
+  list → Confirm saves (duplicate emails are refused; a brand-new supervisor name is flagged as a possible typo).
 - **Bulk actions**: checkboxes on the trainer Records table, the trainer Days table and the supervisor table.
   Pharmacists → Assign to a day / set a leave status / unassign (+ trainer-only delete from roster).
   Days → Hide / Unhide / Delete. Anything that doesn't fit (wrong online/offline type, day full) is skipped and
@@ -163,8 +180,10 @@ Calendar** (parsed in the browser by `parseCalendarAoa`, then saved like any oth
 
 - Analytics buckets don't sum: people assigned but not yet marked, and split "Partial" attendees, appear in no bucket.
 - Undo/Redo covers training-config only; deleting a day also wipes its assignments and attendance (not restorable).
-- Re-uploading the roster replaces everyone with **new ids** (assignments/approvals for the old ids are lost).
-  Notes are preserved only if the Excel has a `Notes` column.
+- Roster upload keeps existing people's ids (see §5). A person whose email, employee ID *and* name/supervisor all
+  changed at once can't be recognised and is treated as new. Blank cells in a mapped column overwrite that field
+  (except Notes, which a blank never wipes). Completion % isn't in the file and is kept as is.
+- `patchMaster` writes in one transaction with set-based statements, so an upload is all-or-nothing.
 - Days for cities with no pharmacists have no supervisor until pharmacists exist (or "Visible to" is set by hand).
 - Supervisors have no password (name picker only). Optional next step: per-supervisor access codes. The trainer
   login is one shared credential ⇒ no per-trainer audit (`markedBy` is empty).

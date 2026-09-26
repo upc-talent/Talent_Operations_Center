@@ -232,9 +232,12 @@
     ids.forEach(id => {
       const o = oldC.records[id], n = newC.records[id];
       if (key === 'operations') {
+        // The server sends "none" as null while the page drops the key entirely — treat both as the same, or every
+        // save would re-send every assigned-but-unmarked pharmacist.
+        const val = v => (v == null ? null : v);
         const rec = {};
-        if (stable(o && o.a) !== stable(n && n.a)) rec.a = (n && n.a) || null;
-        if (stable(o && o.t) !== stable(n && n.t)) rec.t = (n && n.t) || null;
+        if (stable(val(o && o.a)) !== stable(val(n && n.a))) rec.a = (n && n.a) || null;
+        if (stable(val(o && o.t)) !== stable(val(n && n.t))) rec.t = (n && n.t) || null;
         if (Object.keys(rec).length) records[id] = rec;
       } else if (n === undefined) {
         records[id] = null;

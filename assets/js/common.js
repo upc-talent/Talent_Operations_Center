@@ -345,7 +345,8 @@ function bulkAssignOptions(scope){
   let html = `<option value="">— Assign selected to… —</option><optgroup label="Training Days">`;
   days.forEach(d=>{
     const passed = (scope==='sup' && isDeadlinePassed(d)) ? ' (Deadline passed)' : '';
-    html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed}</option>`;
+    const hidden = d.active===false ? ' (hidden from supervisors)' : '';
+    html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed}${hidden}</option>`;
   });
   html += `</optgroup><optgroup label="Other Status">`;
   LEAVE_STATUSES.forEach(s=>{ html += `<option value="leave:${esc(s)}">${esc(s)}</option>`; });
@@ -523,7 +524,7 @@ function matchesDateSet(pid, set){
 }
 
 function dateFilterOptions(days){
-  return days.map(d=>({value:'date:'+d.id, text: d.city+' — '+dayDateLabel(d)}))
+  return days.map(d=>({value:'date:'+d.id, text: d.city+' — '+dayDateLabel(d)+(d.active===false?' (hidden)':'')}))
     .concat(LEAVE_STATUSES.map(s=>({value:'leave:'+s, text:s})))
     .concat([{value:'unassigned', text:'Not Assigned'}]);
 }
@@ -583,9 +584,11 @@ function isDeadlinePassed(day){
 
 /* The label shown for one training-day option — kept as a single helper so the collapsed (lazy) option and the
    fully-expanded list can never drift apart. */
+// Hidden days only ever reach this on the trainer page (supervisors never get them in their lists), so the marker
+// just tells the trainer which days supervisors can't see — the day stays fully usable.
 function assignOptionLabel(d, enforceDeadline){
   const passed = enforceDeadline && isDeadlinePassed(d);
-  return `${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed?' (Deadline passed)':''}`;
+  return `${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed?' (Deadline passed)':''}${d.active===false?' (hidden from supervisors)':''}`;
 }
 function assignmentOptionsHtml(pid, days, enforceDeadline){
   const current = ops.assignments[pid];
@@ -697,6 +700,22 @@ function attSummary(pid, p){
   }
   return {status: att.status, punctuality: att.punctuality};
 }
+// Fully attended (both days, for a split online training). Once true, supervisors can no longer change the
+// pharmacist's assignment — only the training team can (enforced on the server too).
+function hasAttendedTraining(p){
+  return attSummary(p.id, p).status==='Attended';
+}
+// Attendance as the supervisor sees it in their Pharmacist List.
+function attendanceBadgeHtml(p){
+  const a = ops.assignments[p.id];
+  if(!a || a.type!=='date' || !dayById(a.dateId)) return '<span class="small-note">—</span>';
+  if(a.overQuota && !a.quotaApproved) return '<span class="small-note">—</span>';
+  const s = attSummary(p.id, p);
+  if(s.status==='Attended') return `<span class="badge badge-att-ok">✔ Attended — ${esc(s.punctuality||'On Time')}</span>`;
+  if(s.status==='Absent') return `<span class="badge badge-danger">✕ Absent</span>`;
+  if(s.status==='Partial') return `<span class="badge badge-leave">Partial — Day ${s.missingDay} missing</span>`;
+  return `<span class="badge badge-empty">Not marked yet</span>`;
+}
 function isOnlinePharmacist(p){
   return (p.city||'').trim().toLowerCase()==='online';
 }
@@ -731,6 +750,20 @@ function attendanceStatusText(p){
   return s.status;
 }
 
+// Two training days can share a city and date (e.g. online "Mix 3" and "Mix 4" both starting 5 Oct), which makes their
+// "City — date" text identical. Only in that case the training name is added, so the Date text — in the tables, the
+// exports, and an Excel re-upload — points at exactly one day.
+let _dupDayCount = null, _dupDaySrc = null, _dupDayLen = -1;
+function dayDisambiguator(day){
+  const arr = trainingConfig.dates || [];
+  if(_dupDaySrc!==arr || _dupDayLen!==arr.length){
+    _dupDayCount = {};
+    arr.forEach(d=>{ const k = d.city+'|'+dayDateLabel(d); _dupDayCount[k] = (_dupDayCount[k]||0)+1; });
+    _dupDaySrc = arr; _dupDayLen = arr.length;
+  }
+  return (_dupDayCount[day.city+'|'+dayDateLabel(day)]>1 && day.trainingName) ? ` (${day.trainingName})` : '';
+}
+
 function buildMasterRow(p){
   const a = ops.assignments[p.id];
   const att = ops.attendance[p.id];
@@ -738,7 +771,7 @@ function buildMasterRow(p){
   if(a && a.type==='date'){
     const day = dayById(a.dateId);
     if(day){
-      dateText = day.city+' — '+dayDateLabel(day);
+      dateText = day.city+' — '+dayDateLabel(day)+dayDisambiguator(day);
       conductedBy = (day.trainerNames||[]).join(', ');
       statusText = attendanceStatusText(p);
       validDateAssignment = true;
