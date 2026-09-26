@@ -145,6 +145,13 @@ Every response includes `_ms`, the server's own execution time.
   skipped; "Date" / "Attendance Status" text is read back into assignments and attendance (blank / "Not Assigned"
   leaves what's recorded). The trainer chooses whether people missing from the file are kept or removed.
   When two days share a city and date, the Date text gets the training name, e.g. `Online — 5 - 6 October 26 (Mix 4)`.
+  If a Date text still matches several groups, the upload picks the one the pharmacist's **own supervisor** can see.
+- **Same-date groups** (e.g. "Online QAS" for Dr. Islam Jaber and "Online North" for Dr. Mahmoud Sorour, both
+  6 - 7 Oct, city "Online") are labelled `Online QAS — 6 - 7 October 26 · Dr. Islam Jaber` in every list
+  (`dayGroupText` in common.js). Trainers may still put anyone in any group.
+- **Group mix-up check** (Attendance tab banner): lists pharmacists in a group their supervisor can't see and moves
+  them, after review, to their supervisor's group on the same date. Rows unticked in the review are remembered per
+  browser (`group-fix-ignored`) and not flagged again.
 - **Edit Selected** (Attendance tab): tick pharmacists → edit their master details in a grid → review a before/after
   list → Confirm saves (duplicate emails are refused; a brand-new supervisor name is flagged as a possible typo).
 - **Bulk actions**: checkboxes on the trainer Records table, the trainer Days table and the supervisor table.

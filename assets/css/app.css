@@ -335,3 +335,21 @@ p.small-note{margin:0 0 6px;}
 .edit-sel-table td{padding-top:5px;padding-bottom:5px;}
 .chg-from{color:var(--muted);text-decoration:line-through;}
 .chg-to{color:var(--navy);font-weight:700;}
+
+/* Training-group mix-up warning (Attendance tab) */
+.mix-banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--warn-bg);border:1.5px solid var(--warn);color:var(--warn);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:13px;}
+.mix-banner.hidden{display:none;}
+.mix-banner span{flex:1;min-width:240px;}
+
+/* Long, wide tables: scroll inside a box no taller than the window, so the left/right scrollbar is always on screen
+   (instead of below the last of ~1,450 rows) and the header row stays visible while scrolling down. */
+.table-scroll{overflow:auto;max-height:calc(100vh - 150px);}
+.table-scroll thead th{position:sticky;top:0;z-index:2;}
+/* Image / PDF exports capture the whole table, not just the part visible in the box. */
+.exporting .table-scroll{max-height:none;overflow:visible;}
+
+/* Status card used as a table filter */
+.chip-click.chip-active{outline:3px solid var(--navy);outline-offset:3px;box-shadow:0 6px 16px rgba(0,50,97,.22);}
+.status-filter-tag{display:inline-flex;align-items:center;gap:6px;margin-left:10px;padding:3px 6px 3px 11px;border-radius:20px;background:var(--navy);color:#fff;font-size:11.5px;font-weight:700;vertical-align:middle;}
+.status-filter-tag button{background:rgba(255,255,255,.2);border:none;color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;line-height:1;cursor:pointer;padding:0;}
+.status-filter-tag button:hover{background:rgba(255,255,255,.35);}

@@ -54,6 +54,7 @@
 
     <!-- ATTENDANCE TAB -->
     <div id="t-attend" class="trainer-tab">
+      <div id="groupMixBanner" class="mix-banner hidden"></div>
       <div class="filter-bar" id="trainerFilterBar"></div>
 
       <div class="card" id="sessionCard" style="display:none;">
@@ -295,7 +296,7 @@
 
       <div class="card" style="margin-top:14px" id="masterSheetPreviewCard">
         <div class="section-head" style="margin-top:0">
-          <h2>Master Sheet Preview</h2>
+          <h2>Master Sheet Preview <span id="masterStatusTag"></span></h2>
           <div class="row">
             <span class="small-note">Reflects every change made so far.</span>
             <button class="btn btn-navy btn-sm" onclick="exportMasterSheet()">⬇ Excel</button>
@@ -304,7 +305,7 @@
           </div>
         </div>
         <div class="filter-bar" id="masterFilterBar"></div>
-        <div class="table-wrap"><table id="masterSheetPreviewTable">
+        <div class="table-wrap table-scroll"><table id="masterSheetPreviewTable">
           <thead><tr>
             <th onclick="toggleSort('master','district')">District <span class="sort-ind" id="sort-master-district"></span></th>
             <th onclick="toggleSort('master','areaManager')">Area Manager <span class="sort-ind" id="sort-master-areaManager"></span></th>

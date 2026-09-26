@@ -45,7 +45,9 @@ function onSupSearch(v){ supSearchQ=v; renderSupervisorTable(); }
 function clearSupFilters(){
   supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set() };
   supSearchQ='';
+  supStatusFilter = null;
   buildSupervisorFilterBar();
+  renderSupervisorChips();
   renderSupervisorTable();
 }
 
@@ -66,6 +68,7 @@ async function initSupervisor(){
 async function loadSupervisorView(silent){
   const name = document.getElementById('supervisorSelect').value;
   if(!name){ toast('Please select your name first','err'); return; }
+  if(name!==currentSupervisor) supStatusFilter = null;
   currentSupervisor = name;
   API.setSupervisor(name);
   await setPersonal('last-supervisor-name', name);
@@ -154,7 +157,7 @@ function renderSupervisorChips(){
   const notAssignedTotal = own.filter(p=>!ops.assignments[p.id]).length;
   const assignedButAbsent = own.filter(p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent').length;
   const pct = n => total ? Math.round((n/total)*100)+'% of total' : '—';
-  const card = (kind, cls, inner) => `<div class="chip chip-lg chip-status ${cls} chip-click" role="button" tabindex="0" title="Show these pharmacists" onclick="openSupStatusList('${kind}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSupStatusList('${kind}');}">${inner}<div class="chip-more">View list ›</div></div>`;
+  const card = (kind, cls, inner) => statusCardHtml(kind, cls, inner, supStatusFilter, 'setSupStatusFilter');
   overviewEl.innerHTML =
     card('attended', 'ok', `<div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div>`) +
     card('notAssigned', 'neutral', `<div class="lbl">Not Assigned</div><div class="num">${notAssignedTotal}</div><div class="tag">${pct(notAssignedTotal)}</div>`) +
@@ -181,7 +184,7 @@ function renderSupervisorChips(){
           ${reached ? `⚠️ <b>${mine}/${quota} reached</b>` : `<b>Quota ${mine}/${quota}</b> · ${remaining} left`}
         </span>`;
       }
-      return `<div class="chip chip-lg ${st.cls}"><div class="lbl">${esc(d.city)} — ${dayDateLabel(d)}</div><div class="num">${count} / ${cap}</div><div class="row" style="gap:5px;margin-top:5px;flex-wrap:wrap;"><span class="tag" style="margin:0;">${st.tag}</span>${quotaHtml}${deadlineHtml}</div></div>`;
+      return `<div class="chip chip-lg ${st.cls}"><div class="lbl">${esc(dayGroupText(d))}</div><div class="num">${count} / ${cap}</div><div class="row" style="gap:5px;margin-top:5px;flex-wrap:wrap;"><span class="tag" style="margin:0;">${st.tag}</span>${quotaHtml}${deadlineHtml}</div></div>`;
     }).join('');
   }
 
@@ -197,36 +200,22 @@ function renderSupervisorChips(){
   statusEl.innerHTML = statusHtml;
 }
 
-// The pharmacists behind each Pharmacist Status card — the same rules the card counts use.
-const SUP_STATUS_LISTS = {
-  attended:    {title:'Attended',            test:p=>hasAttendedTraining(p)},
-  notAssigned: {title:'Not Assigned',        test:p=>!ops.assignments[p.id]},
-  absent:      {title:'Assigned but Absent', test:p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent'}
-};
-function openSupStatusList(kind){
-  const def = SUP_STATUS_LISTS[kind];
-  if(!def) return;
-  const list = applySort('sup', currentSupervisorScope().filter(def.test));
-  const rows = list.length ? list.map((p,i)=>`<tr>
-      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p.displayName)}</td>
-      <td>${esc(p.email||'—')}</td>
-      <td>${esc(p.district||'—')}</td>
-      <td>${esc(p.areaManager||'—')}</td>
-      <td>${cityCellHtml(p)}</td>
-      <td class="no-truncate">${dateCellHtml(p, false, [], 'onAssignChange')}</td>
-      <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
-    </tr>`).join('') : `<tr><td colspan="7" class="empty-msg">No pharmacists in this group</td></tr>`;
-  showModal(`<h3>${esc(def.title)} — ${list.length} pharmacist(s)</h3>
-    <p class="small-note" style="margin-top:-8px;">${supTrack==='online'?'Online':'Offline'} pharmacists of ${esc(currentSupervisor)}.</p>
-    <div class="table-wrap" style="max-height:60vh;"><table>
-      <thead><tr><th>Pharmacist Name</th><th>Email</th><th>District</th><th>Area Manager</th><th>City</th><th>Date</th><th>Attendance Status</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="closeModal()">Close</button></div>`, 'max-width:980px;');
+// Pharmacist Status card chosen as a table filter ('attended' | 'notAssigned' | 'absent'), or null for everyone.
+let supStatusFilter = null;
+function setSupStatusFilter(kind){
+  supStatusFilter = (kind && kind!==supStatusFilter) ? kind : null;
+  renderSupervisorChips();
+  renderSupervisorTable();
+  if(supStatusFilter){
+    const card = document.getElementById('supTableCard');
+    if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
+  }
 }
 
 function applySupFilters(list){
+  const status = supStatusFilter ? STATUS_GROUPS[supStatusFilter].test : null;
   return list.filter(p=>{
+    if(status && !status(p)) return false;
     if(!inSet(p.district, supFilterState.district)) return false;
     if(!inSet(p.areaManager, supFilterState.areaManager)) return false;
     if(!inSet(p.city, supFilterState.city)) return false;
@@ -241,7 +230,10 @@ function applySupFilters(list){
 
 function renderSupervisorTable(){
   let own = applySupFilters(currentSupervisorScope());
-  const pending = applySupFilters(currentSupervisorPendingScope());
+  // New pharmacists still awaiting approval belong to none of the status cards, so a card filter hides them.
+  const pending = supStatusFilter ? [] : applySupFilters(currentSupervisorPendingScope());
+  const tag = document.getElementById('supStatusTag');
+  if(tag) tag.innerHTML = statusFilterTagHtml(supStatusFilter, 'setSupStatusFilter');
   own = applySort('sup', own);
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');

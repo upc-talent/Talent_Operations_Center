@@ -346,7 +346,7 @@ function bulkAssignOptions(scope){
   days.forEach(d=>{
     const passed = (scope==='sup' && isDeadlinePassed(d)) ? ' (Deadline passed)' : '';
     const hidden = d.active===false ? ' (hidden from supervisors)' : '';
-    html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed}${hidden}</option>`;
+    html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed}${hidden}</option>`;
   });
   html += `</optgroup><optgroup label="Other Status">`;
   LEAVE_STATUSES.forEach(s=>{ html += `<option value="leave:${esc(s)}">${esc(s)}</option>`; });
@@ -524,7 +524,7 @@ function matchesDateSet(pid, set){
 }
 
 function dateFilterOptions(days){
-  return days.map(d=>({value:'date:'+d.id, text: d.city+' — '+dayDateLabel(d)+(d.active===false?' (hidden)':'')}))
+  return days.map(d=>({value:'date:'+d.id, text: dayGroupText(d)+(d.active===false?' (hidden)':'')}))
     .concat(LEAVE_STATUSES.map(s=>({value:'leave:'+s, text:s})))
     .concat([{value:'unassigned', text:'Not Assigned'}]);
 }
@@ -588,7 +588,7 @@ function isDeadlinePassed(day){
 // just tells the trainer which days supervisors can't see — the day stays fully usable.
 function assignOptionLabel(d, enforceDeadline){
   const passed = enforceDeadline && isDeadlinePassed(d);
-  return `${d.isOnline?'🌐 ':''}${esc(d.city)} — ${dayDateLabel(d)}${passed?' (Deadline passed)':''}${d.active===false?' (hidden from supervisors)':''}`;
+  return `${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed?' (Deadline passed)':''}${d.active===false?' (hidden from supervisors)':''}`;
 }
 function assignmentOptionsHtml(pid, days, enforceDeadline){
   const current = ops.assignments[pid];
@@ -656,9 +656,9 @@ function dateCellHtml(p, editable, days, changeFn){
     if(!day){
       badge = `<span class="badge badge-empty">Not Assigned</span>`;
     } else if(a.overQuota && !a.quotaApproved){
-      badge = `<span class="badge" style="background:var(--pending-bg);color:var(--pending);border:1px solid var(--pending);">⏳ Pending Quota Approval — ${esc(day.city)}</span>`;
+      badge = `<span class="badge" style="background:var(--pending-bg);color:var(--pending);border:1px solid var(--pending);">⏳ Pending Quota Approval — ${esc(dayGroupText(day))}</span>`;
     } else {
-      badge = `<span class="badge badge-date">${day.isOnline?'🌐 ':''}${esc(day.city)} — ${dayDateLabel(day)}</span>`;
+      badge = `<span class="badge badge-date">${day.isOnline?'🌐 ':''}${esc(dayGroupText(day))}</span>`;
     }
   }
   if(!editable) return badge;
@@ -704,6 +704,23 @@ function attSummary(pid, p){
 // pharmacist's assignment — only the training team can (enforced on the server too).
 function hasAttendedTraining(p){
   return attSummary(p.id, p).status==='Attended';
+}
+/* The three "Pharmacist status" cards (supervisor page, and the trainer's Analytics & Export tab). Clicking a card
+   filters the table below it to that group; clicking it again (or ✕ / Clear Filters) shows everyone again. The
+   rules here are the ones the card counts use, so a card's number always equals the rows it filters to. */
+const STATUS_GROUPS = {
+  attended:    {title:'Attended',            test:p=>hasAttendedTraining(p)},
+  notAssigned: {title:'Not Assigned',        test:p=>!ops.assignments[p.id]},
+  absent:      {title:'Assigned but Absent', test:p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent'}
+};
+function statusCardHtml(kind, cls, inner, activeKind, onClickFn){
+  const active = activeKind===kind;
+  const call = `${onClickFn}('${kind}')`;
+  return `<div class="chip chip-lg chip-status ${cls} chip-click${active?' chip-active':''}" role="button" tabindex="0" aria-pressed="${active}" title="${active?'Show everyone again':'Show only these pharmacists in the table below'}" onclick="${call}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${call};}">${inner}<div class="chip-more">${active?'✓ Filtering the table — click to clear':'Filter the table ›'}</div></div>`;
+}
+function statusFilterTagHtml(kind, clearFn){
+  if(!kind) return '';
+  return `<span class="status-filter-tag">Showing: ${esc(STATUS_GROUPS[kind].title)} <button type="button" title="Show everyone" onclick="${clearFn}(null)">✕</button></span>`;
 }
 // Attendance as the supervisor sees it in their Pharmacist List.
 function attendanceBadgeHtml(p){
@@ -754,14 +771,26 @@ function attendanceStatusText(p){
 // "City — date" text identical. Only in that case the training name is added, so the Date text — in the tables, the
 // exports, and an Excel re-upload — points at exactly one day.
 let _dupDayCount = null, _dupDaySrc = null, _dupDayLen = -1;
-function dayDisambiguator(day){
+function daysShareCityAndDate(day){
   const arr = trainingConfig.dates || [];
   if(_dupDaySrc!==arr || _dupDayLen!==arr.length){
     _dupDayCount = {};
     arr.forEach(d=>{ const k = d.city+'|'+dayDateLabel(d); _dupDayCount[k] = (_dupDayCount[k]||0)+1; });
     _dupDaySrc = arr; _dupDayLen = arr.length;
   }
-  return (_dupDayCount[day.city+'|'+dayDateLabel(day)]>1 && day.trainingName) ? ` (${day.trainingName})` : '';
+  return _dupDayCount[day.city+'|'+dayDateLabel(day)]>1;
+}
+function dayDisambiguator(day){
+  return (daysShareCityAndDate(day) && day.trainingName) ? ` (${day.trainingName})` : '';
+}
+// How a training day reads in dropdowns, filters, badges and chips (plain text — callers escape it). Separate groups
+// that share a city and date (e.g. "Online QAS" for one supervisor, "Online North" for another, both 6 - 7 Oct) would
+// otherwise read identically, so those show their group name and the supervisor(s) they belong to.
+function dayGroupText(d){
+  if(!daysShareCityAndDate(d)) return `${d.city} — ${dayDateLabel(d)}`;
+  const sups = d.visibleSupervisors || [];
+  const who = !sups.length ? 'no supervisor yet' : (sups.length<=2 ? sups.join(', ') : sups.length+' supervisors');
+  return `${d.trainingName || d.city} — ${dayDateLabel(d)} · ${who}`;
 }
 
 function buildMasterRow(p){
@@ -937,6 +966,12 @@ function showModal(html, boxStyle){
 function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
 /* ═══════════════════════════════ EXPORTS (IMAGE / PDF) ═══════════════════════════════ */
+// Scroll boxes (.table-scroll) are expanded while capturing, so the image/PDF holds the whole table.
+async function captureFull(el){
+  el.classList.add('exporting');
+  try{ return await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false}); }
+  finally{ el.classList.remove('exporting'); }
+}
 async function exportTableImage(containerId, filename){
   const el = document.getElementById(containerId);
   if(!el){ toast('Nothing to export','err'); return; }
@@ -944,7 +979,7 @@ async function exportTableImage(containerId, filename){
   const chosenName = await promptForFilename(filename, 'png');
   if(!chosenName) return;
   try{
-    const canvas = await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false});
+    const canvas = await captureFull(el);
     canvas.toBlob((blob)=>{
       if(!blob){ toast('Image export failed: could not generate image data','err'); return; }
       const url = URL.createObjectURL(blob);
@@ -966,7 +1001,7 @@ async function exportTablePDF(containerId, filename){
   const chosenName = await promptForFilename(filename, 'pdf');
   if(!chosenName) return;
   try{
-    const canvas = await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false});
+    const canvas = await captureFull(el);
     const { jsPDF } = window.jspdf;
     const imgW = canvas.width, imgH = canvas.height;
     const pdf = new jsPDF({orientation: imgW>imgH?'l':'p', unit:'px', format:[imgW, imgH]});

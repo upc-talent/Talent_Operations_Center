@@ -572,6 +572,7 @@ function switchTrainerTab(id){
 }
 
 async function initTrainer(){
+  groupFixIgnored = await getPersonal('group-fix-ignored', []);
   await Promise.all([loadCoreData(), loadVenues()]);
   renderSetupTab();
   buildTrainerFilterBar();
@@ -667,7 +668,8 @@ async function handleMasterUpload(input){
    The "Date" and "Attendance Status" columns written by the Master Sheet export are read back into assignments and
    attendance; blank / "Not Assigned" cells leave what is already recorded untouched. */
 const MASTER_TEXT_KEYS = ['district','areaManager','city','supervisor','pharmacyNo','employeeId','email','displayName','phone','scfhs','note'];
-function normText(s){ return String(s==null?'':s).toLowerCase().replace(/[‒-―−]/g,'-').replace(/\s+/g,' ').trim(); }
+// lower-case, one kind of dash, single spaces, and no leading icon (e.g. the 🌐 copied from a dropdown)
+function normText(s){ return String(s==null?'':s).toLowerCase().replace(/[‒-―−]/g,'-').replace(/\s+/g,' ').trim().replace(/^[^\p{L}\p{N}]+/u,''); }
 function isBlankStatusText(s){ const n = normText(s); return !n || n==='-' || n==='not assigned' || n==='not marked yet'; }
 
 // Every text the app writes for a training day → the day(s) it can mean ("Jeddah North — 5 October 26", "JED N 2 — …",
@@ -680,6 +682,7 @@ function buildDayTextIndex(){
     const lbl = dayDateLabel(d);
     add(d.city+' - '+lbl, d);
     if(d.trainingName) add(d.city+' - '+lbl+' ('+d.trainingName+')', d);
+    add(dayGroupText(d), d);   // the label shown in the app's lists, in case it was copied into the file
     if(labels[d.id]) add(labels[d.id]+' - '+lbl, d);
     add(lbl, d);
     add(formatDate(d.date), d);
@@ -690,6 +693,9 @@ function buildDayTextIndex(){
 function resolveDayFromText(text, p, idx){
   let cands = idx.get(normText(text)) || [];
   if(cands.length>1){ const s = cands.filter(d=>!!d.isOnline===isOnlinePharmacist(p)); if(s.length) cands = s; }
+  // Separate groups can share a city and date (Online QAS for one supervisor, Online North for another) — the right
+  // one is the group this pharmacist's own supervisor can see.
+  if(cands.length>1){ const s = cands.filter(d=>(d.visibleSupervisors||[]).includes(p.supervisor)); if(s.length) cands = s; }
   if(cands.length>1){ const code = cityCodeFor(p.city); const s = cands.filter(d=>d.isOnline || cityCodeFor(d.city)===code); if(s.length) cands = s; }
   if(cands.length>1){ const cur = ops.assignments[p.id]; const mine = cur && cur.type==='date' && cands.find(d=>d.id===cur.dateId); if(mine) return mine; }
   if(cands.length>1){ const s = cands.filter(d=>d.active!==false); if(s.length) cands = s; }
@@ -2029,7 +2035,7 @@ function renderConductedBySelect(){
   card.style.display = '';
   const assignedTrainerText = (day.trainerNames && day.trainerNames.length) ? ` — Assigned trainer(s): ${day.trainerNames.join(', ')}.` : '';
   const venueText = day.venue ? ` Venue: ${day.venue}.` : '';
-  document.getElementById('sessionHint').textContent = `Session: ${day.city} — ${dayDateLabel(day)}.${assignedTrainerText}${venueText}`;
+  document.getElementById('sessionHint').textContent = `Session: ${dayGroupText(day)}.${assignedTrainerText}${venueText}`;
   const zoomBtn = document.getElementById('sessionZoomLink');
   if(zoomBtn){
     if(day.isOnline && day.zoomLink){
@@ -2192,6 +2198,7 @@ function trainerRowCells(p, rownum){
 
 function renderTrainerTable(){
   document.getElementById('trainerTableTitle').textContent = trainerFilterState.date.size ? 'Filtered Records' : 'All Records';
+  renderGroupMixBanner();
 
   let list = applyTrainerFilters(masterData);
   list = applySort('trainer', list);
@@ -2309,6 +2316,100 @@ async function onPharmacistNoteChange(pid, note){
   p.note = String(note||'').trim();
   toast('Note saved — the pharmacist\'s supervisor can see it','ok');
   saveShared(K_MASTER, ()=>masterData);
+}
+
+/* ═══════════════════════════════ TRAINING-GROUP MIX-UPS ═══════════════════════════════
+   Finds pharmacists sitting in a training group their own supervisor can't see (e.g. put there by an Excel upload
+   when two groups shared a city and date) and moves them — after review — to their supervisor's group on the same
+   date. Trainers may still place someone in another supervisor's group on purpose (a make-up day): untick those in
+   the review and they aren't flagged again on this computer. */
+let groupFixIgnored = [];          // "pid|dayId" pairs the trainer chose to leave where they are
+let groupMixBannerDismissed = false;
+function findGroupMixups(){
+  const ignored = new Set(groupFixIgnored);
+  const out = [];
+  masterData.forEach(p=>{
+    const a = ops.assignments[p.id];
+    if(!a || a.type!=='date') return;
+    const from = dayById(a.dateId);
+    if(!from || !(from.visibleSupervisors||[]).length || from.visibleSupervisors.includes(p.supervisor)) return;
+    if(ignored.has(p.id+'|'+from.id)) return;
+    const options = trainingConfig.dates.filter(d=>d.id!==from.id && d.date===from.date && !!d.isOnline===!!from.isOnline && (d.visibleSupervisors||[]).includes(p.supervisor));
+    out.push({p, from, options});
+  });
+  return out;
+}
+function renderGroupMixBanner(){
+  const el = document.getElementById('groupMixBanner');
+  if(!el) return;
+  const list = groupMixBannerDismissed ? [] : findGroupMixups();
+  if(!list.length){ el.classList.add('hidden'); el.innerHTML = ''; return; }
+  const fixable = list.filter(x=>x.options.length).length;
+  el.innerHTML = `<span>⚠️ <b>${list.length}</b> pharmacist(s) are in a training group their supervisor can't see${fixable?` — <b>${fixable}</b> can be moved to their own supervisor's group on the same date`:''}.</span>
+    <button class="btn btn-navy btn-sm" onclick="openGroupFixModal()">Review &amp; fix</button>
+    <button class="btn btn-outline btn-sm" title="Hide until the page is reloaded" onclick="groupMixBannerDismissed=true; renderGroupMixBanner()">✕</button>`;
+  el.classList.remove('hidden');
+}
+async function openGroupFixModal(){
+  await loadCoreData();   // decide on the latest data, not what this page loaded earlier
+  buildTrainerFilterBar(); renderTrainerTable();
+  const list = findGroupMixups();
+  if(!list.length){ toast('No mix-ups found — everyone is in a group their supervisor can see','ok'); return; }
+  const rows = list.map(x=>{
+    const p = x.p;
+    let target;
+    if(x.options.length===1) target = `<span class="chg-to">${esc(dayGroupText(x.options[0]))}</span><input type="hidden" class="gfix-to" value="${x.options[0].id}">`;
+    else if(x.options.length>1) target = `<select class="gfix-to">${x.options.map(d=>`<option value="${d.id}">${esc(dayGroupText(d))}</option>`).join('')}</select>`;
+    else target = `<span class="small-note" style="color:var(--danger)">No group for ${esc(p.supervisor)} on this date — fix by hand</span>`;
+    return `<tr class="gfix-row" data-pid="${p.id}" data-from="${x.from.id}">
+      <td class="sel-cell">${x.options.length?'<input type="checkbox" class="gfix-cb" checked>':''}</td>
+      <td class="name-cell">${esc(p.displayName)}</td>
+      <td>${esc(p.supervisor)}</td>
+      <td class="chg-from" style="text-decoration:none;">${esc(dayGroupText(x.from))}</td>
+      <td>${target}</td>
+    </tr>`;
+  }).join('');
+  const fixable = list.filter(x=>x.options.length).length;
+  showModal(`<h3>Fix training-group mix-ups</h3>
+    <p class="small-note" style="margin-top:-6px;">These pharmacists are booked into a group their own supervisor can't see. Ticked rows move to their supervisor's group on the <b>same date</b> — their attendance (if any) stays with them. Untick anyone you placed there on purpose (e.g. a make-up day); they stay where they are and won't be flagged again on this computer.</p>
+    <div class="table-wrap" style="max-height:55vh;"><table>
+      <thead><tr><th class="sel-cell"><input type="checkbox" checked onclick="document.querySelectorAll('.gfix-cb').forEach(cb=>cb.checked=this.checked)" title="Select all"></th><th>Pharmacist</th><th>Supervisor</th><th>Now in</th><th>Move to</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" id="gfix-ok" onclick="confirmGroupFix()"${fixable?'':' disabled'}>Move ticked pharmacists</button>
+    </div>`, 'max-width:980px;');
+}
+async function confirmGroupFix(){
+  const btn = document.getElementById('gfix-ok');
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+  let moved = 0;
+  const leave = [];
+  document.querySelectorAll('.gfix-row').forEach(r=>{
+    const cb = r.querySelector('.gfix-cb');
+    if(!cb) return;                                    // no group to move to — stays flagged
+    const pid = r.dataset.pid, from = r.dataset.from;
+    if(!cb.checked){ leave.push(pid+'|'+from); return; }
+    const to = r.querySelector('.gfix-to').value;
+    const a = ops.assignments[pid];
+    if(a && a.type==='date' && a.dateId===from && to){
+      ops.assignments[pid] = {...a, dateId:to, assignedBy:'Trainer (group fix)', assignedAt:nowIso()};
+      moved++;
+    }
+  });
+  if(leave.length){
+    groupFixIgnored = [...new Set(groupFixIgnored.concat(leave))];
+    await setPersonal('group-fix-ignored', groupFixIgnored);
+  }
+  closeModal();
+  renderTrainerTable();
+  if(moved){
+    const ok = await setShared(K_OPS, ops);
+    if(ok) toast(`Moved ${moved} pharmacist(s) to their own supervisor's group`,'ok');
+  } else if(leave.length){
+    toast(`Left ${leave.length} pharmacist(s) where they are`,'info');
+  }
 }
 
 /* ═══════════════════════════════ EDIT SELECTED PHARMACISTS (Attendance tab) ═══════════════════════════════
@@ -2508,7 +2609,7 @@ function renderQuotaApprovals(){
       <td class="name-cell"><span class="rownum">${i+1}</span>${esc(it.p.displayName)}</td>
       <td>${esc(it.p.email||'—')}</td>
       <td>${esc(it.p.supervisor)}</td>
-      <td>${esc(it.day.city)} — ${formatDate(it.day.date)}</td>
+      <td>${esc(dayGroupText(it.day))}</td>
       <td>
         <button class="btn btn-ok btn-sm" onclick="approveQuota('${it.pid}')">✔ Approve</button>
         <button class="btn btn-danger btn-sm" onclick="rejectQuota('${it.pid}')">✕ Reject</button>
@@ -2834,10 +2935,11 @@ function renderGlobalChips(){
   const pendCount = pendingList.filter(p=>p.status==='Pending').length;
   const pct = n => total ? Math.round((n/total)*100)+'% of total' : '—';
 
-  document.getElementById('globalChipsBig').innerHTML = `
-    <div class="chip chip-lg chip-status ok"><div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div></div>
-    <div class="chip chip-lg chip-status neutral"><div class="lbl">Not Assigned</div><div class="num">${notAssigned}</div><div class="tag">${pct(notAssigned)}</div></div>
-    <div class="chip chip-lg chip-status danger"><div class="lbl">Assigned but Absent</div><div class="num">${absentAfterAssign}</div><div class="tag">${pct(absentAfterAssign)}</div></div>`;
+  const card = (kind, cls, inner) => statusCardHtml(kind, cls, inner, masterStatusFilter, 'setMasterStatusFilter');
+  document.getElementById('globalChipsBig').innerHTML =
+    card('attended', 'ok', `<div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div>`) +
+    card('notAssigned', 'neutral', `<div class="lbl">Not Assigned</div><div class="num">${notAssigned}</div><div class="tag">${pct(notAssigned)}</div>`) +
+    card('absent', 'danger', `<div class="lbl">Assigned but Absent</div><div class="num">${absentAfterAssign}</div><div class="tag">${pct(absentAfterAssign)}</div>`);
 
   let smallHtml = `<div class="chip neutral"><div class="lbl">Total Pharmacists</div><div class="num">${total}</div></div>`;
   LEAVE_STATUSES.forEach(s=>{
@@ -2906,11 +3008,26 @@ function onMasterSearch(v){ masterSearchQ=v; renderMasterSheetPreview(); }
 function clearMasterFilters(){
   masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
   masterSearchQ='';
+  masterStatusFilter = null;
   buildMasterFilterBar();
+  renderGlobalChips();
   renderMasterSheetPreview();
 }
+// Overview card chosen as a filter for the Master Sheet Preview ('attended' | 'notAssigned' | 'absent'), or null.
+let masterStatusFilter = null;
+function setMasterStatusFilter(kind){
+  masterStatusFilter = (kind && kind!==masterStatusFilter) ? kind : null;
+  renderGlobalChips();
+  renderMasterSheetPreview();
+  if(masterStatusFilter){
+    const card = document.getElementById('masterSheetPreviewCard');
+    if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+}
 function applyMasterFilters(list){
+  const status = masterStatusFilter ? STATUS_GROUPS[masterStatusFilter].test : null;
   return list.filter(p=>{
+    if(status && !status(p)) return false;
     if(!inSet(p.district, masterFilterState.district)) return false;
     if(!inSet(p.areaManager, masterFilterState.areaManager)) return false;
     if(!inSet(p.city, masterFilterState.city)) return false;
@@ -2927,6 +3044,8 @@ function applyMasterFilters(list){
 function renderMasterSheetPreview(){
   const tb = document.getElementById('masterSheetPreviewBody');
   if(!tb) return;
+  const tag = document.getElementById('masterStatusTag');
+  if(tag) tag.innerHTML = statusFilterTagHtml(masterStatusFilter, 'setMasterStatusFilter');
   let list = applyMasterFilters(masterData);
   list = applySort('master', list);
   if(!list.length){
