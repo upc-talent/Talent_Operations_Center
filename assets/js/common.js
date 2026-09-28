@@ -9,6 +9,8 @@ const K_PENDING = 'pending-pharmacists';
 const K_NOTIF   = 'pharmacist-notifications';
 const K_LEAVE_REQUESTS = 'leave-requests';
 const K_QUOTA_HISTORY = 'quota-approval-history';
+const K_CHANGE_REQ = 'change-requests';          // supervisor "Request Change" for a locked pharmacist
+const K_SUBMISSIONS = 'supervisor-submissions';   // a supervisor pressed Submit (trainer only)
 
 function uid(p){ return p+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function nowIso(){ return new Date().toISOString(); }
@@ -174,7 +176,7 @@ function promptForFilename(defaultBaseName, extension){
 let masterData = [];
 let pendingList = [];
 let trainingConfig = {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[]};
-let ops = {assignments:{}, attendance:{}};
+let ops = {assignments:{}, attendance:{}, shifts:{}};
 let leaveRequestsCache = [];
 async function loadCoreData(){
   // one request for all four (a single round-trip instead of four)
@@ -182,7 +184,7 @@ async function loadCoreData(){
     [K_MASTER]: [],
     [K_PENDING]: [],
     [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]},
-    [K_OPS]: {assignments:{}, attendance:{}}
+    [K_OPS]: {assignments:{}, attendance:{}, shifts:{}}
   });
   masterData = r[K_MASTER]; pendingList = r[K_PENDING]; trainingConfig = r[K_CONFIG]; ops = r[K_OPS];
   if(!trainingConfig.dates) trainingConfig.dates = [];
@@ -190,6 +192,8 @@ async function loadCoreData(){
   if(!trainingConfig.coordinatorNames) trainingConfig.coordinatorNames = [];
   if(!trainingConfig.trainingNames) trainingConfig.trainingNames = [];
   if(!trainingConfig.maxCapacity) trainingConfig.maxCapacity = 30;
+  if(!Array.isArray(trainingConfig.cityRoster)) trainingConfig.cityRoster = [];
+  if(!ops.shifts) ops.shifts = {};
 }
 
 /* ═══════════════════════════════ OPTIMISTIC BACKGROUND SAVE ═══════════════════════════════
@@ -217,7 +221,7 @@ function saveShared(key, getValue){
 
 async function loadLogo(){
   // The default logo is assets/img/logo.png (already in each page's HTML). A logo uploaded on
-  // Trainer > Setup is stored in the sheet and, if present, replaces it; "Remove Logo" goes back to the file.
+  // Trainer > Setup (card since removed) is stored in the database and, if present, replaces it; "Remove Logo" goes back to the file.
   const logo = await getShared(K_LOGO, null);
   const box = document.getElementById('logoBox');
   box.innerHTML = logo ? `<img src="${logo}" alt="Logo">` : '<img src="assets/img/logo.png" alt="Talent Operations Center logo">';
@@ -341,9 +345,10 @@ function syncBulkHeader(scope){
   h.indeterminate = sel>0 && sel<total;
 }
 function bulkAssignOptions(scope){
-  const days = (scope==='sup') ? visibleDaysFor(currentSupervisor) : (trainingConfig.dates||[]);
+  const days = (scope==='sup') ? supEditableDays() : (trainingConfig.dates||[]);
   let html = `<option value="">— Assign selected to… —</option><optgroup label="Training Days">`;
   days.forEach(d=>{
+    if(scope==='trainer'){ html += `<option value="date:${d.id}">${assignOptionLabel(d, false, true)}</option>`; return; }
     const passed = (scope==='sup' && isDeadlinePassed(d)) ? ' (Deadline passed)' : '';
     const hidden = d.active===false ? ' (hidden from supervisors)' : '';
     html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed}${hidden}</option>`;
@@ -354,6 +359,7 @@ function bulkAssignOptions(scope){
   return html;
 }
 function updateBulkBar(scope){
+  if(scope==='sup' && typeof onSupSelectionChange==='function') onSupSelectionChange();   // enables "Request Change"
   const bar = document.getElementById('bulkBar-'+scope);
   if(!bar) return;
   const n = bulkSel[scope].size;
@@ -368,6 +374,11 @@ function updateBulkBar(scope){
   if(scope==='days'){
     html += `<button class="btn btn-outline btn-sm" onclick="bulkDays('hide')">🙈 Hide</button>`
           + `<button class="btn btn-outline btn-sm" onclick="bulkDays('unhide')">👁 Unhide</button>`
+          + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('deadline')">⏰ Deadline</button>`
+          + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('supervisors')">👥 Supervisors</button>`
+          + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('capacity')">🔢 Capacity</button>`
+          + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('staff')">🧑‍🏫 Trainer / Coordinator</button>`
+          + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('city')">🏙 City</button>`
           + `<button class="btn btn-danger btn-sm" onclick="bulkDays('delete')">🗑 Delete</button>`;
   } else {
     html += `<select id="bulkAssignSelect-${scope}">${bulkAssignOptions(scope)}</select>`
@@ -412,14 +423,54 @@ function distinctValues(list, key){
   }))].sort((a,b)=>a.localeCompare(b));
 }
 
-function renderMsFilter(scope, key, label, options){
-  msOptionsCache[scope+'_'+key] = options.map(o=>o.value);
+/* Cascading filters: a filter only offers the values found among the rows that match the OTHER filters (pick an
+   Area Manager and the Supervisor filter lists only that manager's supervisors). Each page registers, per table,
+   the rows and how to read each filter's value(s) from a row; the table filtering itself is unchanged. Values
+   already ticked stay listed so they can be unticked. With no other filter set, the full list shows as before. */
+const FILTER_FACETS = {};   // scope -> { items: ()=>rows, values: { key: row=>[values] } }
+const msFullOptions = {};   // scope_key -> the full option list the page built
+function registerFilterFacets(scope, def){ FILTER_FACETS[scope] = def; }
+function narrowMsOptions(scope, key, full){
+  const def = FILTER_FACETS[scope];
+  if(!def || !def.values[key]) return full;
+  const st = filterStateFor(scope);
+  const others = Object.keys(def.values).filter(k=>k!==key && st[k] && st[k].size);
+  if(!others.length) return full;
+  const present = new Set();
+  def.items().forEach(it=>{
+    if(others.every(k=>def.values[k](it).some(v=>st[k].has(v)))) def.values[key](it).forEach(v=>present.add(v));
+  });
+  return full.filter(o=>present.has(o.value) || st[key].has(o.value));
+}
+function msItemsHtml(scope, key, options){
   const state = filterStateFor(scope)[key];
-  const count = state.size;
-  const itemsHtml = options.map(o=>{
+  return options.map(o=>{
     const isChecked = state.has(o.value);
     return `<label class="ms-item${isChecked?' checked':''}" data-text="${esc(o.text.toLowerCase())}"><input type="checkbox" value="${esc(o.value)}" ${isChecked?'checked':''} onchange="onMsToggle('${scope}','${key}',this.value,this.checked);this.closest('.ms-item').classList.toggle('checked',this.checked);"><span>${esc(o.text)}</span></label>`;
   }).join('') || '<span class="small-note">No options</span>';
+}
+// After a filter changes, re-list the other filters of the same table (their panels are closed at that moment).
+function refreshCascadingFilters(scope, changedKey){
+  const def = FILTER_FACETS[scope];
+  if(!def) return;
+  Object.keys(def.values).forEach(key=>{
+    if(key===changedKey) return;
+    const list = document.getElementById('mslist_'+scope+'_'+key);
+    const full = msFullOptions[scope+'_'+key];
+    if(!list || !full) return;
+    const shown = narrowMsOptions(scope, key, full);
+    msOptionsCache[scope+'_'+key] = shown.map(o=>o.value);
+    list.innerHTML = msItemsHtml(scope, key, shown);
+  });
+}
+
+function renderMsFilter(scope, key, label, options){
+  msFullOptions[scope+'_'+key] = options;
+  options = narrowMsOptions(scope, key, options);
+  msOptionsCache[scope+'_'+key] = options.map(o=>o.value);
+  const state = filterStateFor(scope)[key];
+  const count = state.size;
+  const itemsHtml = msItemsHtml(scope, key, options);
   return `<div class="filter-field">
     <div class="ms-filter">
       <button type="button" class="btn${count?' active':''}" onclick="toggleMsPanel('${scope}_${key}')">
@@ -484,6 +535,7 @@ function onMsToggle(scope,key,value,checked){
   if(checked) state.add(value); else state.delete(value);
   updateMsButtonLabel(scope,key);
   if(key==='date' && typeof renderConductedBySelect==='function') renderConductedBySelect();
+  refreshCascadingFilters(scope, key);
   rerenderScope(scope);
 }
 function msSelectAll(scope,key){
@@ -498,6 +550,7 @@ function msSelectAll(scope,key){
   });
   updateMsButtonLabel(scope,key);
   if(key==='date' && typeof renderConductedBySelect==='function') renderConductedBySelect();
+  refreshCascadingFilters(scope, key);
   rerenderScope(scope);
 }
 function msClearAll(scope,key){
@@ -511,6 +564,7 @@ function msClearAll(scope,key){
   });
   updateMsButtonLabel(scope,key);
   if(key==='date' && typeof renderConductedBySelect==='function') renderConductedBySelect();
+  refreshCascadingFilters(scope, key);
   rerenderScope(scope);
 }
 function inSet(value, set){ return set.size===0 || set.has(value); }
@@ -523,8 +577,8 @@ function matchesDateSet(pid, set){
   return false;
 }
 
-function dateFilterOptions(days){
-  return days.map(d=>({value:'date:'+d.id, text: dayGroupText(d)+(d.active===false?' (hidden)':'')}))
+function dateFilterOptions(days, short){
+  return days.map(d=>({value:'date:'+d.id, text: short ? shortDayText(d)+(d.active===false?' 🙈':'') : dayGroupText(d)+(d.active===false?' (hidden)':'')}))
     .concat(LEAVE_STATUSES.map(s=>({value:'leave:'+s, text:s})))
     .concat([{value:'unassigned', text:'Not Assigned'}]);
 }
@@ -537,6 +591,7 @@ function toggleSort(scope,key){
   rerenderScope(scope);
 }
 function getSortValue(p, key){
+  if(key==='workShift') return ((ops.shifts&&ops.shifts[p.id])||'').toLowerCase();
   if(key==='date'){
     const a = ops.assignments[p.id];
     if(!a) return 'zzz_unassigned';
@@ -586,11 +641,13 @@ function isDeadlinePassed(day){
    fully-expanded list can never drift apart. */
 // Hidden days only ever reach this on the trainer page (supervisors never get them in their lists), so the marker
 // just tells the trainer which days supervisors can't see — the day stays fully usable.
-function assignOptionLabel(d, enforceDeadline){
+// `short`: the trainer's Attendance tab uses the compact "Online QAS - 11,12 Oct 26" label (see shortDayText).
+function assignOptionLabel(d, enforceDeadline, short){
+  if(short) return `${esc(shortDayText(d))}${d.active===false?' 🙈':''}`;
   const passed = enforceDeadline && isDeadlinePassed(d);
   return `${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed?' (Deadline passed)':''}${d.active===false?' (hidden from supervisors)':''}`;
 }
-function assignmentOptionsHtml(pid, days, enforceDeadline){
+function assignmentOptionsHtml(pid, days, enforceDeadline, short){
   const current = ops.assignments[pid];
   let html = `<option value="" ${!current?'selected':''}>-- Not Assigned --</option>`;
   html += `<optgroup label="Training Days">`;
@@ -598,7 +655,7 @@ function assignmentOptionsHtml(pid, days, enforceDeadline){
     const val = 'date:'+d.id;
     const sel = current && current.type==='date' && current.dateId===d.id ? 'selected' : '';
     const passed = enforceDeadline && isDeadlinePassed(d);
-    html += `<option value="${val}" ${sel} ${passed?'disabled':''}>${assignOptionLabel(d, enforceDeadline)}</option>`;
+    html += `<option value="${val}" ${sel} ${passed?'disabled':''}>${assignOptionLabel(d, enforceDeadline, short)}</option>`;
   });
   html += `</optgroup><optgroup label="Other Status">`;
   LEAVE_STATUSES.forEach(s=>{
@@ -613,13 +670,13 @@ function assignmentOptionsHtml(pid, days, enforceDeadline){
 /* The single <option> a collapsed (not-yet-opened) assignment <select> shows. It mirrors exactly what the full
    option list above would display as the selected value, so filling the rest of the list on open changes nothing
    the user sees. */
-function currentAssignOptionHtml(pid, relevantDays, enforceDeadline){
+function currentAssignOptionHtml(pid, relevantDays, enforceDeadline, short){
   const a = ops.assignments[pid];
   if(a && a.type==='date'){
     const d = relevantDays.find(x=>x.id===a.dateId);
     if(d){
       const passed = enforceDeadline && isDeadlinePassed(d);
-      return `<option value="date:${d.id}" selected${passed?' disabled':''}>${assignOptionLabel(d, enforceDeadline)}</option>`;
+      return `<option value="date:${d.id}" selected${passed?' disabled':''}>${assignOptionLabel(d, enforceDeadline, short)}</option>`;
     }
   } else if(a && a.type==='leave'){
     return `<option value="leave:${esc(a.status)}" selected>${esc(a.status)}</option>`;
@@ -637,10 +694,14 @@ function fillAssignSelect(sel){
   const fn = sel.dataset.fn;
   const online = sel.dataset.online === '1';
   const enforceDeadline = fn === 'onAssignChange';
-  const src = (fn === 'onAssignChange') ? visibleDaysFor(currentSupervisor) : trainingConfig.dates;
+  // supervisor page: only the days this supervisor may pick for this pharmacist (supAssignableDays, supervisor.js)
+  const src = (fn === 'onAssignChange') ? supAssignableDays(pid) : trainingConfig.dates;
   const relevantDays = src.filter(d => !!d.isOnline === online);
   const cur = sel.value;
-  sel.innerHTML = assignmentOptionsHtml(pid, relevantDays, enforceDeadline);
+  const curText = sel.selectedIndex>=0 ? sel.options[sel.selectedIndex].text : '';
+  sel.innerHTML = assignmentOptionsHtml(pid, relevantDays, enforceDeadline, fn === 'onTrainerAssignChange');
+  // the current choice isn't offered again (e.g. the day a pharmacist missed) — keep showing it, but not selectable
+  if(cur && ![...sel.options].some(o=>o.value===cur)) sel.insertAdjacentHTML('afterbegin', `<option value="${esc(cur)}" disabled>${esc(curText)}</option>`);
   if(sel.value !== cur) sel.value = cur;
 }
 
@@ -656,7 +717,10 @@ function dateCellHtml(p, editable, days, changeFn){
     if(!day){
       badge = `<span class="badge badge-empty">Not Assigned</span>`;
     } else if(a.overQuota && !a.quotaApproved){
-      badge = `<span class="badge" style="background:var(--pending-bg);color:var(--pending);border:1px solid var(--pending);">⏳ Pending Quota Approval — ${esc(dayGroupText(day))}</span>`;
+      const txt = changeFn==='onTrainerAssignChange' ? shortDayText(day) : dayGroupText(day);
+      badge = `<span class="badge" style="background:var(--pending-bg);color:var(--pending);border:1px solid var(--pending);">⏳ Pending Quota Approval — ${esc(txt)}</span>`;
+    } else if(changeFn==='onTrainerAssignChange'){
+      badge = `<span class="badge badge-date">${esc(shortDayText(day))}</span>`;
     } else {
       badge = `<span class="badge badge-date">${day.isOnline?'🌐 ':''}${esc(dayGroupText(day))}</span>`;
     }
@@ -664,7 +728,7 @@ function dateCellHtml(p, editable, days, changeFn){
   if(!editable) return badge;
   const enforceDeadline = changeFn==='onAssignChange';
   const relevantDays = days.filter(d => !!d.isOnline === isOnlinePharmacist(p));
-  const collapsed = currentAssignOptionHtml(p.id, relevantDays, enforceDeadline);
+  const collapsed = currentAssignOptionHtml(p.id, relevantDays, enforceDeadline, changeFn==='onTrainerAssignChange');
   return `<div>${badge}<br><select class="assign-select" data-pid="${p.id}" data-fn="${changeFn}" data-online="${isOnlinePharmacist(p)?1:0}" onfocus="fillAssignSelect(this)" onmousedown="fillAssignSelect(this)" onchange="${changeFn}('${p.id}', this.value)">${collapsed}</select></div>`;
 }
 
@@ -694,11 +758,13 @@ function attSummary(pid, p){
       const punct = (att.day1.punctuality==='Late' || att.day2.punctuality==='Late') ? 'Late' : 'On Time';
       return {status:'Attended', punctuality:punct, day1:s1, day2:s2};
     }
-    if(s1==='Absent' && s2==='Absent') return {status:'Absent', day1:s1, day2:s2};
+    const r1 = s1==='Absent' ? (att.day1.reason||'') : '', r2 = s2==='Absent' ? (att.day2.reason||'') : '';
+    const reason = [...new Set([r1,r2].filter(Boolean))].join(' / ');
+    if(s1==='Absent' && s2==='Absent') return {status:'Absent', reason, day1:s1, day2:s2};
     if(!s1 && !s2) return {status: undefined};
-    return {status:'Partial', missingDay: s1==='Attended'?2:1, day1:s1, day2:s2};
+    return {status:'Partial', missingDay: s1==='Attended'?2:1, reason, day1:s1, day2:s2};
   }
-  return {status: att.status, punctuality: att.punctuality};
+  return {status: att.status, punctuality: att.punctuality, reason: att.status==='Absent' ? (att.reason||'') : ''};
 }
 // Fully attended (both days, for a split online training). Once true, supervisors can no longer change the
 // pharmacist's assignment — only the training team can (enforced on the server too).
@@ -729,8 +795,8 @@ function attendanceBadgeHtml(p){
   if(a.overQuota && !a.quotaApproved) return '<span class="small-note">—</span>';
   const s = attSummary(p.id, p);
   if(s.status==='Attended') return `<span class="badge badge-att-ok">✔ Attended — ${esc(s.punctuality||'On Time')}</span>`;
-  if(s.status==='Absent') return `<span class="badge badge-danger">✕ Absent</span>`;
-  if(s.status==='Partial') return `<span class="badge badge-leave">Partial — Day ${s.missingDay} missing</span>`;
+  if(s.status==='Absent') return `<span class="badge badge-danger">✕ Absent${s.reason?' — '+esc(s.reason):''}</span>`;
+  if(s.status==='Partial') return `<span class="badge badge-leave">Partial — Day ${s.missingDay} missing${s.reason?' ('+esc(s.reason)+')':''}</span>`;
   return `<span class="badge badge-empty">Not marked yet</span>`;
 }
 function isOnlinePharmacist(p){
@@ -762,8 +828,9 @@ function attendanceStatusText(p){
     return 'Attended - ' + s.punctuality + (s.punctuality==='Late' && att.time ? ' ('+att.time+')' : '');
   }
   if(s.status==='Partial'){
-    return `Partial — Day ${s.missingDay} missing (make-up needed)`;
+    return `Partial — Day ${s.missingDay} missing (make-up needed)${s.reason?' - '+s.reason:''}`;
   }
+  if(s.status==='Absent' && s.reason) return 'Absent - '+s.reason;
   return s.status;
 }
 
@@ -792,6 +859,56 @@ function dayGroupText(d){
   const who = !sups.length ? 'no supervisor yet' : (sups.length<=2 ? sups.join(', ') : sups.length+' supervisors');
   return `${d.trainingName || d.city} — ${dayDateLabel(d)} · ${who}`;
 }
+// Short "City - date" label for the trainer's Attendance tab dropdowns and Date filter:
+// "Online QAS - 11,12 Oct 26", "Online - 8,9 Nov 26", "Jeddah - 5 Oct 26". Online days use their training name
+// (the group), in-person days their city. Only when two days would still read the same is a supervisor hint added.
+function compactDayDate(day){
+  const d1 = new Date(day.date+'T00:00:00');
+  if(isNaN(d1)) return day.date || '';
+  const mon = m=>MONTHS[m].slice(0,3), yy = String(d1.getFullYear()).slice(-2);
+  if(!(day.isOnline && day.onlineFormat==='split')) return `${d1.getDate()} ${mon(d1.getMonth())} ${yy}`;
+  const d2 = new Date(d1); d2.setDate(d2.getDate()+1);
+  if(d1.getMonth()===d2.getMonth()) return `${d1.getDate()},${d2.getDate()} ${mon(d1.getMonth())} ${yy}`;
+  return `${d1.getDate()} ${mon(d1.getMonth())},${d2.getDate()} ${mon(d2.getMonth())} ${yy}`;
+}
+function shortDayBase(d){
+  const name = d.isOnline ? (d.trainingName || d.city || 'Online') : (d.city || d.trainingName || '');
+  return `${name} - ${compactDayDate(d)}`;
+}
+let _shortDupCount = null, _shortDupSrc = null, _shortDupLen = -1;
+function shortDayText(d){
+  const arr = trainingConfig.dates || [];
+  if(_shortDupSrc!==arr || _shortDupLen!==arr.length){
+    _shortDupCount = {};
+    arr.forEach(x=>{ const k = shortDayBase(x); _shortDupCount[k] = (_shortDupCount[k]||0)+1; });
+    _shortDupSrc = arr; _shortDupLen = arr.length;
+  }
+  const base = shortDayBase(d);
+  if(!(_shortDupCount[base]>1)) return base;
+  const sups = d.visibleSupervisors || [];
+  return `${base} · ${!sups.length ? 'no supervisor' : (sups.length<=2 ? sups.join(', ') : sups.length+' supervisors')}`;
+}
+
+// Why an absent pharmacist missed the training — required when marking Absent.
+const ABSENT_REASONS = ['Interaction','Pharmacy','LMS'];
+function absentReasonFromText(text){
+  const n = String(text||'').toLowerCase();
+  return ABSENT_REASONS.find(r=>new RegExp('\\b'+r.toLowerCase()+'\\b').test(n)) || '';
+}
+
+// City Roster (General Configurations): the cities offered for training days, each optionally linked to the
+// supervisor(s) it belongs to. Cities already used by pharmacists or training days are always offered too.
+function cityRosterList(){ return Array.isArray(trainingConfig.cityRoster) ? trainingConfig.cityRoster : []; }
+function allKnownCities(){
+  const set = new Set(cityRosterList().map(c=>c.name).filter(Boolean));
+  masterData.forEach(p=>{ if(p.city) set.add(p.city); });
+  (trainingConfig.dates||[]).forEach(d=>{ if(d.city) set.add(d.city); });
+  return [...set].sort((a,b)=>a.localeCompare(b));
+}
+function citySupervisorsFromRoster(city){
+  const c = cityRosterList().find(x=>x.name===city);
+  return c && Array.isArray(c.supervisors) ? c.supervisors.slice() : [];
+}
 
 function buildMasterRow(p){
   const a = ops.assignments[p.id];
@@ -816,6 +933,7 @@ function buildMasterRow(p){
     phone:p.phone||'', scfhs:p.scfhs||'',
     completionPct: p.completionPct!==undefined && p.completionPct!=='' ? p.completionPct+'%' : '',
     statusText,
+    workShift: (ops.shifts && ops.shifts[p.id]) || '',
     note: p.note || (validDateAssignment && att && att.note ? att.note : ''),
     markedBy: validDateAssignment && att ? (att.markedBy || (att.day1&&att.day1.markedBy) || (att.day2&&att.day2.markedBy) || '') : ''
   };
@@ -967,6 +1085,57 @@ function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
 /* ═══════════════════════════════ EXPORTS (IMAGE / PDF) ═══════════════════════════════ */
 // Scroll boxes (.table-scroll) are expanded while capturing, so the image/PDF holds the whole table.
+/* ═══════════════════════════════ ALWAYS-REACHABLE SIDEWAYS SCROLLBAR ═══════════════════════════════
+   A wide table's own left/right scrollbar sits at its bottom edge — often far below the screen (long lists), so you'd
+   have to scroll through every row to reach it. While that edge is off-screen, a copy of the scrollbar is pinned to
+   the bottom of the window, lined up with the table and kept in sync with it. It disappears once the table's own
+   scrollbar comes into view (or the table fits). Applies to every table on the page. */
+const _hbarWraps = [];
+function attachFloatingScrollbar(wrap){
+  if(wrap._hbar) return;
+  const bar = document.createElement('div');
+  bar.className = 'hscroll-proxy';
+  bar.setAttribute('aria-hidden', 'true');
+  bar.appendChild(document.createElement('div'));
+  wrap.after(bar);
+  wrap._hbar = bar;
+  bar.addEventListener('scroll', ()=>{ if(wrap.scrollLeft!==bar.scrollLeft) wrap.scrollLeft = bar.scrollLeft; });
+  wrap.addEventListener('scroll', ()=>{ if(bar.scrollLeft!==wrap.scrollLeft) bar.scrollLeft = wrap.scrollLeft; }, {passive:true});
+  if(window.ResizeObserver){
+    const ro = new ResizeObserver(scheduleFloatingScrollbars);
+    ro.observe(wrap);
+    const t = wrap.querySelector('table'); if(t) ro.observe(t);   // rows re-rendered → width may change
+  }
+  _hbarWraps.push(wrap);
+}
+function updateFloatingScrollbar(wrap){
+  const bar = wrap._hbar;
+  const r = wrap.getBoundingClientRect();
+  const vh = window.innerHeight;
+  // needed when the table is wider than its box and its bottom edge (with the real scrollbar) is below the window
+  const needed = r.width>0 && wrap.scrollWidth > wrap.clientWidth+1 && r.top < vh-40 && r.bottom > vh;
+  bar.style.display = needed ? 'block' : 'none';
+  if(!needed) return;
+  bar.style.left = r.left + 'px';
+  bar.style.width = wrap.clientWidth + 'px';
+  bar.firstChild.style.width = wrap.scrollWidth + 'px';
+  if(bar.scrollLeft!==wrap.scrollLeft) bar.scrollLeft = wrap.scrollLeft;
+}
+let _hbarQueued = false;
+function scheduleFloatingScrollbars(){
+  if(_hbarQueued) return;
+  _hbarQueued = true;
+  requestAnimationFrame(()=>{ _hbarQueued = false; _hbarWraps.forEach(updateFloatingScrollbar); });
+}
+function initFloatingScrollbars(){
+  document.querySelectorAll('main .table-wrap').forEach(attachFloatingScrollbar);
+  window.addEventListener('scroll', scheduleFloatingScrollbars, {passive:true, capture:true});   // page and inner boxes
+  window.addEventListener('resize', scheduleFloatingScrollbars);
+  document.addEventListener('click', ()=>setTimeout(scheduleFloatingScrollbars, 0));             // tab switches, collapsibles
+  scheduleFloatingScrollbars();
+}
+document.addEventListener('DOMContentLoaded', initFloatingScrollbars);
+
 async function captureFull(el){
   el.classList.add('exporting');
   try{ return await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false}); }

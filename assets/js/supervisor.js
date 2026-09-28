@@ -73,6 +73,11 @@ async function loadSupervisorView(silent){
   API.setSupervisor(name);
   await setPersonal('last-supervisor-name', name);
   await loadCoreData();
+  supChangeRequests = await getShared(K_CHANGE_REQ, []);
+  registerFilterFacets('sup', { items: currentSupervisorScope, values: {
+    district: p=>[p.district], areaManager: p=>[p.areaManager], city: p=>[p.city],
+    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; }
+  }});
 
   document.getElementById('supMain').classList.remove('hidden');
   document.getElementById('supTitle').textContent = 'Pharmacists — ' + name;
@@ -82,6 +87,8 @@ async function loadSupervisorView(silent){
   renderSupervisorChips();
   buildSupervisorFilterBar();
   renderSupervisorTable();
+  onSupSelectionChange();
+  startSupPresence();
   await checkSupervisorNotifications();
   if(!silent) toast('Loaded','ok');
 }
@@ -95,8 +102,11 @@ async function openSubmissionHistoryModal(){
     .map(h=>({displayName:h.displayName, status:h.status, reason:h.rejectionReason||'', decidedAt:h.decidedAt, type:'Over-Quota Assignment'}));
   const leaveDecided = leaveRequestsCache.filter(lr=>lr.supervisor===currentSupervisor && (lr.status==='Approved'||lr.status==='Rejected'))
     .map(lr=>({displayName:lr.displayName, status:lr.status, reason:lr.rejectionReason||'', decidedAt:lr.decidedAt, type:'Annual Leave'}));
+  supChangeRequests = await getShared(K_CHANGE_REQ, []);
+  const changeDecided = supChangeRequests.filter(r=>r.supervisor===currentSupervisor && (r.status==='Approved'||r.status==='Rejected'))
+    .map(r=>({displayName:r.displayName, status:r.status, reason:r.rejectionReason||'', decidedAt:r.decidedAt, type:'Date Change'}));
 
-  const list = [...pendingDecided, ...quotaDecided, ...leaveDecided]
+  const list = [...pendingDecided, ...quotaDecided, ...leaveDecided, ...changeDecided]
     .sort((a,b)=> new Date(b.decidedAt||0) - new Date(a.decidedAt||0));
 
   const rows = list.length ? list.map((r,i)=>`
@@ -109,7 +119,7 @@ async function openSubmissionHistoryModal(){
     </tr>`).join('') : `<tr><td colspan="5" class="empty-msg">No decisions yet</td></tr>`;
   showModal(`
     <h3>Submission History</h3>
-    <p class="small-note">New pharmacists, over-quota assignments, and Annual Leave requests you've submitted, and what happened to them — these stay here permanently.</p>
+    <p class="small-note">New pharmacists, over-quota assignments, Annual Leave and date change requests you've submitted, and what happened to them — these stay here permanently.</p>
     <div class="table-wrap"><table>
       <thead><tr><th>Pharmacist Name</th><th>Type</th><th>Status</th><th>Reason</th><th>Decided</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -184,7 +194,7 @@ function renderSupervisorChips(){
           ${reached ? `⚠️ <b>${mine}/${quota} reached</b>` : `<b>Quota ${mine}/${quota}</b> · ${remaining} left`}
         </span>`;
       }
-      return `<div class="chip chip-lg ${st.cls}"><div class="lbl">${esc(dayGroupText(d))}</div><div class="num">${count} / ${cap}</div><div class="row" style="gap:5px;margin-top:5px;flex-wrap:wrap;"><span class="tag" style="margin:0;">${st.tag}</span>${quotaHtml}${deadlineHtml}</div></div>`;
+      return `<div class="chip chip-lg ${st.cls}"><div class="lbl">${esc(dayGroupText(d))}</div>${isDayEditableForSup(d) ? '' : '<div class="small-note" style="font-weight:700;">🔒 Managed by the training team</div>'}<div class="num">${count} / ${cap}</div><div class="row" style="gap:5px;margin-top:5px;flex-wrap:wrap;"><span class="tag" style="margin:0;">${st.tag}</span>${quotaHtml}${deadlineHtml}</div></div>`;
     }).join('');
   }
 
@@ -238,30 +248,30 @@ function renderSupervisorTable(){
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
   if(!own.length && !pending.length){
-    tb.innerHTML = `<tr><td colspan="10" class="empty-msg">No pharmacists match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
     bulkSyncAfterRender('sup', []);
     return;
   }
   let i = 0;
-  // Column order: Pharmacist Name (with its row number), Email, Supervisor, District, Area Manager, City, Date, Attendance Status, Notes
+  // Column order: Pharmacist Name (with its row number), Pharmacy No., Email, Date, Attendance Status, Work Shift, Notes
   const nameCell = (n, p) => `<td class="name-cell"><span class="rownum">${n}</span>${esc(p.displayName)}</td>`;
   let rows = own.map(p=>{
     i++;
-    // Someone who attended can't be moved to another day (or a leave status) by the supervisor — the server refuses it too.
-    const dateHtml = hasAttendedTraining(p)
-      ? `${dateCellHtml(p, false, days, 'onAssignChange')}<div class="locked-note" title="This pharmacist already attended the training. Only the training team can change it.">🔒 Attended — can't be reassigned</div>`
+    const lock = supLockReason(p);
+    let dateHtml = lock
+      ? `${dateCellHtml(p, false, days, 'onAssignChange')}<div class="locked-note" title="${esc(SUP_LOCK_TEXT[lock].title)}">${SUP_LOCK_TEXT[lock].note}</div>`
       : dateCellHtml(p, true, days, 'onAssignChange');
+    if(!lock && ops.assignments[p.id]?.locked && isFailedAttendance(p)) dateHtml += `<div class="retrain-note">↻ Missed the training — pick a new day</div>`;
+    if(pendingChangeFor(p.id)) dateHtml += `<div class="small-note" style="color:var(--pending);font-weight:700;">⏳ Change requested</div>`;
     return `<tr>
       ${bulkCheckboxCell('sup', p.id)}
       ${nameCell(i, p)}
-      <td>${esc(p.email||'—')}</td>
-      <td>${esc(p.supervisor)}</td>
-      <td>${esc(p.district||'—')}</td>
-      <td>${esc(p.areaManager||'—')}</td>
-      <td>${cityCellHtml(p)}</td>
+      <td>${esc(p.pharmacyNo||'—')}</td>
+      <td class="email-cell">${esc(p.email||'—')}</td>
       <td class="no-truncate">${dateHtml}</td>
       <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
+      <td>${workShiftSelectHtml(p)}</td>
       <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
@@ -270,15 +280,13 @@ function renderSupervisorTable(){
     return `<tr class="pending-row">
       <td class="sel-cell"></td>
       ${nameCell(i, p)}
-      <td>${esc(p.email||'—')}</td>
-      <td>${esc(p.supervisor)}</td>
-      <td>${esc(p.district||'—')}</td>
-      <td>${esc(p.areaManager||'—')}</td>
-      <td>${cityCellHtml(p)}</td>
+      <td>${esc(p.pharmacyNo||'—')}</td>
+      <td class="email-cell">${esc(p.email||'—')}</td>
       <td class="no-truncate"><span class="badge badge-pending">Pending Approval</span><br>
         <button class="btn btn-outline btn-sm" style="margin-top:4px;" onclick="openEditPendingModal('${p.id}')">Edit</button>
         <button class="btn btn-danger btn-sm" style="margin-top:4px;" onclick="deletePendingPharmacist('${p.id}')">Delete</button>
       </td>
+      <td></td>
       <td></td>
       <td></td>
     </tr>`;
@@ -286,6 +294,138 @@ function renderSupervisorTable(){
   tb.innerHTML = rows;
   updateSortIndicators('sup');
   bulkSyncAfterRender('sup', own.map(p=>p.id));
+}
+
+/* ═══════════════════════════════ LOCKS: SUBMIT, TRAINER-MANAGED DAYS, RETRAINING ═══════════════════════════════
+   A choice is free until the supervisor presses Submit; then it is locked (the server enforces all of this too).
+   A pharmacist who missed their training (Absent, or one day of a 2-day online training) can be booked onto a
+   new day the training team opens for this supervisor. A day that is visible but not editable for this supervisor
+   ("readOnlySupervisors") can't be picked, and nobody on it can be moved — except through Request Change. */
+function isFailedAttendance(p){ const s = attSummary(p.id, p).status; return s==='Absent' || s==='Partial'; }
+function isDayEditableForSup(d){ return !(d && (d.readOnlySupervisors||[]).includes(currentSupervisor)); }
+function supEditableDays(){ return visibleDaysFor(currentSupervisor).filter(isDayEditableForSup); }
+// The days this supervisor may pick for this pharmacist (the dropdown list); a missed day isn't offered again.
+function supAssignableDays(pid){
+  const p = masterData.find(m=>m.id===pid);
+  const cur = ops.assignments[pid];
+  const missed = p && isFailedAttendance(p) && cur && cur.type==='date' ? cur.dateId : null;
+  return supEditableDays().filter(d=>d.id!==missed);
+}
+// Why the supervisor can't change this pharmacist themselves — or null when they can.
+function supLockReason(p){
+  if(hasAttendedTraining(p)) return 'attended';
+  if(isFailedAttendance(p)) return null;
+  const a = ops.assignments[p.id];
+  if(a && a.locked) return 'submitted';
+  if(a && a.type==='date' && !isDayEditableForSup(dayById(a.dateId))) return 'managed';
+  return null;
+}
+const SUP_LOCK_TEXT = {
+  attended:  {note:'🔒 Attended — can\'t be reassigned', title:'This pharmacist already attended the training. Only the training team can change it.'},
+  submitted: {note:'🔒 Submitted — use Request Change', title:'You submitted this choice, so it is locked. Tick the pharmacist and use Request Change to ask the training team for a different one.'},
+  managed:   {note:'🔒 Managed by the training team — use Request Change', title:'The training team manages this day. Tick the pharmacist and use Request Change if they need a different one.'}
+};
+function currentChoiceText(p){
+  const a = ops.assignments[p.id];
+  if(!a) return 'Not Assigned';
+  if(a.type==='leave') return a.status;
+  const d = dayById(a.dateId);
+  return d ? dayGroupText(d) : 'Not Assigned';
+}
+
+async function submitSupervisorChoices(){
+  const mine = masterData.filter(p=>p.supervisor===currentSupervisor);
+  const toLock = mine.filter(p=>{ const a = ops.assignments[p.id]; return a && !a.locked; });
+  if(!toLock.length){
+    toast(mine.some(p=>ops.assignments[p.id]) ? 'Everything you have chosen is already submitted' : 'Choose dates for your pharmacists first', 'info');
+    return;
+  }
+  const open = mine.filter(p=>!ops.assignments[p.id]).length;
+  const go = await confirmDialog(`Submit ${toLock.length} pharmacist(s)? Their dates and statuses will be locked and the training team will be notified. To change a locked pharmacist afterwards you'll need to send a Request Change.${open ? ` The ${open} pharmacist(s) with no date yet stay open — you can choose and submit them later.` : ''}`);
+  if(!go) return;
+  if(!await setShared(K_OPS, ops)) return;   // every change made on this page reaches the server before locking
+  try{
+    const n = await API.submit();
+    toast(n ? `Submitted — ${n} pharmacist(s) locked and the training team notified` : 'Nothing new to submit', 'ok');
+  }catch(e){ toast('Submit failed — '+(e.message||'please try again'), 'err'); return; }
+  await loadSupervisorView(true);
+}
+
+/* Request Change: for pharmacists the supervisor can't change themselves. Goes to the trainer's Approvals tab. */
+let supChangeRequests = [];
+function pendingChangeFor(pid){ return supChangeRequests.find(r=>r.pharmacistId===pid && r.status==='Pending'); }
+function onSupSelectionChange(){
+  const b = document.getElementById('requestChangeBtn');
+  if(b){ b.disabled = !bulkSel.sup.size; b.title = bulkSel.sup.size ? 'Ask the training team to change the ticked pharmacists' : 'Tick pharmacists in the table first'; }
+}
+function openRequestChangeModal(){
+  const selected = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
+  if(!selected.length){ toast('Tick pharmacists in the table first','err'); return; }
+  const people = selected.filter(p=>!pendingChangeFor(p.id));
+  const waiting = selected.length - people.length;
+  if(!people.length){ toast('The ticked pharmacists already have a change request waiting','info'); return; }
+  const online = supTrack==='online';
+  const days = visibleDaysFor(currentSupervisor).filter(d=>!!d.isOnline===online);
+  const opts = `<option value="">— choose —</option>`
+    + `<optgroup label="Training Days">${days.map(d=>`<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}</option>`).join('')}</optgroup>`
+    + `<optgroup label="Other Status">${LEAVE_STATUSES.map(s=>`<option value="leave:${esc(s)}">${esc(s)}</option>`).join('')}</optgroup>`
+    + `<option value="__none__">Not Assigned</option>`;
+  showModal(`<h3>Request Change — ${people.length} pharmacist(s)</h3>
+    <p class="small-note">The training team reviews the request in their Approvals tab; you'll see their decision in your notifications and Submission History.</p>
+    <ul class="req-list">${people.map(p=>`<li><b>${esc(p.displayName)}</b> <span class="small-note">— now: ${esc(currentChoiceText(p))}</span></li>`).join('')}</ul>
+    ${waiting ? `<p class="small-note">${waiting} ticked pharmacist(s) already have a request waiting and are left out.</p>` : ''}
+    <div class="field"><label class="field-label req">Change to</label><select id="reqChangeTo">${opts}</select></div>
+    <div class="field"><label class="field-label req">Reason</label><textarea id="reqChangeReason" rows="3" placeholder="Why is the change needed?"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="sendChangeRequest()">Send Request</button>
+    </div>`, 'max-width:620px;');
+}
+async function sendChangeRequest(){
+  const val = document.getElementById('reqChangeTo').value;
+  const reason = document.getElementById('reqChangeReason').value.trim();
+  if(!val){ toast('Choose what to change to','err'); return; }
+  if(!reason){ toast('Please give a reason for the training team','err'); return; }
+  let to = null;
+  if(val!=='__none__'){ const [type, rest] = val.split(':'); to = type==='date' ? {type:'date', dateId:rest} : {type:'leave', status:rest}; }
+  const people = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(p=>p && !pendingChangeFor(p.id));
+  supChangeRequests = await getShared(K_CHANGE_REQ, []);
+  const now = nowIso();
+  people.forEach(p=>{
+    const cur = ops.assignments[p.id];
+    supChangeRequests.push({id:uid('chg'), supervisor:currentSupervisor, pharmacistId:p.id, displayName:p.displayName, email:p.email||'',
+      from: cur ? (cur.type==='date' ? {type:'date', dateId:cur.dateId} : {type:'leave', status:cur.status}) : null,
+      to, reason, requestedAt:now, status:'Pending'});
+  });
+  const ok = await setShared(K_CHANGE_REQ, supChangeRequests);
+  closeModal();
+  if(ok){
+    bulkClear('sup');
+    renderSupervisorTable();
+    toast(`Request sent for ${people.length} pharmacist(s) — the training team will review it`,'ok');
+  }
+}
+
+/* Work Shift (Morning / Night), chosen per pharmacist — always editable, even after Submit. */
+const WORK_SHIFTS = ['Morning Shift','Night Shift'];
+function workShiftSelectHtml(p){
+  const cur = (ops.shifts && ops.shifts[p.id]) || '';
+  return `<select class="shift-select" onchange="onShiftChange('${p.id}', this.value)"><option value="" ${cur?'':'selected'}>—</option>${WORK_SHIFTS.map(s=>`<option value="${s}" ${cur===s?'selected':''}>${s}</option>`).join('')}</select>`;
+}
+function onShiftChange(pid, value){
+  if(!ops.shifts) ops.shifts = {};
+  if(value) ops.shifts[pid] = value; else delete ops.shifts[pid];
+  toast('Saved','ok');
+  saveShared(K_OPS, ()=>ops);
+}
+
+/* "Supervisors online" on the trainer page: ping every minute while this page is open (a closed page drops off
+   the count within ~2½ minutes). */
+let supPresenceTimer = null;
+function startSupPresence(){
+  const ping = ()=>{ if(currentSupervisor) API.ping().catch(()=>{}); };
+  ping();
+  if(!supPresenceTimer) supPresenceTimer = setInterval(ping, 60000);
 }
 
 /* ═══════════════════════════════ BULK ASSIGN (SUPERVISOR) ═══════════════════════════════ */
@@ -297,10 +437,11 @@ function bulkApplySupAssign(){
   if(!value){ toast('Choose what to assign first','err'); return; }
   const selected = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
   if(!selected.length) return;
-  // pharmacists who already attended are never changed by a supervisor
-  const people = selected.filter(p=>!hasAttendedTraining(p));
-  const attendedSkipped = selected.length - people.length;
-  if(!people.length){ toast('All selected pharmacists already attended their training — only the training team can change them.','err'); return; }
+  // attended, submitted (locked) or on a day the training team manages → never changed here (Request Change instead)
+  const people = selected.filter(p=>!supLockReason(p));
+  const attendedSkipped = selected.filter(p=>supLockReason(p)==='attended').length;
+  const lockedSkipped = selected.length - people.length - attendedSkipped;
+  if(!people.length){ toast('The selected pharmacists are locked (attended or submitted) — use Request Change.','err'); return; }
   let done = 0, skipped = 0, pending = 0;
   if(value==='__none__'){
     people.forEach(p=>{ delete ops.assignments[p.id]; delete ops.attendance[p.id]; done++; });
@@ -311,6 +452,7 @@ function bulkApplySupAssign(){
     } else {
       const day = dayById(rest);
       if(!day || day.active===false){ toast('That training day is not open.','err'); return; }
+      if(!isDayEditableForSup(day)){ toast('The training team manages that day — use Request Change.','err'); return; }
       if(isDeadlinePassed(day)){ toast('The deadline for that training day has passed.','err'); return; }
       const cap = dayCapacity(day);
       let count = dayCount(rest);   // everyone currently on the day
@@ -336,7 +478,8 @@ function bulkApplySupAssign(){
   if(pending) msg += ` (${pending} over quota — pending trainer approval)`;
   if(skipped) msg += `, skipped ${skipped} (day full or wrong type)`;
   if(attendedSkipped) msg += `, skipped ${attendedSkipped} (already attended)`;
-  toast(msg, (skipped||pending||attendedSkipped)?'info':'ok');
+  if(lockedSkipped) msg += `, skipped ${lockedSkipped} (locked — use Request Change)`;
+  toast(msg, (skipped||pending||attendedSkipped||lockedSkipped)?'info':'ok');
 }
 
 function openEditPendingModal(pid){
@@ -386,8 +529,9 @@ async function deletePendingPharmacist(pid){
 
 async function onAssignChange(pid, value){
   const person = masterData.find(m=>m.id===pid);
-  if(person && hasAttendedTraining(person)){
-    toast('This pharmacist already attended their training — only the training team can change it.','err');
+  const lock = person && supLockReason(person);
+  if(lock){
+    toast(lock==='attended' ? 'This pharmacist already attended their training — only the training team can change it.' : 'This pharmacist is locked — use Request Change.','err');
     renderSupervisorTable();
     return;
   }
@@ -412,7 +556,10 @@ async function onAssignChange(pid, value){
         ).length;
         if(currentCount >= quota) overQuota = true;
       }
+      const prev = ops.assignments[pid];
       ops.assignments[pid] = {type:'date', dateId:rest, assignedBy:currentSupervisor, assignedAt: nowIso(), overQuota, quotaApproved: !overQuota};
+      // a new day starts with no attendance (e.g. re-booking someone who missed their training)
+      if(!prev || prev.type!=='date' || prev.dateId!==rest) delete ops.attendance[pid];
       renderSupervisorChips();
       renderSupervisorTable();
       toast(overQuota ? `You've reached your quota for this day — this assignment needs the trainer's approval first.` : 'Saved', overQuota ? 'info' : 'ok');
@@ -648,7 +795,7 @@ async function confirmAnnualLeaveUpload(){
 async function exportSupervisorExcel(){
   const list = applySupFilters(currentSupervisorScope());
   if(!list.length){ toast('No data to export','err'); return; }
-  const headers = ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Notes'];
+  const headers = ['Pharmacist Name','Pharmacy No.','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Work Shift','Notes'];
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
@@ -663,9 +810,9 @@ async function exportSupervisorExcel(){
       const att = ops.attendance[p.id];
       lateTime = (att&&att.status==='Attended'&&att.punctuality==='Late')?(att.time||''):'';
     }
-    rows.push([r.displayName,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.note]);
+    rows.push([r.displayName,r.pharmacyNo,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.workShift,r.note]);
   });
-  const colWidths = [28,28,20,14,18,12,24,16,14,26];
+  const colWidths = [28,14,28,20,14,18,12,24,16,14,14,26];
   const ok = await downloadStyledXlsx('my-pharmacists.xlsx', 'My Pharmacists', headers, rows, colWidths);
   if(ok) toast('Excel downloaded','ok');
 }

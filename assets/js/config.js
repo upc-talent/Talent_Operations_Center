@@ -14,7 +14,7 @@
     SUPABASE_ANON: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvcWdhYmRzYXlhcWdxcm9zY2R3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNzI5NzYsImV4cCI6MjEwNTY0ODk3Nn0.xJ_aTcn6XtYbQGRi_DjlczgVRG7JV5gpi7RYwUxOH4s',
     API_URL: SUPABASE_URL + '/functions/v1/api',
 
-    // Course-completion report source (used by Trainer > Setup > "Sync Now"). This is a separate,
+    // Course-completion report source (used by Trainer > General Configurations > "Sync Now"). This is a separate,
     // read-only reporting service — not the app's database.
     COMPLETION_REPORTS_URL: 'https://script.google.com/macros/s/AKfycbzLmYSVLykZNjjYKWeWxhJOlsHoDNKzxlGH8zg931_rr6y4VHTPxqNVj5W7zFvWNTuS/exec',
 

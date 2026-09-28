@@ -20,7 +20,8 @@
   </div>
   <div class="role-indicator hidden" id="trainerBar">
     <span class="sync-status" id="syncStatus"><span class="dot"></span><span class="txt"></span></span>
-    <span class="badge">Trainer</span>
+    <span class="presence-pill hidden" id="presencePill" title="Supervisors with the supervisor page open right now (updated every minute)"><span class="dot"></span><b id="presenceCount">0</b> <span id="presenceWord">supervisors</span> online</span>
+    <span class="badge" id="roleBadge">Trainer</span>
     <a class="home-link" href="index.html">← Home</a>
     <button type="button" onclick="trainerSignOut()">Sign out</button>
   </div>
@@ -45,11 +46,12 @@
   </section>
   <section id="screen-trainer" class="hidden">
     <div class="tabs">
+      <button class="tab trainer-only" data-tab="t-days" onclick="switchTrainerTab('t-days')">Training Days Setup</button>
+      <button class="tab trainer-only" data-tab="t-calendar" onclick="switchTrainerTab('t-calendar')">Calendar</button>
       <button class="tab active" data-tab="t-attend" onclick="switchTrainerTab('t-attend')">Attendance</button>
-      <button class="tab" data-tab="t-setup" onclick="switchTrainerTab('t-setup')">Setup</button>
-      <button class="tab" data-tab="t-approvals" onclick="switchTrainerTab('t-approvals')">Approvals <span id="pendingDot"></span></button>
-      <button class="tab" data-tab="t-analytics" onclick="switchTrainerTab('t-analytics')">Analytics &amp; Export</button>
-      <button class="tab" data-tab="t-calendar" onclick="switchTrainerTab('t-calendar')">Calendar</button>
+      <button class="tab trainer-only" data-tab="t-approvals" onclick="switchTrainerTab('t-approvals')">Approvals <span id="pendingDot"></span></button>
+      <button class="tab trainer-only" data-tab="t-analytics" onclick="switchTrainerTab('t-analytics')">Analytics &amp; Export</button>
+      <button class="tab trainer-only" data-tab="t-setup" onclick="switchTrainerTab('t-setup')">General Configurations</button>
     </div>
 
     <!-- ATTENDANCE TAB -->
@@ -77,19 +79,16 @@
       </div>
       <div id="trainerCard" class="card">
         <div id="bulkBar-trainer" class="bulk-bar"></div>
-        <div class="table-wrap"><table id="trainerTable">
+        <div class="table-wrap table-scroll"><table id="trainerTable">
           <thead><tr>
             <th class="sel-cell no-sort"><input type="checkbox" id="bulkAll-trainer" onclick="bulkToggleAll('trainer', this.checked)" title="Select all shown"></th>
-            <th onclick="toggleSort('trainer','displayName')">Pharmacist Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
-            <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
-            <th onclick="toggleSort('trainer','supervisor')">Supervisor <span class="sort-ind" id="sort-trainer-supervisor"></span></th>
-            <th onclick="toggleSort('trainer','district')">District <span class="sort-ind" id="sort-trainer-district"></span></th>
-            <th onclick="toggleSort('trainer','areaManager')">Area Manager <span class="sort-ind" id="sort-trainer-areaManager"></span></th>
             <th onclick="toggleSort('trainer','city')">City <span class="sort-ind" id="sort-trainer-city"></span></th>
+            <th onclick="toggleSort('trainer','supervisor')">Supervisor <span class="sort-ind" id="sort-trainer-supervisor"></span></th>
             <th onclick="toggleSort('trainer','date')">Date <span class="sort-ind" id="sort-trainer-date"></span></th>
+            <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
+            <th onclick="toggleSort('trainer','displayName')">Pharmacist Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
             <th onclick="toggleSort('trainer','completionPct')">Completion Rate <span class="sort-ind" id="sort-trainer-completionPct"></span></th>
             <th onclick="toggleSort('trainer','attendance')">Attendance <span class="sort-ind" id="sort-trainer-attendance"></span></th>
-            <th class="no-sort">Late Arrival Time</th>
             <th class="no-sort">Notes</th>
           </tr></thead>
           <tbody id="trainerTableBody"></tbody>
@@ -97,20 +96,11 @@
       </div>
     </div>
 
-    <!-- SETUP TAB -->
+    <!-- GENERAL CONFIGURATIONS TAB -->
     <div id="t-setup" class="trainer-tab hidden">
       <div class="card">
-        <div class="section-head" style="margin-top:0"><h2>Company Logo</h2></div>
-        <div class="row">
-          <input type="file" id="logoInput" accept="image/*" onchange="handleLogoUpload(this)">
-          <button class="btn btn-outline btn-sm" onclick="clearLogo()">Remove Logo</button>
-        </div>
-      </div>
-
-
-      <div class="card">
         <div class="section-head" style="margin-top:0"><h2>Master Pharmacist Data (Excel Upload)</h2></div>
-        <p class="small-note">Expected columns (name match is flexible): <b>District, Area Manager, City, Supervisor Name, Pharmacy No., User/Employee ID, Username (Email), Display Name (Pharmacist name), Phone number (Whatsapp), SCFHS</b> — plus optional <b>Date, Attendance Status, Notes</b>. The Master Sheet file from Analytics &amp; Export has exactly these columns, so it can be uploaded straight back.</p>
+        <p class="small-note">Expected columns (name match is flexible): <b>District, Area Manager, City, Supervisor Name, Pharmacy No., User/Employee ID, Username (Email), Display Name (Pharmacist name), Phone number (Whatsapp), SCFHS</b> — plus optional <b>Date, Attendance Status, Work Shift, Notes</b>. The Master Sheet file from Analytics &amp; Export has exactly these columns, so it can be uploaded straight back.</p>
         <p class="small-note">Pharmacists already in the tool are recognised (by email, employee ID, or name + supervisor) and keep their training day and attendance; duplicate rows are skipped. You'll see a column-mapping preview and a summary before anything is saved.</p>
         <div class="row" style="margin-top:8px">
           <input type="file" id="masterFileInput" accept=".xlsx,.xls,.csv" onchange="handleMasterUpload(this)">
@@ -177,6 +167,22 @@
       </div>
 
       <div class="card">
+        <div class="section-head" style="margin-top:0"><h2>City Roster</h2></div>
+        <p class="small-note">The cities offered when adding or editing a training day. Link a city to one or more supervisors, and "Auto-select by city" (and the bulk "Assign a city" action) makes a day in that city visible to exactly those supervisors.</p>
+        <div class="row">
+          <input type="text" id="newCityName" placeholder="New city name, e.g. Jeddah North">
+          <button class="btn btn-navy btn-sm" onclick="addRosterCity()">+ Add City</button>
+        </div>
+        <div class="table-wrap" style="margin-top:10px"><table>
+          <thead><tr><th class="no-sort">City</th><th class="no-sort">Linked supervisor(s)</th><th class="no-sort">Training days</th><th class="no-sort"></th></tr></thead>
+          <tbody id="cityRosterBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <!-- TRAINING DAYS SETUP TAB -->
+    <div id="t-days" class="trainer-tab hidden">
+      <div class="card" style="margin-top:0">
         <div class="section-head" style="margin-top:0">
           <h2>Training Days</h2>
           <div class="row">
@@ -205,7 +211,25 @@
 
     <!-- APPROVALS TAB -->
     <div id="t-approvals" class="trainer-tab hidden">
-      <div class="section-head" style="margin-top:0"><h2>Over-Quota Assignments Awaiting Approval</h2></div>
+      <div class="section-head" style="margin-top:0"><h2>Supervisor Submissions</h2></div>
+      <p class="small-note" style="margin-bottom:8px">A supervisor pressed Submit: every date and status they had chosen is now locked for them. They can only change a locked pharmacist through a Date Change Request (below), or by booking a pharmacist who missed their training onto a new day you open for them.</p>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Supervisor</th><th>Submitted</th><th>Newly locked</th><th>With a date</th><th>Other status</th><th>Still not assigned</th><th style="min-width:120px">Action</th></tr></thead>
+          <tbody id="submissionsBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="section-head"><h2>Date Change Requests</h2></div>
+      <p class="small-note" style="margin-bottom:8px">A supervisor asked to change a pharmacist whose date is locked. Approve to apply the requested change (it stays locked for the supervisor), or reject to keep the current one.</p>
+      <div class="card">
+        <div class="table-wrap"><table>
+          <thead><tr><th>Pharmacist Name</th><th>Email</th><th>Supervisor</th><th>Current</th><th>Requested</th><th>Reason</th><th>Submitted</th><th style="min-width:170px">Action</th></tr></thead>
+          <tbody id="changeRequestsBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="section-head"><h2>Over-Quota Assignments Awaiting Approval</h2></div>
       <p class="small-note" style="margin-bottom:8px">A supervisor assigned a pharmacist to an online day after reaching their quota for that day. Approve to let it count, or reject to send them back to Not Assigned.</p>
       <div class="card">
         <div class="table-wrap"><table>
@@ -287,7 +311,7 @@
             </div>
             <button class="btn btn-outline btn-sm" id="pctToggleBtn" onclick="toggleAnalyticsPct()">Show as %</button>
           </div>
-          <div class="table-wrap"><table id="analyticsTable">
+          <div class="table-wrap table-scroll"><table id="analyticsTable">
             <thead><tr><th>#</th><th id="dimHeader">City</th><th>Total</th><th>Attended</th><th>Not Assigned</th><th>Assigned but Absent</th><th>Sick Leave</th><th>Annual Leave</th><th>Resignation</th><th>Promotion</th></tr></thead>
             <tbody id="analyticsBody"></tbody>
           </table></div>
@@ -319,6 +343,7 @@
             <th onclick="toggleSort('master','phone')">Phone number (Whatsapp) <span class="sort-ind" id="sort-master-phone"></span></th>
             <th onclick="toggleSort('master','scfhs')">SCFHS <span class="sort-ind" id="sort-master-scfhs"></span></th>
             <th onclick="toggleSort('master','attendance')">Attendance Status <span class="sort-ind" id="sort-master-attendance"></span></th>
+            <th onclick="toggleSort('master','workShift')">Work Shift <span class="sort-ind" id="sort-master-workShift"></span></th>
             <th class="no-sort">Notes</th>
           </tr></thead>
           <tbody id="masterSheetPreviewBody"></tbody>

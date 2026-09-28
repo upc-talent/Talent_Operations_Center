@@ -62,11 +62,13 @@
         <button class="btn btn-outline btn-sm" onclick="openBulkAddModal()">⬆ Bulk Add New Pharmacists</button>
         <button class="btn btn-outline btn-sm" onclick="openSubmissionHistoryModal()">📋 Submission History <span id="submissionHistoryDot"></span></button>
       </div>
-      <p class="small-note" style="margin:-4px 0 8px;">New pharmacists and Annual Leave requests are submitted for the trainer's approval before they take effect.</p>
+      <p class="small-note" style="margin:-4px 0 8px;">New pharmacists and Annual Leave requests are submitted for the trainer's approval before they take effect. When your choices are ready, press <b>Submit</b>: they are locked and the training team is notified — to change a locked pharmacist afterwards, tick them and use <b>Request Change</b>.</p>
       <div class="card" style="margin-top:0" id="supTableCard">
         <div class="section-head" style="margin-top:0">
           <h2>Pharmacist List <span id="supStatusTag"></span></h2>
           <div class="row">
+            <button class="btn btn-ok btn-sm" onclick="submitSupervisorChoices()" title="Lock every date and status you have chosen and tell the training team">✔ Submit</button>
+            <button class="btn btn-outline btn-sm" id="requestChangeBtn" onclick="openRequestChangeModal()" disabled title="Tick pharmacists in the table first">✉ Request Change</button>
             <button class="btn btn-outline btn-sm" onclick="loadSupervisorView(true)">↻ Refresh</button>
             <button class="btn btn-navy btn-sm" onclick="exportSupervisorExcel()">⬇ Excel</button>
             <button class="btn btn-navy btn-sm" onclick="exportTableImage('supTableCard','my-pharmacists')">📷 Image</button>
@@ -78,13 +80,11 @@
           <thead><tr>
             <th class="sel-cell no-sort"><input type="checkbox" id="bulkAll-sup" onclick="bulkToggleAll('sup', this.checked)" title="Select all shown"></th>
             <th onclick="toggleSort('sup','displayName')">Pharmacist Name <span class="sort-ind" id="sort-sup-displayName"></span></th>
+            <th onclick="toggleSort('sup','pharmacyNo')">Pharmacy No. <span class="sort-ind" id="sort-sup-pharmacyNo"></span></th>
             <th onclick="toggleSort('sup','email')">Email <span class="sort-ind" id="sort-sup-email"></span></th>
-            <th onclick="toggleSort('sup','supervisor')">Supervisor <span class="sort-ind" id="sort-sup-supervisor"></span></th>
-            <th onclick="toggleSort('sup','district')">District <span class="sort-ind" id="sort-sup-district"></span></th>
-            <th onclick="toggleSort('sup','areaManager')">Area Manager <span class="sort-ind" id="sort-sup-areaManager"></span></th>
-            <th onclick="toggleSort('sup','city')">City <span class="sort-ind" id="sort-sup-city"></span></th>
             <th onclick="toggleSort('sup','date')">Date <span class="sort-ind" id="sort-sup-date"></span></th>
             <th onclick="toggleSort('sup','attendance')">Attendance Status <span class="sort-ind" id="sort-sup-attendance"></span></th>
+            <th onclick="toggleSort('sup','workShift')">Work Shift <span class="sort-ind" id="sort-sup-workShift"></span></th>
             <th class="no-sort">Notes</th>
           </tr></thead>
           <tbody id="supTableBody"></tbody>

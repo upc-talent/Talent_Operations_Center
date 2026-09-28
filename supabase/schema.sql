@@ -28,6 +28,8 @@ create table if not exists pharmacists (
   attendance     jsonb,                          -- the "t" object or null
   created_at     timestamptz not null default now()
 );
+-- Work Shift (Morning Shift / Night Shift), set by the supervisor. Added later — this line also upgrades an existing database.
+alter table pharmacists add column if not exists work_shift text not null default '';
 create index if not exists pharmacists_supervisor_idx on pharmacists (supervisor);
 create index if not exists pharmacists_assignment_day_idx on pharmacists ((assignment->>'dateId'));
 
@@ -39,7 +41,7 @@ create table if not exists training_days (
 );
 
 -- Approvals (was the Approvals tab): New Pharmacist / Annual Leave / Over-Quota Decision (history)
--- and the live Over-Quota Request mirror. `data` holds the full record; the columns are for filtering.
+-- / Date Change (supervisor Request Change) / Submission (a supervisor pressed Submit), and the live Over-Quota Request mirror. `data` holds the full record; the columns are for filtering.
 create table if not exists approvals (
   id           text primary key,
   type         text not null,

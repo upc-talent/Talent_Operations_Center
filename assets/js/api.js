@@ -85,10 +85,10 @@
     console.log('[api] ' + label + ' — ' + rt + 'ms round-trip' + (server != null ? ' (' + server + 'ms server, ' + Math.max(rt - server, 0) + 'ms network)' : ''));
   }
 
-  async function transport(body) {
-    const isWrite = body.action === 'patch';
-    if (isWrite) pendingWrites++; else pendingReads++;
-    emitStatus();
+  // `quiet` requests (the background "I'm online" ping, the online-supervisors count) don't flash the status indicator.
+  async function transport(body, quiet) {
+    const isWrite = body.action === 'patch' || body.action === 'submit';
+    if (!quiet) { if (isWrite) pendingWrites++; else pendingReads++; emitStatus(); }
     const t0 = performance.now ? performance.now() : Date.now();
     try {
       const waits = [700, 1800];
@@ -103,8 +103,7 @@
         }
       }
     } finally {
-      if (isWrite) pendingWrites--; else pendingReads--;
-      emitStatus();
+      if (!quiet) { if (isWrite) pendingWrites--; else pendingReads--; emitStatus(); }
     }
   }
 
@@ -119,7 +118,7 @@
     hasToken() { try { return !!sessionStorage.getItem(TOKEN_KEY); } catch (e) { return false; } },
     clearToken() { try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {} },
 
-    async call(action, extra) {
+    async call(action, extra, quiet) {
       const body = Object.assign({ action }, extra || {});
       if (API.mode === 'trainer') {
         let tok = null;
@@ -128,7 +127,7 @@
       } else if (API.supervisor) {
         body.supervisor = API.supervisor;
       }
-      const out = await transport(body);
+      const out = await transport(body, quiet);
       if (!out || out.ok === false) {
         const err = new Error((out && out.error) || 'Request failed');
         if (/sign in again|Trainer login required|Not authorised/i.test(err.message) && API.mode === 'trainer') {
@@ -145,21 +144,29 @@
       const out = await transport({ action: 'login', username, password });
       if (!out || out.ok === false) throw new Error((out && out.error) || 'Sign-in failed');
       try { sessionStorage.setItem(TOKEN_KEY, out.token); } catch (e) { throw new Error('Your browser is blocking session storage.'); }
+      API.role = out.role || 'trainer';
       return true;
     },
-    logout() { API.clearToken(); },
+    logout() { API.clearToken(); API.role = null; },
+    // 'trainer' (full access) or 'admin' (Attendance tab only) — known after sign-in / verifySession.
+    role: null,
     async verifySession() {
       if (!API.hasToken()) return false;
-      try { await API.call('me'); return true; } catch (e) { return false; }
+      try { const out = await API.call('me'); API.role = out.role || 'trainer'; return true; } catch (e) { return false; }
     },
 
     async supervisorNames() { return (await API.call('supervisors')).names || []; },
-    async venues() { return (await API.call('venues')).venues || []; }
+    async venues() { return (await API.call('venues')).venues || []; },
+    // Supervisor presses Submit: locks every choice made so far; returns how many pharmacists were newly locked.
+    async submit() { return (await API.call('submit')).locked || 0; },
+    // Supervisor page heartbeat, and the trainer's "supervisors online" count — both silent.
+    async ping() { return API.call('ping', null, true); },
+    async presence() { return (await API.call('presence', null, true)).count || 0; }
   };
   window.API = API;
 
   /* ───────────── canonical form + diff ───────────── */
-  const ARRAY_KEYS = ['master-pharmacists', 'pending-pharmacists', 'leave-requests', 'quota-approval-history', 'pharmacist-notifications'];
+  const ARRAY_KEYS = ['master-pharmacists', 'pending-pharmacists', 'leave-requests', 'quota-approval-history', 'pharmacist-notifications', 'change-requests', 'supervisor-submissions'];
   const clone = v => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
   function stable(v) {
@@ -187,11 +194,12 @@
   function valueFromCanon(key, c) {
     if (ARRAY_KEYS.includes(key)) return c.order.map(id => clone(c.records[id]));
     if (key === 'operations') {
-      const out = { assignments: {}, attendance: {} };
+      const out = { assignments: {}, attendance: {}, shifts: {} };
       c.order.forEach(pid => {
         const r = c.records[pid] || {};
         if (r.a) out.assignments[pid] = clone(r.a);
         if (r.t) out.attendance[pid] = clone(r.t);
+        if (r.s) out.shifts[pid] = r.s;
       });
       return out;
     }
@@ -209,11 +217,12 @@
     if (ARRAY_KEYS.includes(key)) {
       (value || []).forEach(item => { c.records[item.id] = clone(item); c.order.push(item.id); });
     } else if (key === 'operations') {
-      const asg = (value && value.assignments) || {}, att = (value && value.attendance) || {};
-      new Set([...Object.keys(asg), ...Object.keys(att)]).forEach(pid => {
+      const asg = (value && value.assignments) || {}, att = (value && value.attendance) || {}, sh = (value && value.shifts) || {};
+      new Set([...Object.keys(asg), ...Object.keys(att), ...Object.keys(sh)]).forEach(pid => {
         const r = {};
         if (asg[pid]) r.a = clone(asg[pid]);
         if (att[pid]) r.t = clone(att[pid]);
+        if (sh[pid]) r.s = sh[pid];
         if (Object.keys(r).length) { c.records[pid] = r; c.order.push(pid); }
       });
     } else if (key === 'training-config') {
@@ -238,6 +247,7 @@
         const rec = {};
         if (stable(val(o && o.a)) !== stable(val(n && n.a))) rec.a = (n && n.a) || null;
         if (stable(val(o && o.t)) !== stable(val(n && n.t))) rec.t = (n && n.t) || null;
+        if ((o && o.s || '') !== (n && n.s || '')) rec.s = (n && n.s) || '';
         if (Object.keys(rec).length) records[id] = rec;
       } else if (n === undefined) {
         records[id] = null;

@@ -25,6 +25,7 @@ Dashboard → **Edge Functions → Secrets** (or `supabase secrets set NAME=valu
 |---|---|
 | `TRAINER_USER` | the trainer‑page username (same one you use today) |
 | `TRAINER_PASS` | the trainer‑page password |
+| `ADMIN_USER` / `ADMIN_PASS` | the lower‑access Admin login (Attendance tab only). Optional — admin sign‑in stays off until both are set. |
 | `TOKEN_SECRET` | any long random string (e.g. paste a UUID or two). Optional — if you skip it, the function generates and stores one automatically. |
 
 `SUPABASE_DB_URL`, `SUPABASE_URL`, etc. are provided by Supabase automatically — don't add those.

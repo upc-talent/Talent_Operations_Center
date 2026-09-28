@@ -63,13 +63,13 @@ Project ref `aoqgabdsayaqgqroscdw`. Schema in `supabase/schema.sql`.
 
 | Table | Content |
 |---|---|
-| `pharmacists` | The roster, one row per person. Master columns + `assignment` / `attendance` (`jsonb`) + `note`, `completion_pct`. |
+| `pharmacists` | The roster, one row per person. Master columns + `assignment` / `attendance` (`jsonb`) + `note`, `completion_pct`, `work_shift` (Morning Shift / Night Shift, set by the supervisor). |
 | `training_days` | One row per day; the whole day object lives in `data` (`jsonb`). |
-| `approvals` | `New Pharmacist` / `Annual Leave` / `Over-Quota Decision` rows; columns for filtering, full record in `data`. |
+| `approvals` | `New Pharmacist` / `Annual Leave` / `Over-Quota Decision` / `Date Change` (Request Change) / `Submission` (supervisor pressed Submit) rows; columns for filtering, full record in `data`. |
 | `notifications` | Approval results shown to supervisors. |
-| `settings` | `key` → `value` (`jsonb`): maxCapacity, trainerNames, coordinatorNames, trainingNames, completionCourse, completionLastSynced, logo. |
+| `settings` | `key` → `value` (`jsonb`): maxCapacity, trainerNames, coordinatorNames, trainingNames, cityRoster (`[{name, supervisors}]`), completionCourse, completionLastSynced, logo. |
 | `venues` | `city` → recommended venue, offered in Add/Edit Training Day. |
-| `kv_cache` | Small expiring key/value store (login lockout counter, generated token secret). |
+| `kv_cache` | Small expiring key/value store (login lockout counter, generated token secret, `presence:<supervisor>` pings for "supervisors online"). |
 
 **Every table has RLS enabled with no policies** → the public anon key can read/write nothing. Only the Edge
 Function touches the data, using the service-role connection. Indexes: `supervisor`, and an expression index on
@@ -92,20 +92,24 @@ background, coalescing rapid changes into as few requests as possible. If a save
 reloads the true state and re-renders, which reverts the optimistic change.
 
 Keys → shapes: `master-pharmacists`, `pending-pharmacists`, `leave-requests`, `quota-approval-history`,
-`pharmacist-notifications` are arrays of `{id,…}`; `operations` =
-`{assignments:{pid:{type:'date'|'leave',…}}, attendance:{pid:{status,punctuality,time,note,day1,day2,…}}}`
-(wire form `{pid:{a,t}}`); `training-config` = `{dates:[…], maxCapacity, trainerNames, coordinatorNames,
+`pharmacist-notifications`, `change-requests`, `supervisor-submissions` are arrays of `{id,…}`; `operations` =
+`{assignments:{pid:{type:'date'|'leave',locked?,…}}, attendance:{pid:{status,reason?,punctuality,time,note,day1,day2,…}}, shifts:{pid:'Morning Shift'|'Night Shift'}}`
+(wire form `{pid:{a,t,s}}`); `training-config` = `{dates:[…], maxCapacity, trainerNames, coordinatorNames,
 trainingNames, completionCourse, completionLastSynced}`; `company-logo` = data-URL string.
 
 ### HTTP API (`POST` JSON to the Edge Function, with the anon key in the headers)
 `{action, token?|supervisor?, …}` →
 `login{username,password}` · `supervisors` (names list, public) · `get{key}` · `getMany{keys}` ·
-`patch{key,records,settings}` · `venues` (trainer) · `me`. `get company-logo` is public.
+`patch{key,records,settings}` · `venues` (trainer) · `me` · `submit` (supervisor: lock all their choices) ·
+`ping` (supervisor heartbeat, every 60 s) · `presence` (trainer: how many supervisors pinged in the last 150 s). `get company-logo` is public.
 Every response includes `_ms`, the server's own execution time.
 
 ### Auth & authorization (server-side; the URL and anon key are public by nature of a static site)
 - **Trainer:** username/password compared to the `TRAINER_USER` / `TRAINER_PASS` secrets; returns an HMAC-signed
   token (`TOKEN_SECRET`), TTL 10 h, kept in `sessionStorage`. 8 failed logins in 10 min lock login for 10 min.
+- **Admin** (lower access): same sign-in page, credentials in the `ADMIN_USER` / `ADMIN_PASS` secrets; the token
+  carries `r:'admin'`. Sees only the Attendance tab; the server allows it to read roster / operations / days / pending
+  list and write only `operations` and `master-pharmacists` — everything else is refused.
 - **Supervisor:** picks a name (no password), validated by an indexed lookup. Server limits reads to that
   supervisor's own pharmacists (no phone/SCFHS) and scopes approvals/notifications; other supervisors' ops rows
   are reduced to `{type:'date',dateId}` (seat counts only).
@@ -140,8 +144,8 @@ Every response includes `_ms`, the server's own execution time.
   (JED N 1, JED N 2…), online by training name else city (Online QAS 1, Online QAS 2…); a split online training
   counts once; names already ending in a number ("Mix 3") are kept. Display only — nothing is stored.
 - **Master Sheet export = upload format.** Analytics & Export → Master Sheet columns (District … SCFHS, Attendance
-  Status, Notes) are exactly what Setup → Master Pharmacist Data accepts. The upload matches each row to an existing
-  pharmacist (email → employee ID → name+supervisor), so they keep their id, day and attendance; duplicate rows are
+  Status, Work Shift, Notes) are exactly what General Configurations → Master Pharmacist Data accepts. The upload
+  matches each row to an existing pharmacist (email → employee ID → name+supervisor), so they keep their id, day and attendance; duplicate rows are
   skipped; "Date" / "Attendance Status" text is read back into assignments and attendance (blank / "Not Assigned"
   leaves what's recorded). The trainer chooses whether people missing from the file are kept or removed.
   When two days share a city and date, the Date text gets the training name, e.g. `Online — 5 - 6 October 26 (Mix 4)`.
@@ -154,9 +158,29 @@ Every response includes `_ms`, the server's own execution time.
   browser (`group-fix-ignored`) and not flagged again.
 - **Edit Selected** (Attendance tab): tick pharmacists → edit their master details in a grid → review a before/after
   list → Confirm saves (duplicate emails are refused; a brand-new supervisor name is flagged as a possible typo).
+- **Submit & locks (supervisor).** Choices are free until the supervisor presses **Submit** (`submit` action): every
+  pharmacist with a date or leave status gets `assignment.locked`, and a `Submission` row notifies the trainer
+  (Approvals tab + badge). Locked pharmacists lose their dropdown; the supervisor asks via **Request Change**
+  (`change-requests`, reason required) → trainer approves (applied, still locked) or rejects (supervisor notified).
+  Trainer changes keep the lock (`patchOps` carries it over). Exception: a pharmacist who **missed** training
+  (Absent, or Partial on a 2-day online training) gets the dropdown back and can be booked onto another visible day
+  (the missed day isn't offered); that new pick is free until the next Submit. Work Shift is never locked.
+- **Visible vs Editable (per day).** Edit Training Day → Visible to has two columns; Editable defaults to Visible.
+  Unticked = `readOnlySupervisors`: the supervisor sees the day but can't put pharmacists on it or move them off it
+  (except someone who missed training) — only through Request Change. Enforced in `validateSupervisorAssignment`.
+- **Absent needs a reason** (Interaction / Pharmacy / LMS), stored as `reason` on the attendance (per day for split
+  trainings). Shown as "Absent - LMS" in exports and the supervisor view, and read back by the upload.
+- **City Roster** (General Configurations): cities + linked supervisors. "Auto-select by city" and the bulk "City"
+  action make a day visible to exactly the linked supervisors (falls back to the old guess when none are linked).
+  Renaming a city renames it on training days, not on pharmacists.
+- **Cascading filters** everywhere: each filter lists only values present among rows matching the other filters
+  (`registerFilterFacets` / `narrowMsOptions` in common.js).
+- **Attendance tab date labels** are short: `Online QAS - 11,12 Oct 26` (online: training name, else city;
+  in-person: city) — `shortDayText`; a supervisor hint is added only if two days would still read the same.
 - **Bulk actions**: checkboxes on the trainer Records table, the trainer Days table and the supervisor table.
   Pharmacists → Assign to a day / set a leave status / unassign (+ trainer-only delete from roster).
-  Days → Hide / Unhide / Delete. Anything that doesn't fit (wrong online/offline type, day full) is skipped and
+  Days → Hide / Unhide / Deadline / Supervisors / Capacity / Trainer · Coordinator / City / Delete (Supervisors and
+  Trainer can Add to or Replace what the days have). Anything that doesn't fit (wrong online/offline type, day full) is skipped and
   reported; selections prune to what's visible when filters change.
 
 ### Training days / calendar

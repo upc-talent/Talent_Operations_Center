@@ -141,7 +141,7 @@ async function renderCalendar(){
   const legendItems = usedCities.concat(hasOnline?[ONLINE_COLOR]:[]);
   document.getElementById('calendarLegend').innerHTML = legendItems.length
     ? legendItems.map(c=>`<span class="cal-legend-item"><span class="cal-legend-dot" style="background:${c.bg};border:1px solid ${c.border};"></span>${esc(c.code)}</span>`).join('')
-    : `<span class="small-note">No training days scheduled yet — add one from Setup to see it here.</span>`;
+    : `<span class="small-note">No training days scheduled yet — add one from Training Days Setup to see it here.</span>`;
 
   const dayLabels = computeDayLabels();
   const monthLinks = [];
@@ -479,7 +479,8 @@ const MASTER_FIELDS = [
   {key:'scfhs', label:'SCFHS', required:false},
   {key:'note', label:'Notes (shown to the supervisor)', required:false},
   {key:'date', label:'Date (training day or leave status)', required:false},
-  {key:'attendance', label:'Attendance Status', required:false}
+  {key:'attendance', label:'Attendance Status', required:false},
+  {key:'workShift', label:'Work Shift', required:false}
 ];
 
 function showColumnMappingModal(headerRow, autoIndices, totalRows){
@@ -566,18 +567,56 @@ function switchTrainerTab(id){
   document.querySelectorAll('#screen-trainer .tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===id));
   document.querySelectorAll('.trainer-tab').forEach(t=>t.classList.toggle('hidden', t.id!==id));
   if(id==='t-setup') renderSetupTab();
+  if(id==='t-days'){ buildDaysFilterBar(); renderDaysTable(); }
   if(id==='t-approvals') renderApprovalsTab();
   if(id==='t-analytics') refreshAnalytics();
   if(id==='t-calendar') renderCalendar();
 }
 
+// The admin login (lower access) sees only the Attendance tab; the server refuses everything else for it too.
+function isAdminRole(){ return API.role==='admin'; }
+function applyRoleToPage(){
+  const admin = isAdminRole();
+  document.querySelectorAll('#screen-trainer .tab.trainer-only').forEach(t=>t.classList.toggle('hidden', admin));
+  const badge = document.getElementById('roleBadge');
+  if(badge) badge.textContent = admin ? 'Admin' : 'Trainer';
+  if(admin) switchTrainerTab('t-attend');
+}
+
 async function initTrainer(){
+  applyRoleToPage();
   groupFixIgnored = await getPersonal('group-fix-ignored', []);
-  await Promise.all([loadCoreData(), loadVenues()]);
-  renderSetupTab();
+  if(isAdminRole()) await loadCoreData();
+  else await Promise.all([loadCoreData(), loadVenues()]);
+  registerTrainerFilterFacets();
+  if(!isAdminRole()){ renderSetupTab(); buildDaysFilterBar(); renderDaysTable(); }
   buildTrainerFilterBar();
   renderTrainerTable();
   updatePendingDot();
+  startPresencePolling();
+}
+
+/* How many supervisors have the supervisor page open right now (top bar, trainer only). The supervisor page pings
+   the server every minute; a closed tab drops off within ~2½ minutes. */
+let presenceTimer = null;
+async function refreshPresence(){
+  const pill = document.getElementById('presencePill');
+  if(!pill) return;
+  try{
+    const n = await API.presence();
+    document.getElementById('presenceCount').textContent = n;
+    document.getElementById('presenceWord').textContent = n===1 ? 'supervisor' : 'supervisors';
+    pill.classList.toggle('none', n===0);
+    pill.classList.remove('hidden');
+  }catch(e){ console.warn('presence', e); }
+}
+function startPresencePolling(){
+  const pill = document.getElementById('presencePill');
+  if(isAdminRole()){ if(pill) pill.classList.add('hidden'); return; }
+  if(presenceTimer) return;
+  refreshPresence();
+  presenceTimer = setInterval(()=>{ if(!document.hidden) refreshPresence(); }, 60000);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshPresence(); });
 }
 
 function renderTrainerIdentitySelect(){
@@ -600,8 +639,7 @@ function renderSetupTab(){
   renderTrainerNamesList();
   renderCoordinatorNamesList();
   renderTrainingNamesList();
-  buildDaysFilterBar();
-  renderDaysTable();
+  renderCityRoster();
   loadCompletionCourseList();
 }
 
@@ -646,7 +684,8 @@ async function handleMasterUpload(input){
         scfhs: findCol([/scfhs/i]),
         note: findCol([/^notes?$/i]),
         date: findCol([/^date$/i, /training\s*date/i, /assigned\s*(training\s*)?day/i]),
-        attendance: findCol([/attendance\s*status/i, /^attendance$/i])
+        attendance: findCol([/attendance\s*status/i, /^attendance$/i]),
+        workShift: findCol([/work\s*shift/i, /^shift$/i])
       };
 
       const mapping = await showColumnMappingModal(headerRow, autoIndices, aoa.length-1);
@@ -701,14 +740,14 @@ function resolveDayFromText(text, p, idx){
   if(cands.length>1){ const s = cands.filter(d=>d.active!==false); if(s.length) cands = s; }
   return cands.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'') || String(a.id).localeCompare(String(b.id)))[0] || null;
 }
-// "Attended - Late (09:30)" / "Attended (both days) - On Time" / "Absent" / "Partial — Day 2 missing …" → attendance record.
+// "Attended - Late (09:30)" / "Attended (both days) - On Time" / "Absent - LMS" / "Partial — Day 2 missing …" → attendance record.
 function attendanceFromText(text, day){
   const n = normText(text);
   const now = nowIso(), by = 'Excel upload';
   const tm = (String(text).match(/(\d{1,2}:\d{2})/)||[])[1] || '';
   const mark = (status, punct)=> status==='Attended'
     ? {status, punctuality: punct||'On Time', time: punct==='Late' ? tm : '', markedBy:by, markedAt:now}
-    : {status, time:'', markedBy:by, markedAt:now};
+    : {status, reason: absentReasonFromText(text), time:'', markedBy:by, markedAt:now};   // "Absent - LMS" → reason LMS
   const split = !!(day && day.isOnline && day.onlineFormat==='split');
   if(n.startsWith('attended')){
     const punct = /\blate\b/.test(n) ? 'Late' : 'On Time';
@@ -749,7 +788,7 @@ async function importMasterRows(dataRows, mapping){
   const rows = dataRows.map(r=>{
     const fields = {};
     MASTER_TEXT_KEYS.forEach(k=>{ const v = cell(r,k); if(v!==undefined) fields[k] = v; });
-    return {fields, dateText: cell(r,'date'), attText: cell(r,'attendance')};
+    return {fields, dateText: cell(r,'date'), attText: cell(r,'attendance'), shiftText: cell(r,'workShift')};
   }).filter(x=>x.fields.displayName && x.fields.supervisor);
   if(!rows.length){ toast('No usable rows found — check that the mapped Supervisor and Display Name columns actually contain data','err'); return; }
 
@@ -808,7 +847,7 @@ async function importMasterRows(dataRows, mapping){
   // Dates + attendance, applied only where the file has a real value and it differs from what is recorded.
   const dayIdx = buildDayTextIndex();
   const by = 'Trainer (Excel upload)';
-  let assigned = 0, attMarked = 0;
+  let assigned = 0, attMarked = 0, shiftsSet = 0;
   const unknownDates = new Set();
   plan.forEach(({x, obj:p})=>{
     if(x.dateText!==undefined && !isBlankStatusText(x.dateText)){
@@ -838,12 +877,17 @@ async function importMasterRows(dataRows, mapping){
         if(t){ ops.attendance[p.id] = t; attMarked++; }
       }
     }
+    if(x.shiftText!==undefined){
+      const n = normText(x.shiftText);
+      const s = /^morning/.test(n) ? 'Morning Shift' : (/^night/.test(n) ? 'Night Shift' : '');
+      if(s && (ops.shifts[p.id]||'')!==s){ ops.shifts[p.id] = s; shiftsSet++; }
+    }
   });
 
   // Roster first (new pharmacists must exist before their day/attendance can be written), then assignments.
   const okMaster = await setShared(K_MASTER, masterData);
   if(!okMaster) return;   // onSaveFailed has reloaded the real state
-  const okOps = (assigned || attMarked || choice==='replace') ? await setShared(K_OPS, ops) : true;
+  const okOps = (assigned || attMarked || shiftsSet || choice==='replace') ? await setShared(K_OPS, ops) : true;
 
   renderMasterPreview();
   buildTrainerFilterBar();
@@ -853,6 +897,7 @@ async function importMasterRows(dataRows, mapping){
   if(dups) items += li(`${dups} duplicate row(s) skipped.`);
   if(summary.removed) items += li(choice==='replace' ? `${summary.removed} pharmacist(s) not in the file were removed.` : `${summary.removed} pharmacist(s) not in the file were kept.`);
   if(assigned || attMarked) items += li(`Imported <b>${assigned}</b> training day / leave assignment(s) and <b>${attMarked}</b> attendance record(s)${okOps?'':' — <b style="color:var(--danger)">but saving them failed</b>, please upload again'}.`);
+  if(shiftsSet) items += li(`Imported the Work Shift for <b>${shiftsSet}</b> pharmacist(s).`);
   if(unknownDates.size){
     const sample = [...unknownDates].slice(0,6).map(esc).join('; ');
     items += li(`<span style="color:var(--warn)">${unknownDates.size} date value(s) didn't match any training day in the tool and were skipped: ${sample}${unknownDates.size>6?' …':''}</span>`);
@@ -1198,6 +1243,119 @@ async function removeTrainingName(name){
   if(ok){ toast('Removed','ok'); renderTrainingNamesList(); }
 }
 
+/* ═══════════════════════════════ CITY ROSTER (General Configurations) ═══════════════════════════════
+   trainingConfig.cityRoster = [{name, supervisors:[…]}]. The table lists every city the tool knows (roster + cities
+   already used by pharmacists / training days); a city from the data is saved into the roster the first time it is
+   edited. Renaming a city renames it on its training days too — the pharmacists' own City (from the roster upload)
+   is left as it is. */
+async function freshConfig(){
+  trainingConfig = await getShared(K_CONFIG, trainingConfig);
+  if(!Array.isArray(trainingConfig.cityRoster)) trainingConfig.cityRoster = [];
+  return trainingConfig;
+}
+function rosterEntry(name, create){
+  let c = trainingConfig.cityRoster.find(x=>x.name===name);
+  if(!c && create){ c = {name, supervisors:[]}; trainingConfig.cityRoster.push(c); }
+  return c;
+}
+function renderCityRoster(){
+  const tb = document.getElementById('cityRosterBody');
+  if(!tb) return;
+  const cities = allKnownCities();
+  if(!cities.length){ tb.innerHTML = `<tr><td colspan="4" class="empty-msg">No cities yet — add one above</td></tr>`; return; }
+  const saved = new Set(cityRosterList().map(c=>c.name));
+  tb.innerHTML = cities.map(name=>{
+    const sups = citySupervisorsFromRoster(name);
+    const nDays = trainingConfig.dates.filter(d=>d.city===name).length;
+    const arg = esc(JSON.stringify(name));
+    return `<tr>
+      <td><b>${esc(name)}</b>${saved.has(name)?'':' <span class="small-note">(found in the data)</span>'}</td>
+      <td style="white-space:normal;max-width:360px;">${sups.length ? sups.map(s=>`<span class="badge badge-date" style="margin:1px;">${esc(s)}</span>`).join(' ') : '<span class="small-note">— none —</span>'}</td>
+      <td>${nDays}</td>
+      <td class="row no-truncate" style="gap:4px;flex-wrap:nowrap;">
+        <button class="btn btn-outline btn-sm" onclick="openCitySupervisorsModal(${arg})">👥 Supervisors</button>
+        <button class="btn btn-outline btn-sm" onclick="openRenameCityModal(${arg})">✏️ Rename</button>
+        ${saved.has(name) ? `<button class="btn btn-danger btn-sm" onclick="removeRosterCity(${arg})">🗑</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+async function addRosterCity(){
+  const input = document.getElementById('newCityName');
+  const name = input.value.trim();
+  if(!name){ toast('Enter a city name','err'); return; }
+  await freshConfig();
+  if(trainingConfig.cityRoster.some(c=>c.name.toLowerCase()===name.toLowerCase())){ toast('That city is already in the roster','err'); return; }
+  trainingConfig.cityRoster.push({name, supervisors:[]});
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){ input.value = ''; toast('City added','ok'); renderCityRoster(); }
+}
+function allSupervisorNames(){
+  return sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
+}
+function openCitySupervisorsModal(name){
+  const current = new Set(citySupervisorsFromRoster(name));
+  const boxes = allSupervisorNames().map(n=>`<label><input type="checkbox" class="city-sup-cb" value="${esc(n)}" ${current.has(n)?'checked':''}> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found.</span>';
+  showModal(`<h3>Supervisors for ${esc(name)}</h3>
+    <p class="small-note">A training day in ${esc(name)} is made visible to exactly these supervisors when you use "Auto-select by city" or the bulk "Assign a city" action.</p>
+    <div class="row" style="margin-bottom:6px;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('city-sup-cb', true)">Select All</button>
+      <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('city-sup-cb', false)">Clear All</button>
+    </div>
+    <div class="checkbox-list">${boxes}</div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="saveCitySupervisors(${esc(JSON.stringify(name))})">Save</button>
+    </div>`);
+}
+async function saveCitySupervisors(name){
+  const picked = [...document.querySelectorAll('.city-sup-cb:checked')].map(cb=>cb.value);
+  await freshConfig();
+  rosterEntry(name, true).supervisors = picked;
+  const ok = await setConfigWithHistory(trainingConfig);
+  closeModal();
+  if(ok){ toast(`${name}: ${picked.length} supervisor(s) linked`,'ok'); renderCityRoster(); }
+}
+function openRenameCityModal(name){
+  const nDays = trainingConfig.dates.filter(d=>d.city===name).length;
+  showModal(`<h3>Rename City</h3>
+    <div class="field"><label class="field-label req">New name</label><input type="text" id="renameCityInput" value="${esc(name)}"></div>
+    <p class="small-note">${nDays ? `The ${nDays} training day(s) in ${esc(name)} are renamed too. ` : ''}The pharmacists' own City (from the Master Pharmacist Data upload) is not changed.</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="confirmRenameCity(${esc(JSON.stringify(name))})">Save</button>
+    </div>`);
+  setTimeout(()=>{ const i = document.getElementById('renameCityInput'); if(i){ i.focus(); i.select(); } }, 0);
+}
+async function confirmRenameCity(oldName){
+  const newName = (document.getElementById('renameCityInput').value||'').trim();
+  if(!newName){ toast('Enter a city name','err'); return; }
+  if(newName===oldName){ closeModal(); return; }
+  await freshConfig();
+  const oldEntry = rosterEntry(oldName, false);
+  const target = rosterEntry(newName, true);
+  if(oldEntry && oldEntry!==target){
+    target.supervisors = [...new Set([...(target.supervisors||[]), ...(oldEntry.supervisors||[])])];
+    trainingConfig.cityRoster = trainingConfig.cityRoster.filter(c=>c!==oldEntry);
+  }
+  let moved = 0;
+  trainingConfig.dates.forEach(d=>{ if(d.city===oldName){ d.city = newName; moved++; } });
+  const ok = await setConfigWithHistory(trainingConfig);
+  closeModal();
+  if(ok){
+    toast(`Renamed to ${newName}${moved?` — ${moved} training day(s) updated`:''}`,'ok');
+    renderCityRoster(); buildDaysFilterBar(); renderDaysTable(); buildTrainerFilterBar(); renderTrainerTable();
+  }
+}
+async function removeRosterCity(name){
+  const inUse = masterData.some(p=>p.city===name) || trainingConfig.dates.some(d=>d.city===name);
+  if(!await confirmDialog(`Remove ${name} from the City Roster (and its linked supervisors)?${inUse ? ' It is still used by pharmacists or training days, so it will keep showing as "found in the data".' : ''}`)) return;
+  await freshConfig();
+  trainingConfig.cityRoster = trainingConfig.cityRoster.filter(c=>c.name!==name);
+  const ok = await setConfigWithHistory(trainingConfig);
+  if(ok){ toast('Removed','ok'); renderCityRoster(); }
+}
+
 // defaults to date-ascending (the table's natural order), so the indicator/toggle direction always matches what's on screen
 let daysSortState = {key:'date', dir:1};
 function toggleDaysSort(key){
@@ -1252,7 +1410,9 @@ function renderDaysTable(){
     if(city && labelLc.startsWith(city.toLowerCase())) cityHtml = `<span class="city-badge">${esc(label)}</span>`;
     else if(!label || labelLc===(d.trainingName||'').toLowerCase()) cityHtml = `<span class="city-badge">${esc(city)}</span>`;
     else cityHtml = `<span class="city-badge">${esc(city)}</span> <span class="day-num-tag">${esc(label)}</span>`;
-    const visText = (!d.visibleSupervisors || !d.visibleSupervisors.length) ? '— none —' : d.visibleSupervisors.join(', ');
+    // 🔒 = visible to that supervisor but not editable by them (the training team fills this day)
+    const ro = new Set(d.readOnlySupervisors||[]);
+    const visText = (!d.visibleSupervisors || !d.visibleSupervisors.length) ? '— none —' : d.visibleSupervisors.map(n=>ro.has(n) ? n+' 🔒' : n).join(', ');
     const trainers = (d.trainerNames && d.trainerNames.length) ? d.trainerNames.map(trainerBadge).join(' ') : '<span class="small-note">— none —</span>';
     const typeText = d.type || 'Pharmacist Training';
     const onlineText = d.isOnline ? `<br><span class="badge badge-date">Online — ${d.onlineFormat==='fullday'?'1 day':'split, 2 days'}${d.coordinator?' — '+esc(d.coordinator):''}</span>${d.zoomLink?` <a href="${esc(d.zoomLink)}" target="_blank" style="font-size:10.5px;">Zoom link</a>`:''}` : '';
@@ -1280,8 +1440,17 @@ function renderDaysTable(){
 function openEditDayModal(dayId){
   const day = trainingConfig.dates.find(d=>d.id===dayId);
   if(!day) return;
-  const supNames = sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
-  const supCheckboxes = supNames.map(n=>`<label><input type="checkbox" class="edit-day-sup-cb" value="${esc(n)}" onchange="syncQuotaVisibility('edit')" ${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'checked':''}> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found.</span>';
+  const supNames = allSupervisorNames();
+  const readOnly = new Set(day.readOnlySupervisors||[]);
+  // Visible to: one row per supervisor — Visible (sees the day) and Editable (may assign pharmacists to it). Editable
+  // defaults to ticked whenever Visible is ticked; unticking it leaves the day for the training team to fill.
+  const visRows = supNames.map(n=>{
+    const vis = !!(day.visibleSupervisors && day.visibleSupervisors.includes(n));
+    const edit = vis && !readOnly.has(n);
+    return `<tr><td>${esc(n)}</td>
+      <td class="vis-cb"><input type="checkbox" class="edit-day-sup-cb" value="${esc(n)}" onchange="onEditDayVisibleChange(this)" ${vis?'checked':''} aria-label="Visible to ${esc(n)}"></td>
+      <td class="vis-cb"><input type="checkbox" class="edit-day-edit-cb" data-sup="${esc(n)}" ${edit?'checked':''} ${vis?'':'disabled'} aria-label="${esc(n)} can edit"></td></tr>`;
+  }).join('');
   const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="edit-day-trainer-cb" value="${esc(n)}" ${day.trainerNames&&day.trainerNames.includes(n)?'checked':''}> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet.</span>';
   const dayCityKnown = isKnownCity(day.city);
   const trainingNameOptions = trainingConfig.trainingNames.map(n=>`<option value="${esc(n)}" ${day.trainingName===n?'selected':''}>${esc(n)}</option>`).join('');
@@ -1300,20 +1469,8 @@ function openEditDayModal(dayId){
       </select>
       <input type="text" id="editDayCityCustom" placeholder="Enter new city name" value="${dayCityKnown?'':esc(day.city)}" class="${dayCityKnown?'hidden':''}" style="margin-top:8px;">
     </div>
-    <div class="field"><label class="field-label">Training Name (optional)</label><select id="editDayTrainingName"><option value="">-- None --</option>${trainingNameOptions}</select></div>
     <div class="field"><label class="field-label">Type</label><select id="editDayType">${typeOptions}</select></div>
-    <div class="field"><label class="field-label">Venue (optional)</label><input type="text" id="editDayVenue" list="venueDatalist" value="${esc(day.venue||'')}" placeholder="Pick from the Venues tab or type one">${venueDatalistHtml()}</div>
-    <div class="field"><label class="field-label">Custom capacity (blank = default ${trainingConfig.maxCapacity})</label><input type="number" id="editDayCapacity" value="${day.capacity||''}" placeholder="${trainingConfig.maxCapacity}"></div>
-    <div class="field"><label class="field-label">Supervisor assignment deadline — date &amp; time (optional)</label><input type="datetime-local" id="editDayDeadline" value="${esc(day.deadline||'')}"><p class="small-note">After this date and time, supervisors can no longer assign new pharmacists to this day.</p></div>
     <div class="field"><label class="toggle-label"><input type="checkbox" id="editDayActive" ${isActive?'checked':''}> Active (visible to supervisors)</label><p class="small-note">Hiding only affects supervisors — you can still edit a hidden day and assign pharmacists to it from the trainer page.</p></div>
-    <div class="field">
-      <label class="field-label">Trainer(s)</label>
-      <div class="row" style="margin-bottom:6px;">
-        <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-trainer-cb', true)">Select All</button>
-        <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-trainer-cb', false)">Clear All</button>
-      </div>
-      <div class="checkbox-list" style="max-height:120px;">${trainerCheckboxes}</div>
-    </div>
     <div class="field">
       <label class="toggle-label"><input type="checkbox" id="editDayIsOnline" onchange="toggleEditOnlineFields(this)" ${day.isOnline?'checked':''}> This is an online training</label>
     </div>
@@ -1326,28 +1483,47 @@ function openEditDayModal(dayId){
         </select>
         <p class="small-note" id="editDaySplitPreview" style="margin-top:6px;color:var(--navy);font-weight:600;"></p>
       </div>
-      <div class="field"><label class="field-label">Coordinator (optional)</label><select id="editDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
-      <div class="field"><label class="field-label">Zoom Link (optional)</label><input type="text" id="editDayZoomLink" value="${esc(day.zoomLink||'')}" placeholder="https://zoom.us/j/..."></div>
     </div>
     <div class="field">
-      <label class="field-label">Per-Supervisor Quota (optional — blank = unlimited)</label>
-      <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works for both in-person and online days.</p>
-      <div class="checkbox-list" style="max-height:160px;">
-        ${sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]).map(n=>`
-          <label style="justify-content:space-between;" data-quota-row="edit" data-sup="${esc(n)}" class="${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'':'hidden'}"><span>${esc(n)}</span><input type="number" class="edit-day-quota-input" data-sup="${esc(n)}" value="${(day.supervisorQuotas&&day.supervisorQuotas[n])||''}" style="width:70px;" min="0" placeholder="∞"></label>
-        `).join('') || '<span class="small-note">No supervisors found.</span>'}
-        <span class="small-note" id="editQuotaEmptyMsg">Check supervisors in "Visible to" below to set a quota for each.</span>
+      <label class="field-label">Trainer(s)</label>
+      <div class="row" style="margin-bottom:6px;">
+        <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-trainer-cb', true)">Select All</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-trainer-cb', false)">Clear All</button>
       </div>
+      <div class="checkbox-list" style="max-height:120px;">${trainerCheckboxes}</div>
     </div>
     <div class="field">
-      <label class="field-label">Visible to (optional)</label>
+      <label class="field-label">Visible to</label>
+      <p class="small-note" style="margin-top:0;">Visible: the supervisor sees this day. Editable: they can also assign their pharmacists to it — untick to keep the day visible but managed by you (they can still send a Request Change).</p>
       <div class="row" style="margin-bottom:6px;">
         <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-sup-cb', true)">Select All</button>
         <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('edit-day-sup-cb', false)">Clear All</button>
         <button type="button" class="btn btn-outline btn-sm" onclick="autoSelectCitySupervisors(readCityFieldValue('editDayCity','editDayCityCustom'))">Auto-select by city</button>
       </div>
-      <div class="checkbox-list">${supCheckboxes}</div>
+      <div class="vis-table-wrap">${supNames.length ? `<table class="vis-table"><thead><tr><th>Supervisor</th><th class="vis-cb">Visible</th><th class="vis-cb">Editable</th></tr></thead><tbody>${visRows}</tbody></table>` : '<span class="small-note">No supervisors found.</span>'}</div>
     </div>
+
+    <details class="opt-fields">
+      <summary>Optional details <span class="small-note">— training name, venue, capacity, deadline, ${day.isOnline?'coordinator, Zoom link, ':''}quotas</span></summary>
+      <div class="field"><label class="field-label">Training Name</label><select id="editDayTrainingName"><option value="">-- None --</option>${trainingNameOptions}</select></div>
+      <div class="field"><label class="field-label">Venue</label><input type="text" id="editDayVenue" list="venueDatalist" value="${esc(day.venue||'')}" placeholder="Pick from the Venues tab or type one">${venueDatalistHtml()}</div>
+      <div class="field"><label class="field-label">Custom capacity (blank = default ${trainingConfig.maxCapacity})</label><input type="number" id="editDayCapacity" value="${day.capacity||''}" placeholder="${trainingConfig.maxCapacity}"></div>
+      <div class="field"><label class="field-label">Supervisor assignment deadline — date &amp; time</label><input type="datetime-local" id="editDayDeadline" value="${esc(day.deadline||'')}"><p class="small-note">After this date and time, supervisors can no longer assign new pharmacists to this day.</p></div>
+      <div id="editOnlineOptionalBlock" class="${day.isOnline?'':'hidden'}">
+        <div class="field"><label class="field-label">Coordinator</label><select id="editDayCoordinator"><option value="">-- None --</option>${coordinatorOptions}</select></div>
+        <div class="field"><label class="field-label">Zoom Link</label><input type="text" id="editDayZoomLink" value="${esc(day.zoomLink||'')}" placeholder="https://zoom.us/j/..."></div>
+      </div>
+      <div class="field">
+        <label class="field-label">Per-Supervisor Quota (blank = unlimited)</label>
+        <p class="small-note">Once a supervisor reaches their quota, further assignments they make need your approval. Works for both in-person and online days.</p>
+        <div class="checkbox-list" style="max-height:160px;">
+          ${supNames.map(n=>`
+            <label style="justify-content:space-between;" data-quota-row="edit" data-sup="${esc(n)}" class="${day.visibleSupervisors&&day.visibleSupervisors.includes(n)?'':'hidden'}"><span>${esc(n)}</span><input type="number" class="edit-day-quota-input" data-sup="${esc(n)}" value="${(day.supervisorQuotas&&day.supervisorQuotas[n])||''}" style="width:70px;" min="0" placeholder="∞"></label>
+          `).join('') || '<span class="small-note">No supervisors found.</span>'}
+          <span class="small-note" id="editQuotaEmptyMsg">Tick supervisors under "Visible to" to set a quota for each.</span>
+        </div>
+      </div>
+    </details>
     <div class="modal-actions">
       <button class="btn btn-danger btn-sm" style="margin-right:auto;" onclick="deleteDay('${dayId}', ${dayCount(dayId)})">🗑 Delete This Day</button>
       <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
@@ -1356,10 +1532,19 @@ function openEditDayModal(dayId){
   syncQuotaVisibility('edit');
   updateEditSplitPreview();
 }
+// Editable follows Visible: ticking Visible also ticks Editable (the default); unticking Visible clears and locks it.
+function onEditDayVisibleChange(cb){
+  const ecb = [...document.querySelectorAll('.edit-day-edit-cb')].find(x=>x.dataset.sup===cb.value);
+  if(ecb){
+    if(!cb.checked){ ecb.checked = false; ecb.disabled = true; }
+    else if(ecb.disabled){ ecb.disabled = false; ecb.checked = true; }
+  }
+  syncQuotaVisibility('edit');
+}
 function selectAllCb(className, checked){
   document.querySelectorAll('.'+className).forEach(cb=>cb.checked = checked);
   if(className==='day-sup-cb') syncQuotaVisibility('new');
-  if(className==='edit-day-sup-cb') syncQuotaVisibility('edit');
+  if(className==='edit-day-sup-cb'){ document.querySelectorAll('.edit-day-sup-cb').forEach(onEditDayVisibleChange); syncQuotaVisibility('edit'); }
 }
 function syncQuotaVisibility(scope){
   const cbClass = scope==='edit' ? 'edit-day-sup-cb' : 'day-sup-cb';
@@ -1375,6 +1560,8 @@ function syncQuotaVisibility(scope){
 }
 function toggleEditOnlineFields(cb){
   document.getElementById('editOnlineFieldsBlock').classList.toggle('hidden', !cb.checked);
+  const opt = document.getElementById('editOnlineOptionalBlock');
+  if(opt) opt.classList.toggle('hidden', !cb.checked);
   updateEditSplitPreview();
 }
 function splitPreviewText(dateStr){
@@ -1430,6 +1617,9 @@ async function confirmEditDay(dayId){
     });
   }
   const visibleSupervisors = [...document.querySelectorAll('.edit-day-sup-cb:checked')].map(cb=>cb.value);
+  // visible but not editable → the supervisor sees the day but can't assign to it (the server enforces this too)
+  const editable = new Set([...document.querySelectorAll('.edit-day-edit-cb:checked')].map(cb=>cb.dataset.sup));
+  const readOnlySupervisors = visibleSupervisors.filter(n=>!editable.has(n));
   if(!date){ toast('Please select a date','err'); return; }
   if(!city){ toast('Please enter a city','err'); return; }
   if(isOnline && onlineFormat==='split' && new Date(date+'T00:00:00').getDay()===5){
@@ -1445,7 +1635,7 @@ async function confirmEditDay(dayId){
   if(day){
     Object.assign(day, {
       date, city, trainingName, type, capacity: (capVal && capVal>0) ? capVal : null, deadline, active,
-      trainerNames, isOnline, onlineFormat, coordinator, zoomLink, venue, supervisorQuotas, visibleSupervisors
+      trainerNames, isOnline, onlineFormat, coordinator, zoomLink, venue, supervisorQuotas, visibleSupervisors, readOnlySupervisors
     });
   }
   const ok = await setConfigWithHistory(trainingConfig);
@@ -1460,14 +1650,17 @@ async function confirmEditDay(dayId){
 }
 
 function suggestedSupervisorsForCity(city){
+  // the City Roster link wins; without one, fall back to the supervisors whose pharmacists live in that city
+  const linked = citySupervisorsFromRoster(city);
+  if(linked.length) return sortSupervisorNames(linked);
   return sortSupervisorNames([...new Set(masterData.filter(p=>p.city===city).map(p=>p.supervisor).filter(isValidSupervisorName))]);
 }
 function cityOptionsHtml(selectedCity){
-  const cities = [...new Set(masterData.map(p=>p.city).filter(Boolean))].sort();
+  const cities = allKnownCities();
   return cities.map(c=>`<option value="${esc(c)}" ${c===selectedCity?'selected':''}>${esc(c)}</option>`).join('');
 }
 function isKnownCity(city){
-  return !!city && [...new Set(masterData.map(p=>p.city).filter(Boolean))].includes(city);
+  return !!city && allKnownCities().includes(city);
 }
 function onCitySelectChange(selectId, customId){
   const sel = document.getElementById(selectId);
@@ -1485,8 +1678,11 @@ function readCityFieldValue(selectId, customId){
 }
 function autoSelectCitySupervisors(cityForMatch){
   const suggested = suggestedSupervisorsForCity(cityForMatch);
+  const exact = citySupervisorsFromRoster(cityForMatch).length>0;   // linked in the City Roster → exactly those
   document.querySelectorAll('.edit-day-sup-cb').forEach(cb=>{
     if(suggested.includes(cb.value)) cb.checked = true;
+    else if(exact) cb.checked = false;
+    if(typeof onEditDayVisibleChange==='function') onEditDayVisibleChange(cb);
   });
   syncQuotaVisibility('edit');
   toast(`Checked ${suggested.length} supervisor(s) matching ${cityForMatch}`, 'ok');
@@ -1506,7 +1702,7 @@ function venueDatalistHtml(){
 function openAddDayModal(presetDate){
   const supNames = sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
   const checkboxes = supNames.map(n=>`<label><input type="checkbox" class="day-sup-cb" value="${esc(n)}" onchange="syncQuotaVisibility('new')"> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found in the master data yet.</span>';
-  const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="day-trainer-cb-new" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet — add some below in Setup.</span>';
+  const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="day-trainer-cb-new" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet — add some in General Configurations.</span>';
   const typeOptions = TRAINING_DAY_TYPES.map(t=>`<option value="${t}" ${t==='Pharmacist Training'?'selected':''}>${t}</option>`).join('');
   const trainingNameOptions = trainingConfig.trainingNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
   const coordinatorOptions = trainingConfig.coordinatorNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
@@ -1679,7 +1875,7 @@ async function importDayRoster(file, dayId){
         if(emailIdx===-1){ toast('Could not find an Email column in the roster file','err'); resolve(); return; }
         const emails = aoa.slice(1).map(r=>String(r[emailIdx]??'').trim().toLowerCase()).filter(Boolean);
         masterData = await getShared(K_MASTER, []);
-        ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+        ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
         let matched = 0;
         emails.forEach(email=>{
           const p = masterData.find(m=>(m.email||'').toLowerCase()===email);
@@ -1710,7 +1906,7 @@ async function deleteDay(dayId, count){
   trainingConfig.dates = trainingConfig.dates.filter(d=>d.id!==dayId);
   const ok = await setConfigWithHistory(trainingConfig);
   if(ok){
-    ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+    ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
     let cleaned = false;
     Object.keys(ops.assignments).forEach(pid=>{
       if(ops.assignments[pid].type==='date' && ops.assignments[pid].dateId===dayId){
@@ -1769,7 +1965,7 @@ async function deleteAllDays(){
   trainingConfig.dates = [];
   const ok = await setConfigWithHistory(trainingConfig);
   if(ok){
-    ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+    ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
     let cleaned = false;
     Object.keys(ops.assignments).forEach(pid=>{
       if(ops.assignments[pid].type==='date'){
@@ -1876,7 +2072,7 @@ async function bulkDays(action){
   const ok = await setConfigWithHistory(trainingConfig);
   if(ok){
     if(action==='delete'){
-      ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+      ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
       let cleaned = false;
       Object.keys(ops.assignments).forEach(pid=>{
         const a = ops.assignments[pid];
@@ -1889,6 +2085,123 @@ async function bulkDays(action){
     buildTrainerFilterBar();
     renderCalendar();
     toast(action==='delete' ? `Deleted ${ids.length} day(s)` : (action==='unhide' ? `Unhid ${ids.length} day(s)` : `Hid ${ids.length} day(s)`), 'ok');
+  }
+}
+
+/* Bulk edits for the selected training days (Training Days Setup → tick days → action bar). The selection is kept
+   afterwards so several edits can be applied to the same days in a row. */
+const BULK_DAY_TITLES = { deadline:'Set Supervisor Deadline', supervisors:'Assign to Supervisor(s)', capacity:'Set Fixed Capacity', staff:'Assign Trainer / Coordinator', city:'Assign a City' };
+function bulkModeHtml(){
+  return `<div class="row" style="gap:16px;margin-bottom:8px;">
+    <label class="toggle-label"><input type="radio" name="bulkMode" value="add" checked> Add to what the days already have</label>
+    <label class="toggle-label"><input type="radio" name="bulkMode" value="replace"> Replace</label></div>`;
+}
+function openBulkDaysModal(kind){
+  const ids = [...bulkSel.days];
+  if(!ids.length) return;
+  const days = trainingConfig.dates.filter(d=>bulkSel.days.has(d.id));
+  let body = '';
+  if(kind==='deadline'){
+    body = `<div class="field"><label class="field-label">Supervisor assignment deadline — date &amp; time</label><input type="datetime-local" id="bulkDeadline">
+      <p class="small-note">After this date and time, supervisors can no longer assign pharmacists to these days. Leave it blank to remove the deadline.</p></div>`;
+  } else if(kind==='capacity'){
+    body = `<div class="field"><label class="field-label">Capacity per day</label><input type="number" id="bulkCapacity" min="1" placeholder="${trainingConfig.maxCapacity}" style="width:120px">
+      <p class="small-note">Leave it blank to go back to the default (${trainingConfig.maxCapacity}).</p></div>`;
+  } else if(kind==='supervisors'){
+    const boxes = allSupervisorNames().map(n=>`<label><input type="checkbox" class="bulk-sup-cb" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found.</span>';
+    body = bulkModeHtml() + `<div class="row" style="margin-bottom:6px;">
+        <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-sup-cb', true)">Select All</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="selectAllCb('bulk-sup-cb', false)">Clear All</button></div>
+      <div class="checkbox-list">${boxes}</div>
+      <p class="small-note">The days become visible (and editable) for the ticked supervisors. To make a day visible but not editable for someone, use Edit on that day.</p>`;
+  } else if(kind==='staff'){
+    const tBoxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="bulk-trainer-cb" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet.</span>';
+    const online = days.filter(d=>d.isOnline).length;
+    body = bulkModeHtml() + `<div class="field"><label class="field-label">Trainer(s)</label><div class="checkbox-list" style="max-height:140px;">${tBoxes}</div></div>
+      <div class="field"><label class="field-label">Coordinator ${online<days.length ? `<span class="small-note">(online days only — ${online} of the ${days.length} selected)</span>` : ''}</label>
+        <select id="bulkCoordinator"><option value="__keep__">— leave as it is —</option><option value="">— none (clear) —</option>${trainingConfig.coordinatorNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select></div>`;
+  } else if(kind==='city'){
+    body = `<div class="field"><label class="field-label req">City</label>
+        <select id="bulkCity" onchange="onCitySelectChange('bulkCity','bulkCityCustom');updateBulkCityNote()"><option value="">-- Select City --</option>${cityOptionsHtml('')}<option value="__new__">+ Add a new city…</option></select>
+        <input type="text" id="bulkCityCustom" placeholder="Enter new city name" class="hidden" style="margin-top:8px;"></div>
+      <label class="toggle-label hidden" id="bulkCityVisWrap"><input type="checkbox" id="bulkCityVis" checked> <span id="bulkCityVisText"></span></label>`;
+  }
+  showModal(`<h3>${BULK_DAY_TITLES[kind]} — ${ids.length} day(s)</h3>${body}
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="applyBulkDays('${kind}')">Apply</button>
+    </div>`);
+}
+function updateBulkCityNote(){
+  const city = readCityFieldValue('bulkCity','bulkCityCustom');
+  const linked = citySupervisorsFromRoster(city);
+  const wrap = document.getElementById('bulkCityVisWrap');
+  if(!wrap) return;
+  wrap.classList.toggle('hidden', !linked.length);
+  document.getElementById('bulkCityVisText').textContent = `Also make the days visible to exactly ${city}'s supervisors (City Roster): ${linked.join(', ')}`;
+}
+async function applyBulkDays(kind){
+  const idset = new Set(bulkSel.days);
+  const mode = (document.querySelector('input[name="bulkMode"]:checked')||{}).value || 'add';
+  const union = (a, b)=>[...new Set([...(a||[]), ...b])];
+  let apply, msg;
+  if(kind==='deadline'){
+    const v = document.getElementById('bulkDeadline').value || null;
+    apply = d=>{ d.deadline = v; };
+    msg = v ? `Deadline set to ${formatDateTime(v)}` : 'Deadline removed';
+  } else if(kind==='capacity'){
+    const raw = document.getElementById('bulkCapacity').value.trim();
+    const v = parseInt(raw);
+    if(raw && !(v>0)){ toast('Enter a capacity above 0, or leave it blank for the default','err'); return; }
+    apply = d=>{ d.capacity = v>0 ? v : null; };
+    msg = v>0 ? `Capacity set to ${v}` : `Capacity back to the default (${trainingConfig.maxCapacity})`;
+  } else if(kind==='supervisors'){
+    const picked = [...document.querySelectorAll('.bulk-sup-cb:checked')].map(cb=>cb.value);
+    if(!picked.length && mode==='add'){ toast('Tick at least one supervisor','err'); return; }
+    apply = d=>{
+      d.visibleSupervisors = mode==='replace' ? picked.slice() : union(d.visibleSupervisors, picked);
+      // newly assigned supervisors can edit; a supervisor no longer visible loses any read-only mark / quota
+      d.readOnlySupervisors = (d.readOnlySupervisors||[]).filter(n=>d.visibleSupervisors.includes(n) && !picked.includes(n));
+      if(d.supervisorQuotas) Object.keys(d.supervisorQuotas).forEach(n=>{ if(!d.visibleSupervisors.includes(n)) delete d.supervisorQuotas[n]; });
+    };
+    msg = mode==='replace' ? `Now visible to ${picked.length} supervisor(s)` : `Added ${picked.length} supervisor(s)`;
+  } else if(kind==='staff'){
+    const trainers = [...document.querySelectorAll('.bulk-trainer-cb:checked')].map(cb=>cb.value);
+    const coord = document.getElementById('bulkCoordinator').value;
+    if(!trainers.length && mode==='add' && coord==='__keep__'){ toast('Tick a trainer or pick a coordinator','err'); return; }
+    apply = d=>{
+      if(mode==='replace') d.trainerNames = trainers.slice();
+      else if(trainers.length) d.trainerNames = union(d.trainerNames, trainers);
+      if(coord!=='__keep__' && d.isOnline) d.coordinator = coord;
+    };
+    msg = 'Trainer / coordinator updated';
+  } else if(kind==='city'){
+    const city = readCityFieldValue('bulkCity','bulkCityCustom');
+    if(!city){ toast('Pick a city','err'); return; }
+    const linked = citySupervisorsFromRoster(city);
+    const setVis = linked.length && document.getElementById('bulkCityVis').checked;
+    apply = d=>{
+      d.city = city;
+      if(setVis){
+        d.visibleSupervisors = linked.slice();
+        d.readOnlySupervisors = (d.readOnlySupervisors||[]).filter(n=>linked.includes(n));
+        if(d.supervisorQuotas) Object.keys(d.supervisorQuotas).forEach(n=>{ if(!linked.includes(n)) delete d.supervisorQuotas[n]; });
+      }
+    };
+    msg = `City set to ${city}${setVis ? ` — visible to ${linked.length} supervisor(s)` : ''}`;
+  }
+  await freshConfig();
+  let n = 0;
+  trainingConfig.dates.forEach(d=>{ if(idset.has(d.id)){ apply(d); n++; } });
+  const ok = await setConfigWithHistory(trainingConfig);
+  closeModal();
+  if(ok){
+    buildDaysFilterBar();
+    renderDaysTable();
+    buildTrainerFilterBar();
+    renderCalendar();
+    if(kind==='city') renderCityRoster();
+    toast(`${msg} — ${n} day(s)`,'ok');
   }
 }
 
@@ -1935,6 +2248,21 @@ function openDayStatusModal(dayId){
     'max-width:640px;');
 }
 
+// Cascading filters (see registerFilterFacets in common.js): how each filter reads its value(s) from a row.
+function pharmacistFacetValues(){
+  return {
+    district: p=>[p.district], areaManager: p=>[p.areaManager], city: p=>[p.city], supervisor: p=>[p.supervisor],
+    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; }
+  };
+}
+function registerTrainerFilterFacets(){
+  registerFilterFacets('trainer', { items: ()=>masterData, values: pharmacistFacetValues() });
+  registerFilterFacets('master',  { items: ()=>masterData, values: pharmacistFacetValues() });
+  registerFilterFacets('days', { items: ()=>trainingConfig.dates, values: {
+    city: d=>[(d.city||'').toString()], type: d=>[d.type||'Pharmacist Training'], date: d=>[d.date],
+    trainer: d=>d.trainerNames||[], visibleTo: d=>d.visibleSupervisors||[], status: d=>[d.active!==false ? 'active' : 'hidden']
+  }});
+}
 function buildTrainerFilterBar(){
   document.getElementById('trainerFilterBar').innerHTML =
     `<div class="filter-field search-field"><div class="search-box"><span>🔍</span><input type="text" class="big-search-input" id="trainerSearchInput" value="${esc(trainerSearchQ)}" oninput="onTrainerSearch(this.value)" placeholder="Search name or email..."></div></div>` +
@@ -1942,7 +2270,7 @@ function buildTrainerFilterBar(){
     renderMsFilter('trainer','areaManager','Area Manager', distinctValues(masterData,'areaManager').map(v=>({value:v,text:v}))) +
     renderMsFilter('trainer','city','City', distinctValues(masterData,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('trainer','supervisor','Supervisor', distinctValues(masterData,'supervisor').map(v=>({value:v,text:v}))) +
-    renderMsFilter('trainer','date','Date', dateFilterOptions(trainingConfig.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)))) +
+    renderMsFilter('trainer','date','Date', dateFilterOptions(trainingConfig.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)), true)) +
     `<button class="btn btn-outline btn-sm" onclick="clearTrainerFilters()">Clear Filters</button>`;
   renderConductedBySelect();
 }
@@ -2064,6 +2392,17 @@ function renderSessionSummary(dateId){
     <div class="chip ok-outline"><div class="lbl">Attendance So Far</div><div class="num">${rate}%</div></div>`;
 }
 
+/* Absent needs a reason (Interaction / Pharmacy / LMS). Clicking Absent first shows the three reasons; nothing is
+   saved until one is picked. `absentReasonOpen` holds the cells currently asking ("pid" or "pid_dayN"). */
+const absentReasonOpen = new Set();
+function absentReasonRowHtml(pid, current, pickCall, cancelCall){
+  return `<div class="absent-reasons"><span class="small-note">Why absent?</span>
+    ${ABSENT_REASONS.map(r=>`<button class="att-btn reason ${current===r?'active':''}" onclick="${pickCall.replace('%R%', r)}">${r}</button>`).join('')}
+    ${cancelCall ? `<button class="att-btn" style="color:var(--muted);" onclick="${cancelCall}">Cancel</button>` : ''}</div>`;
+}
+function askAbsentReason(key){ absentReasonOpen.add(key); afterTrainerRowChange(key.split('_day')[0]); }
+function cancelAbsentReason(key){ absentReasonOpen.delete(key); afterTrainerRowChange(key.split('_day')[0]); }
+
 function attendanceCellHtml(p){
   if(!hasValidDateAssignment(p)) return '—';
   if(isSplitPerson(p)){
@@ -2071,12 +2410,15 @@ function attendanceCellHtml(p){
     const d1 = att.day1 || {}, d2 = att.day2 || {};
     const dayBlock = (n, d)=>{
       const locked = n===2 && d1.status!=='Attended';
+      const rKey = p.id+'_day'+n;
+      const asking = absentReasonOpen.has(rKey);
       return `
       <div class="small-note" style="font-weight:800;margin:0 0 3px;">Day ${n}</div>
       <div class="attend-controls">
         <button class="att-btn attended ${d.status==='Attended'?'active':''}" ${locked?'disabled title="Day 1 must be marked Attended first"':''} onclick="setSplitAttendanceStatus('${p.id}',${n},'Attended')">Attended</button>
-        <button class="att-btn absent ${d.status==='Absent'?'active':''}" onclick="setSplitAttendanceStatus('${p.id}',${n},'Absent')">Absent</button>
+        <button class="att-btn absent ${d.status==='Absent'||asking?'active':''}" onclick="askAbsentReason('${rKey}')">Absent${d.status==='Absent'&&d.reason?' — '+esc(d.reason):''}</button>
       </div>
+      ${(asking || (d.status==='Absent' && !d.reason)) ? absentReasonRowHtml(p.id, d.reason, `setSplitAttendanceStatus('${p.id}',${n},'Absent','%R%')`, asking ? `cancelAbsentReason('${rKey}')` : '') : ''}
       ${locked ? `<div class="small-note" style="color:var(--danger);margin-top:2px;">Complete Day 1 first (here or via make-up elsewhere)</div>` : ''}
       ${d.status==='Attended' ? `<div class="attend-controls" style="margin-top:3px;">
         <button class="att-btn ontime ${(d.punctuality||'On Time')==='On Time'?'active':''}" onclick="setSplitPunctuality('${p.id}',${n},'On Time')">On Time</button>
@@ -2094,15 +2436,21 @@ function attendanceCellHtml(p){
   const att = ops.attendance[p.id];
   const status = att && att.status;
   const punct = (att && att.punctuality) || 'On Time';
+  const asking = absentReasonOpen.has(p.id);
   let html = `<div class="attend-controls">
       <button class="att-btn attended ${status==='Attended'?'active':''}" onclick="setAttendanceStatus('${p.id}','Attended')">Attended</button>
-      <button class="att-btn absent ${status==='Absent'?'active':''}" onclick="setAttendanceStatus('${p.id}','Absent')">Absent</button>
+      <button class="att-btn absent ${status==='Absent'||asking?'active':''}" onclick="askAbsentReason('${p.id}')">Absent${status==='Absent'&&att.reason?' — '+esc(att.reason):''}</button>
     </div>`;
+  if(asking || (status==='Absent' && !att.reason)){
+    html += absentReasonRowHtml(p.id, att && att.reason, `setAttendanceStatus('${p.id}','Absent','%R%')`, asking ? `cancelAbsentReason('${p.id}')` : '');
+  }
   if(status==='Attended'){
     html += `<div class="attend-controls" style="margin-top:3px;">
       <button class="att-btn ontime ${punct==='On Time'?'active':''}" onclick="setPunctuality('${p.id}','On Time')">On Time</button>
       <button class="att-btn late ${punct==='Late'?'active':''}" onclick="setPunctuality('${p.id}','Late')">Late</button>
     </div>`;
+    // Late arrival time (this used to be its own "Late Arrival Time" column)
+    if(punct==='Late') html += `<input type="time" value="${att.time||''}" style="width:85px;margin-top:3px;" title="Late arrival time" onchange="onAttendanceTimeChange('${p.id}', this.value)">`;
   }
   if(status){
     html += `<div style="margin-top:3px;"><button class="att-btn" style="color:var(--muted);" onclick="clearAttendanceStatus('${p.id}')">↺ Clear</button></div>`;
@@ -2122,8 +2470,10 @@ async function clearAttendanceStatus(pid){
   toast('Attendance cleared','ok');
   saveShared(K_OPS, ()=>ops);
 }
-async function setSplitAttendanceStatus(pid, dayNum, status){
+async function setSplitAttendanceStatus(pid, dayNum, status, reason){
   if(!requireTrainerIdentity()) return;
+  if(status==='Absent' && !reason){ askAbsentReason(pid+'_day'+dayNum); return; }
+  absentReasonOpen.delete(pid+'_day'+dayNum);
   const prev = ops.attendance[pid] || {};
   if(dayNum===2 && status==='Attended' && (!prev.day1 || prev.day1.status!=='Attended')){
     toast(`Can't mark Day 2 as Attended — Day 1 hasn't been completed yet. Have them make up Day 1 in another group first.`,'err');
@@ -2138,10 +2488,12 @@ async function setSplitAttendanceStatus(pid, dayNum, status){
     delete sub.punctuality;
     sub.time = '';
   }
+  if(status==='Absent') sub.reason = reason; else delete sub.reason;
   const updated = {...prev, [key]: sub};
   if(dayNum===1 && status==='Absent'){
     // Absent on Day 1 automatically makes Day 2 Absent too — can't attend Day 2 without Day 1.
-    updated.day2 = {status:'Absent', markedBy: currentTrainerIdentity, markedAt: nowIso()};
+    updated.day2 = {status:'Absent', reason, markedBy: currentTrainerIdentity, markedAt: nowIso()};
+    absentReasonOpen.delete(pid+'_day2');
   }
   ops.attendance[pid] = updated;
   afterTrainerRowChange(pid);
@@ -2161,13 +2513,6 @@ async function setSplitPunctuality(pid, dayNum, punct){
   toast('Updated','ok');
   saveShared(K_OPS, ()=>ops);
 }
-function arrivalCellHtml(p){
-  if(!hasValidDateAssignment(p)) return '—';
-  if(isSplitPerson(p)) return '<span class="small-note">See Day 1/2 above</span>';
-  const att = ops.attendance[p.id];
-  if(!att || att.status!=='Attended' || (att.punctuality||'On Time')!=='Late') return '—';
-  return `<input type="time" value="${att.time||''}" style="width:85px" onchange="onAttendanceTimeChange('${p.id}', this.value)">`;
-}
 // The note is the pharmacist's `note` on the roster: what the trainer types here is saved with the pharmacist,
 // and anything typed in the sheet shows here — and to the pharmacist's supervisor on the supervisor page.
 function noteCellHtml(p){
@@ -2183,16 +2528,13 @@ function trainerRowCells(p, rownum){
   const days = trainingConfig.dates;
   return `
       ${bulkCheckboxCell('trainer', p.id)}
-      <td class="name-cell"><span class="rownum">${rownum}</span>${esc(p.displayName)}</td>
-      <td>${esc(p.email||'—')}</td>
+      <td><span class="rownum">${rownum}</span>${cityCellHtml(p)}</td>
       <td>${esc(p.supervisor)}</td>
-      <td>${esc(p.district||'—')}</td>
-      <td>${esc(p.areaManager||'—')}</td>
-      <td>${cityCellHtml(p)}</td>
       <td class="no-truncate">${dateCellHtml(p, true, days, 'onTrainerAssignChange')}</td>
+      <td class="email-cell">${esc(p.email||'—')}</td>
+      <td class="name-cell">${esc(p.displayName)}</td>
       <td>${completionCellHtml(p)}</td>
       <td class="no-truncate">${attendanceCellHtml(p)}</td>
-      <td>${arrivalCellHtml(p)}</td>
       <td>${noteCellHtml(p)}</td>`;
 }
 
@@ -2206,7 +2548,7 @@ function renderTrainerTable(){
   const dateId = singleSelectedDate();
   if(dateId) renderSessionSummary(dateId);
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="12" class="empty-msg">No records match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No records match the current filters</td></tr>`;
     updateSortIndicators('trainer');
     bulkSyncAfterRender('trainer', []);
     return;
@@ -2267,16 +2609,20 @@ function requireTrainerIdentity(){
   return true;
 }
 
-async function setAttendanceStatus(pid, status){
+async function setAttendanceStatus(pid, status, reason){
   if(!requireTrainerIdentity()) return;
+  if(status==='Absent' && !reason){ askAbsentReason(pid); return; }
+  absentReasonOpen.delete(pid);
   const prev = ops.attendance[pid] || {};
   let record = {...prev, status, markedBy: currentTrainerIdentity, markedAt: nowIso()};
   if(status==='Attended'){
     if(!record.punctuality) record.punctuality = 'On Time';
     if(record.punctuality==='On Time') record.time = '';
+    delete record.reason;
   } else {
     delete record.punctuality;
     record.time = '';
+    record.reason = reason;
   }
   ops.attendance[pid] = record;
   afterTrainerRowChange(pid);
@@ -2553,14 +2899,141 @@ async function refreshTrainer(){
 
 /* ═══════════════════════════════ APPROVALS ═══════════════════════════════ */
 // `leaveRequests`, when passed, is a freshly-loaded list the caller already has — avoids fetching it again just for the dot count.
+let changeRequestsCache = [], submissionsCache = [];
 async function updatePendingDot(leaveRequests){
+  if(isAdminRole()) return;
   const n = pendingList.filter(p=>p.status==='Pending').length;
   const quotaCount = Object.values(ops.assignments||{}).filter(a=>a.type==='date' && a.overQuota && !a.quotaApproved).length;
-  const lr = leaveRequests || await getShared(K_LEAVE_REQUESTS, []);
+  // one request for whatever isn't already in hand
+  const keys = [K_CHANGE_REQ, K_SUBMISSIONS].concat(leaveRequests ? [] : [K_LEAVE_REQUESTS]);
+  const r = await getSharedMany(keys, {[K_CHANGE_REQ]:changeRequestsCache, [K_SUBMISSIONS]:submissionsCache, [K_LEAVE_REQUESTS]:[]});
+  changeRequestsCache = r[K_CHANGE_REQ] || [];
+  submissionsCache = r[K_SUBMISSIONS] || [];
+  const lr = leaveRequests || r[K_LEAVE_REQUESTS] || [];
   const leaveCount = lr.filter(x=>x.status==='Pending').length;
-  const total = n + quotaCount + leaveCount;
+  const changeCount = changeRequestsCache.filter(x=>x.status==='Pending').length;
+  const subCount = submissionsCache.filter(x=>x.status==='New').length;
+  const total = n + quotaCount + leaveCount + changeCount + subCount;
   const dot = document.getElementById('pendingDot');
   if(dot) dot.innerHTML = total>0 ? `<span class="dot-badge">${total}</span>` : '';
+  if(subCount && !updatePendingDot.toldSubs){
+    updatePendingDot.toldSubs = true;
+    toast(`${subCount} new supervisor submission(s) — see the Approvals tab`, 'info');
+  }
+}
+
+/* ═══════════════════════════════ SUPERVISOR SUBMISSIONS + DATE CHANGE REQUESTS ═══════════════════════════════
+   Submissions are written by the server when a supervisor presses Submit (it also locks their choices). A Date
+   Change Request comes from a supervisor for a locked pharmacist; approving applies it — still locked for them. */
+function assignmentText(a){
+  if(!a) return 'Not Assigned';
+  if(a.type==='leave') return a.status;
+  const d = dayById(a.dateId);
+  return d ? shortDayText(d) : 'Not Assigned (deleted day)';
+}
+async function renderSubmissions(){
+  submissionsCache = await getShared(K_SUBMISSIONS, []);
+  const tb = document.getElementById('submissionsBody');
+  if(!tb) return;
+  const list = submissionsCache.slice().sort((a,b)=>String(b.submittedAt||'').localeCompare(String(a.submittedAt||''))).slice(0,100);
+  if(!list.length){ tb.innerHTML = `<tr><td colspan="7" class="empty-msg">No submissions yet</td></tr>`; return; }
+  tb.innerHTML = list.map((s,i)=>`
+    <tr>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(s.supervisor)} ${s.status==='New'?'<span class="badge badge-date">New</span>':''}</td>
+      <td>${s.submittedAt ? new Date(s.submittedAt).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'}) : '—'}</td>
+      <td>${s.newlyLocked||0}</td>
+      <td>${s.dates||0}</td>
+      <td>${s.leaves||0}</td>
+      <td>${s.unassigned||0}</td>
+      <td class="no-truncate">${s.status==='New' ? `<button class="btn btn-outline btn-sm" onclick="markSubmissionSeen('${s.id}')">✓ Seen</button>` : '<span class="small-note">Seen</span>'}</td>
+    </tr>`).join('');
+}
+async function markSubmissionSeen(id){
+  submissionsCache = await getShared(K_SUBMISSIONS, []);
+  const s = submissionsCache.find(x=>x.id===id);
+  if(!s) return;
+  s.status = 'Seen'; s.seenAt = nowIso();
+  if(await setShared(K_SUBMISSIONS, submissionsCache)){ renderSubmissions(); updatePendingDot(leaveRequestsCache); }
+}
+
+async function renderChangeRequests(){
+  changeRequestsCache = await getShared(K_CHANGE_REQ, []);
+  const tb = document.getElementById('changeRequestsBody');
+  if(!tb) return;
+  const list = changeRequestsCache.filter(x=>x.status==='Pending');
+  if(!list.length){ tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No date change requests waiting</td></tr>`; return; }
+  tb.innerHTML = list.map((cr,i)=>{
+    const p = masterData.find(m=>m.id===cr.pharmacistId);
+    const cur = ops.assignments[cr.pharmacistId];
+    return `<tr>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(cr.displayName)}</td>
+      <td class="email-cell">${esc((p&&p.email)||cr.email||'—')}</td>
+      <td>${esc(cr.supervisor)}</td>
+      <td>${esc(assignmentText(cur))}</td>
+      <td><b>${esc(assignmentText(cr.to))}</b></td>
+      <td style="white-space:normal;max-width:240px;">${esc(cr.reason||'—')}</td>
+      <td>${cr.requestedAt ? new Date(cr.requestedAt).toLocaleDateString('en-GB') : '—'}</td>
+      <td class="no-truncate">
+        <button class="btn btn-ok btn-sm" onclick="approveChangeRequest('${cr.id}')">✔ Approve</button>
+        <button class="btn btn-danger btn-sm" onclick="rejectChangeRequest('${cr.id}')">✕ Reject</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+async function approveChangeRequest(id){
+  changeRequestsCache = await getShared(K_CHANGE_REQ, []);
+  const cr = changeRequestsCache.find(x=>x.id===id);
+  if(!cr || cr.status!=='Pending'){ toast('This request was already decided','info'); renderChangeRequests(); return; }
+  const p = masterData.find(m=>m.id===cr.pharmacistId);
+  if(!p){ toast('That pharmacist is no longer on the roster','err'); return; }
+  ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
+  const to = cr.to || null;
+  if(to && to.type==='date'){
+    const day = dayById(to.dateId);
+    if(!day){ toast('The requested training day no longer exists — reject the request instead','err'); return; }
+    if(isDayFull(to.dateId, p.id) && !await confirmDialog(`${shortDayText(day)} is full (${dayCount(to.dateId)} / ${dayCapacity(day)}). Approve anyway?`)) return;
+  }
+  if(hasAttendedTraining(p) && !await confirmDialog(`${p.displayName} already attended their training. Change it anyway? Their attendance will be cleared.`)) return;
+  const prev = ops.assignments[p.id];
+  const by = `${cr.supervisor} (change approved)`;
+  // the approved choice stays locked for the supervisor, like the rest of their submission
+  const lock = {locked:true, lockedAt: nowIso()};
+  if(!to){ delete ops.assignments[p.id]; delete ops.attendance[p.id]; }
+  else if(to.type==='leave'){ ops.assignments[p.id] = {type:'leave', status:to.status, assignedBy:by, assignedAt:nowIso(), ...lock}; delete ops.attendance[p.id]; }
+  else {
+    ops.assignments[p.id] = {type:'date', dateId:to.dateId, assignedBy:by, assignedAt:nowIso(), overQuota:false, quotaApproved:true, ...lock};
+    if(!prev || prev.type!=='date' || prev.dateId!==to.dateId) delete ops.attendance[p.id];
+  }
+  if(!await setShared(K_OPS, ops)) return;
+  cr.status = 'Approved'; cr.decidedAt = nowIso();
+  if(await setShared(K_CHANGE_REQ, changeRequestsCache)){
+    await pushNotification(cr.supervisor, `${cr.displayName} — Date Change to ${assignmentText(to)}`, 'Approved');
+    toast('Approved — change applied','ok');
+    renderChangeRequests(); renderTrainerTable(); updatePendingDot(leaveRequestsCache);
+  }
+}
+function rejectChangeRequest(id){
+  const cr = changeRequestsCache.find(x=>x.id===id);
+  showModal(`
+    <h3>Reject Date Change Request</h3>
+    <p class="small-note">Rejecting ${cr?'<b>'+esc(cr.displayName)+'</b>&#39;s':'this'} request — the current date stays. The supervisor sees the reason in their notifications.</p>
+    <div class="field"><label class="field-label">Reason for rejection (optional)</label><textarea id="rejectChangeReasonInput" rows="3"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger btn-sm" onclick="confirmRejectChangeRequest('${id}')">Reject</button>
+    </div>`);
+}
+async function confirmRejectChangeRequest(id){
+  const reason = document.getElementById('rejectChangeReasonInput').value.trim();
+  closeModal();
+  changeRequestsCache = await getShared(K_CHANGE_REQ, []);
+  const cr = changeRequestsCache.find(x=>x.id===id);
+  if(!cr) return;
+  cr.status = 'Rejected'; cr.decidedAt = nowIso(); cr.rejectionReason = reason;
+  if(await setShared(K_CHANGE_REQ, changeRequestsCache)){
+    await pushNotification(cr.supervisor, `${cr.displayName} — Date Change to ${assignmentText(cr.to)}`, 'Rejected', reason);
+    toast('Rejected','ok'); renderChangeRequests(); updatePendingDot(leaveRequestsCache);
+  }
 }
 
 let apprSortState = {key:null, dir:1};
@@ -2607,7 +3080,7 @@ function renderQuotaApprovals(){
   tb.innerHTML = items.map((it,i)=>`
     <tr>
       <td class="name-cell"><span class="rownum">${i+1}</span>${esc(it.p.displayName)}</td>
-      <td>${esc(it.p.email||'—')}</td>
+      <td class="email-cell">${esc(it.p.email||'—')}</td>
       <td>${esc(it.p.supervisor)}</td>
       <td>${esc(dayGroupText(it.day))}</td>
       <td>
@@ -2617,7 +3090,7 @@ function renderQuotaApprovals(){
     </tr>`).join('');
 }
 async function approveQuota(pid){
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+  ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
   if(ops.assignments[pid]){ ops.assignments[pid].quotaApproved = true; }
   const ok = await setShared(K_OPS, ops);
   if(ok){
@@ -2643,7 +3116,7 @@ function rejectQuota(pid){
 async function confirmRejectQuota(pid){
   const reason = document.getElementById('rejectQuotaReasonInput').value.trim();
   closeModal();
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+  ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
   const p = masterData.find(m=>m.id===pid);
   delete ops.assignments[pid];
   const ok = await setShared(K_OPS, ops);
@@ -2668,7 +3141,7 @@ async function renderLeaveRequests(){
   tb.innerHTML = list.map((lr,i)=>`
     <tr>
       <td class="name-cell"><span class="rownum">${i+1}</span>${esc(lr.displayName)}</td>
-      <td>${esc(((masterData.find(m=>m.id===lr.pharmacistId))||{}).email||'—')}</td>
+      <td class="email-cell">${esc(((masterData.find(m=>m.id===lr.pharmacistId))||{}).email||'—')}</td>
       <td>${esc(lr.supervisor)}</td>
       <td>${new Date(lr.requestedAt).toLocaleDateString('en-GB')}</td>
       <td>
@@ -2681,7 +3154,7 @@ async function approveLeaveRequest(lrId){
   leaveRequestsCache = await getShared(K_LEAVE_REQUESTS, []);
   const lr = leaveRequestsCache.find(x=>x.id===lrId);
   if(!lr) return;
-  ops = await getShared(K_OPS, {assignments:{}, attendance:{}});
+  ops = await getShared(K_OPS, {assignments:{}, attendance:{}, shifts:{}});
   ops.assignments[lr.pharmacistId] = {type:'leave', status:'Annual Leave', assignedBy:lr.supervisor, assignedAt: nowIso()};
   const ok1 = await setShared(K_OPS, ops);
   lr.status = 'Approved';
@@ -2718,7 +3191,7 @@ async function confirmRejectLeaveRequest(lrId){
 
 async function renderApprovalsTab(){
   renderQuotaApprovals();
-  await renderLeaveRequests();
+  await Promise.all([renderLeaveRequests(), renderSubmissions(), renderChangeRequests()]);
   let list = pendingList.filter(p=>p.status==='Pending');
   list = genericSort(list, apprSortState, (p,k)=> k==='addedAt' ? p.addedAt : String(p[k]||'').toLowerCase());
   const tb = document.getElementById('approvalsTableBody');
@@ -2765,7 +3238,7 @@ function renderApprovalsHistory(){
   tb.innerHTML = list.map((p,i)=>`
     <tr>
       <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p.displayName)}</td>
-      <td>${esc(p.email||'—')}</td>
+      <td class="email-cell">${esc(p.email||'—')}</td>
       <td>${esc(p.supervisor)}</td>
       <td><span class="badge ${p.status==='Approved'?'badge-date':'badge-leave'}">${esc(p.status)}</span></td>
       <td>${esc(p.rejectionReason||'—')}</td>
@@ -3049,7 +3522,7 @@ function renderMasterSheetPreview(){
   let list = applyMasterFilters(masterData);
   list = applySort('master', list);
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="13" class="empty-msg">No data matches the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="14" class="empty-msg">No data matches the current filters</td></tr>`;
     updateSortIndicators('master');
     return;
   }
@@ -3065,18 +3538,19 @@ function renderMasterSheetPreview(){
       <td>${esc(r.dateText)}</td>
       <td>${dash(r.pharmacyNo)}</td>
       <td>${dash(r.employeeId)}</td>
-      <td>${dash(r.email)}</td>
+      <td class="email-cell">${dash(r.email)}</td>
       <td class="name-cell">${esc(r.displayName)}</td>
       <td>${dash(r.phone)}</td>
       <td>${dash(r.scfhs)}</td>
       <td>${esc(r.statusText)}</td>
+      <td>${dash(r.workShift)}</td>
       <td>${dash(r.note)}</td>
     </tr>`;
   }).join('');
   updateSortIndicators('master');
 }
 
-const MASTER_SHEET_HEADERS = ['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Notes'];
+const MASTER_SHEET_HEADERS = ['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Work Shift','Notes'];
 async function exportMasterSheet(){
   // Exports the rows in the order the preview shows them (filtered + sorted).
   const list = applySort('master', applyMasterFilters(masterData));
@@ -3085,7 +3559,7 @@ async function exportMasterSheet(){
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
-    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.pharmacyNo,r.employeeId,r.email,r.displayName,r.phone,r.scfhs,r.statusText,r.note]);
+    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.pharmacyNo,r.employeeId,r.email,r.displayName,r.phone,r.scfhs,r.statusText,r.workShift,r.note]);
   });
   const colWidths = computeAutoColWidths_(headers, rows);
   const statusColIndex = headers.indexOf('Attendance Status');

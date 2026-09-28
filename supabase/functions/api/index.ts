@@ -12,6 +12,8 @@
 // Secrets to set (Dashboard → Edge Functions → Manage secrets, or `supabase secrets set`):
 //   TRAINER_USER   the trainer-page username
 //   TRAINER_PASS   the trainer-page password
+//   ADMIN_USER     the admin (Attendance-tab-only) username   — optional; admin sign-in is off until both are set
+//   ADMIN_PASS     the admin password
 //   TOKEN_SECRET   any long random string (used to sign tokens). Optional — if unset,
 //                  one is generated and stored in kv_cache on first use.
 // SUPABASE_DB_URL is provided automatically by Supabase.
@@ -78,20 +80,27 @@ async function route(req: any) {
     case "getMany": return { ok: true, data: await getMany(ctx, req.keys) };
     case "patch": return await patchKey(ctx, req);
     case "venues": requireTrainer(ctx); return { ok: true, venues: await venues() };
+    case "submit": return await submitSupervisor(ctx);
+    case "ping": return await pingPresence(ctx);
+    case "presence": requireTrainer(ctx); return { ok: true, ...(await presence()) };
   }
   throw new Error("Unknown action");
 }
 
 /* ═════════ Auth ═════════ */
-type Ctx = { role: "trainer" | "supervisor"; who?: string; user?: string };
+// "admin" is the lower-access training-team login: the Attendance tab only (roster, dates, attendance, notes).
+type Ctx = { role: "trainer" | "admin" | "supervisor"; who?: string; user?: string };
 function requireTrainer(ctx: Ctx) {
   if (ctx.role !== "trainer") throw new Error("Trainer login required.");
+}
+function requireStaff(ctx: Ctx) {
+  if (ctx.role !== "trainer" && ctx.role !== "admin") throw new Error("Trainer login required.");
 }
 async function authenticate(req: any): Promise<Ctx> {
   if (req.token) {
     const p = await verifyToken(req.token);
     if (!p) throw new Error("Session expired — please sign in again.");
-    return { role: "trainer", user: p.u };
+    return { role: p.r === "admin" ? "admin" : "trainer", user: p.u };
   }
   if (req.supervisor) {
     // Indexed existence check instead of pulling the whole distinct-supervisor list on every request.
@@ -140,12 +149,12 @@ async function sign(payload: string): Promise<string> {
   const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
   return b64urlFromBytes(new Uint8Array(sig));
 }
-async function makeToken(user: string): Promise<string> {
+async function makeToken(user: string, role: "trainer" | "admin"): Promise<string> {
   const exp = Date.now() + CONFIG.TOKEN_TTL_HOURS * 3600 * 1000;
-  const payload = b64urlFromBytes(encoder.encode(JSON.stringify({ u: user, e: exp })));
+  const payload = b64urlFromBytes(encoder.encode(JSON.stringify({ u: user, e: exp, r: role })));
   return payload + "." + (await sign(payload));
 }
-async function verifyToken(tok: unknown): Promise<{ u: string; e: number } | null> {
+async function verifyToken(tok: unknown): Promise<{ u: string; e: number; r?: string } | null> {
   if (!tok || typeof tok !== "string") return null;
   const parts = tok.split(".");
   if (parts.length !== 2) return null;
@@ -163,14 +172,30 @@ async function login(req: any) {
   if (!user || !pass) throw new Error("Trainer credentials are not configured on the server (Edge Function secrets).");
   const fails = Number((await kvGet("login_fails")) || 0);
   if (fails >= CONFIG.MAX_LOGIN_FAILS) throw new Error("Too many failed attempts. Please try again in a few minutes.");
-  const ok = safeEq(String(req.username || ""), user) && safeEq(String(req.password || ""), pass);
-  if (!ok) {
+  const u = String(req.username || ""), pw = String(req.password || "");
+  const adminUser = Deno.env.get("ADMIN_USER"), adminPass = Deno.env.get("ADMIN_PASS");
+  let role: "trainer" | "admin" | null = null;
+  if (safeEq(u, user) && safeEq(pw, pass)) role = "trainer";
+  else if (adminUser && adminPass && safeEq(u, adminUser) && safeEq(pw, adminPass)) role = "admin";
+  if (!role) {
     await kvPut("login_fails", String(fails + 1), CONFIG.LOCKOUT_MINUTES * 60);
     await new Promise((r) => setTimeout(r, 1000));
     throw new Error("Invalid username or password.");
   }
   await kvRemove("login_fails");
-  return { ok: true, token: await makeToken(user), ttlHours: CONFIG.TOKEN_TTL_HOURS };
+  return { ok: true, token: await makeToken(u, role), role, ttlHours: CONFIG.TOKEN_TTL_HOURS };
+}
+
+/* ═════════ Who's online (supervisors ping while their page is open) ═════════ */
+const PRESENCE_TTL_SECONDS = 150;   // the page pings every 60s, so a closed tab drops off within ~2.5 minutes
+async function pingPresence(ctx: Ctx) {
+  if (ctx.role !== "supervisor") return { ok: true };
+  await kvPut("presence:" + ctx.who, nowIso(), PRESENCE_TTL_SECONDS);
+  return { ok: true };
+}
+async function presence() {
+  const rows = await sql`select key from kv_cache where key like 'presence:%' and expires_at > now()`;
+  return { count: rows.length };
 }
 
 /* ═════════ kv_cache (replaces CacheService) ═════════ */
@@ -249,7 +274,10 @@ async function getMany(ctx: Ctx, keys: string[]) {
   for (const k of keys) out[k] = await getKey(ctx, k);
   return out;
 }
+// The admin login only ever sees the Attendance tab: roster, operations and training days (plus the new-pharmacist list the page loads with them).
+const ADMIN_KEYS = ["master-pharmacists", "operations", "training-config", "pending-pharmacists"];
 async function getKey(ctx: Ctx, key: string) {
+  if (ctx.role === "admin" && ADMIN_KEYS.indexOf(key) === -1) throw new Error("Not available for this login.");
   switch (key) {
     case "master-pharmacists": return await getMaster(ctx);
     case "operations": return await getOps(ctx);
@@ -258,7 +286,9 @@ async function getKey(ctx: Ctx, key: string) {
     case "pending-pharmacists":
     case "leave-requests":
     case "quota-approval-history":
-    case "pharmacist-notifications": return await getTable(ctx, key);
+    case "pharmacist-notifications":
+    case "change-requests": return await getTable(ctx, key);
+    case "supervisor-submissions": requireTrainer(ctx); return await getTable(ctx, key);
   }
   throw new Error("Unknown data key.");
 }
@@ -276,11 +306,11 @@ function masterOf(r: any) {
 // than fetching the whole roster and discarding it. (Supervisors deliberately never get phone/licence details.)
 async function getMaster(ctx: Ctx) {
   if (ctx.role === "supervisor") {
-    const rows = await sql`select id, district, area_manager, city, supervisor, email, display_name, note, completion_pct
+    const rows = await sql`select id, district, area_manager, city, supervisor, pharmacy_no, email, display_name, note, completion_pct
                            from pharmacists where display_name <> '' and supervisor = ${ctx.who} order by created_at`;
     return { records: rows.map((r: any) => {
       const m: any = { id: r.id, district: r.district, areaManager: r.area_manager, city: r.city,
-        supervisor: r.supervisor, email: r.email, displayName: r.display_name, note: r.note };
+        supervisor: r.supervisor, pharmacyNo: r.pharmacy_no, email: r.email, displayName: r.display_name, note: r.note };
       if (r.completion_pct !== null && r.completion_pct !== undefined && r.completion_pct !== "") m.completionPct = r.completion_pct;
       return { id: m.id, v: m };
     }), settings: {} };
@@ -291,17 +321,17 @@ async function getMaster(ctx: Ctx) {
   return { records: rows.map((r: any) => ({ id: r.id, v: masterOf(r) })), settings: {} };
 }
 async function getOps(ctx: Ctx) {
-  const rows = await sql`select id, supervisor, assignment, attendance from pharmacists
-                         where assignment is not null or attendance is not null`;
+  const rows = await sql`select id, supervisor, assignment, attendance, work_shift from pharmacists
+                         where assignment is not null or attendance is not null or work_shift <> ''`;
   const recs: any[] = [];
   for (const r of rows) {
-    const a = r.assignment, t = r.attendance;
-    if (!a && !t) continue;
+    const a = r.assignment, t = r.attendance, s = r.work_shift || null;
+    if (!a && !t && !s) continue;
     if (ctx.role === "supervisor" && r.supervisor !== ctx.who) {
       if (a && a.type === "date") recs.push({ id: r.id, v: { a: { type: "date", dateId: a.dateId } } });
       continue;
     }
-    recs.push({ id: r.id, v: { a, t } });
+    recs.push({ id: r.id, v: { a, t, s } });
   }
   return { records: recs, settings: {} };
 }
@@ -319,7 +349,7 @@ async function getConfig(ctx: Ctx) {
   let days = await daysList();
   const st = await settingsMap();
   let settings: Record<string, any> = {};
-  ["maxCapacity", "trainerNames", "coordinatorNames", "trainingNames", "completionCourse", "completionLastSynced"].forEach((k) => {
+  ["maxCapacity", "trainerNames", "coordinatorNames", "trainingNames", "cityRoster", "completionCourse", "completionLastSynced"].forEach((k) => {
     if (Object.prototype.hasOwnProperty.call(st, k) && st[k] !== null) settings[k] = st[k];
   });
   if (ctx.role === "supervisor") {
@@ -342,6 +372,8 @@ const APPROVAL_TYPE: Record<string, string> = {
   "pending-pharmacists": "New Pharmacist",
   "leave-requests": "Annual Leave",
   "quota-approval-history": "Over-Quota Decision",
+  "change-requests": "Date Change",
+  "supervisor-submissions": "Submission",
 };
 function approvalFromRow(r: any) {
   const obj = (r.data && typeof r.data === "object") ? { ...r.data } : { id: r.id };
@@ -376,15 +408,18 @@ async function patchKey(ctx: Ctx, req: any) {
   const key = req.key;
   const records = req.records || {};
   const settings = req.settings || {};
+  if (ctx.role === "admin" && key !== "operations" && key !== "master-pharmacists") throw new Error("Not available for this login.");
   switch (key) {
     case "operations": await patchOps(ctx, records); break;
-    case "master-pharmacists": requireTrainer(ctx); await patchMaster(records); break;
+    case "master-pharmacists": requireStaff(ctx); await patchMaster(records); break;
     case "training-config": requireTrainer(ctx); await patchConfig(records, settings); break;
     case "company-logo": requireTrainer(ctx); await patchSettings({ logo: settings.logo === undefined ? null : settings.logo }); break;
     case "pending-pharmacists":
     case "leave-requests":
+    case "change-requests":
     case "pharmacist-notifications": await patchTableGuarded(ctx, key, records); break;
-    case "quota-approval-history": requireTrainer(ctx); await patchApprovals(key, records); break;
+    case "quota-approval-history":
+    case "supervisor-submissions": requireTrainer(ctx); await patchApprovals(key, records); break;
     default: throw new Error("Unknown data key.");
   }
   return { ok: true };
@@ -462,7 +497,7 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
     if (changesAssignment) await tx`select pg_advisory_xact_lock(911)`;
 
     // Read ONLY the rows being changed, instead of the whole roster.
-    const rows = await tx`select id, supervisor, city, assignment, attendance from pharmacists where id in ${tx(ids)}`;
+    const rows = await tx`select id, supervisor, city, assignment, attendance, work_shift from pharmacists where id in ${tx(ids)}`;
     const byId: Record<string, any> = {};
     for (const r of rows) byId[r.id] = r;
 
@@ -495,35 +530,49 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
       }
     };
 
-    const updates: { id: string; a: any; t: any }[] = [];
+    const has = (o: any, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+    const updates: { id: string; a: any; t: any; s: string }[] = [];
     for (const id of ids) {
       const row = byId[id];
       if (!row) continue;
       const rec = records[id] || {};
       const curA = row.assignment, curT = row.attendance;
-      let a = Object.prototype.hasOwnProperty.call(rec, "a") ? rec.a : curA;
-      const t = Object.prototype.hasOwnProperty.call(rec, "t") ? rec.t : curT;
+      let a = has(rec, "a") ? rec.a : curA;
+      const t = has(rec, "t") ? rec.t : curT;
+      const s = has(rec, "s") ? (rec.s || "") : (row.work_shift || "");
+      if (s && WORK_SHIFTS.indexOf(s) === -1) throw new Error("Invalid work shift.");
       const sup = row.supervisor;
 
       if (ctx.role === "supervisor") {
         if (sup !== ctx.who) throw new Error("Not allowed: that pharmacist belongs to another supervisor.");
-        if (Object.prototype.hasOwnProperty.call(rec, "t") && rec.t !== null) throw new Error("Only trainers can record attendance.");
+        if (has(rec, "t") && rec.t !== null) throw new Error("Only trainers can record attendance.");
+        if (has(rec, "t") && !has(rec, "a")) throw new Error("Only trainers can change attendance.");
+        const changing = has(rec, "a") && !sameAssignment(curA, rec.a);
         // Once a pharmacist has attended, only the training team may change their assignment (or clear the attendance).
-        if (hasAttended(curT) && ((Object.prototype.hasOwnProperty.call(rec, "a") && !sameAssignment(curA, rec.a)) || Object.prototype.hasOwnProperty.call(rec, "t"))) {
+        if (hasAttended(curT) && (changing || has(rec, "t"))) {
           throw new Error("This pharmacist already attended their training — only the training team can change it.");
         }
-        if (Object.prototype.hasOwnProperty.call(rec, "a")) {
+        // After Submit the choice is locked — except for a pharmacist who missed their training (Absent / Partial),
+        // who can be booked onto a new day the training team opened for this supervisor.
+        if (changing && curA && curA.locked && !isFailed(curT)) {
+          throw new Error("This pharmacist's date was submitted and is locked — use Request Change.");
+        }
+        if (changing) {
           bump(curA, sup, -1);
           try {
-            a = validateSupervisorAssignment(ctx, row, curA, rec.a, days, counts, supCounts, defaultCap);
+            a = validateSupervisorAssignment(ctx, row, curA, rec.a, curT, days, counts, supCounts, defaultCap);
           } catch (e) { bump(curA, sup, +1); throw e; }
           bump(a, sup, +1);
+        } else {
+          a = curA;   // nothing actually changed — never let a resent copy drop or add the lock
         }
-      } else if (Object.prototype.hasOwnProperty.call(rec, "a")) {
+      } else if (has(rec, "a")) {
+        // The training team's own changes keep a submitted pharmacist locked for their supervisor.
+        if (a && curA && curA.locked && !has(a, "locked")) a = { ...a, locked: true, lockedAt: curA.lockedAt || nowIso() };
         bump(curA, sup, -1);
         bump(a, sup, +1);
       }
-      updates.push({ id, a, t });
+      updates.push({ id, a, t, s });
     }
 
     // One statement for the whole batch — a bulk assign of 50 people is 1 round trip, not 50.
@@ -531,13 +580,48 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
       const uIds = updates.map((u) => u.id);
       const uA = updates.map((u) => (u.a == null ? null : JSON.stringify(u.a)));
       const uT = updates.map((u) => (u.t == null ? null : JSON.stringify(u.t)));
+      const uS = updates.map((u) => u.s);
       await tx`update pharmacists p
-               set assignment = d.a::jsonb, attendance = d.t::jsonb
+               set assignment = d.a::jsonb, attendance = d.t::jsonb, work_shift = d.s
                from (select unnest(${uIds}::text[]) as id,
                             unnest(${uA}::text[]) as a,
-                            unnest(${uT}::text[]) as t) d
+                            unnest(${uT}::text[]) as t,
+                            unnest(${uS}::text[]) as s) d
                where p.id = d.id`;
     }
+  });
+}
+
+const WORK_SHIFTS = ["Morning Shift", "Night Shift"];
+
+// Missed their training: absent, or absent on one day of a 2-day online training (Partial).
+function isFailed(t: any): boolean {
+  if (!t || typeof t !== "object" || hasAttended(t)) return false;
+  if (t.status === "Absent") return true;
+  return !!((t.day1 && t.day1.status === "Absent") || (t.day2 && t.day2.status === "Absent"));
+}
+
+/* ---------- Submit: lock every choice the supervisor has made so far and tell the training team ---------- */
+async function submitSupervisor(ctx: Ctx) {
+  if (ctx.role !== "supervisor") throw new Error("Only supervisors can submit.");
+  const at = nowIso();
+  return await sql.begin(async (tx: any) => {
+    const locked = await tx`update pharmacists
+                            set assignment = assignment || ${sql.json({ locked: true, lockedAt: at })}::jsonb
+                            where supervisor = ${ctx.who} and assignment is not null
+                              and coalesce(assignment->>'locked', '') <> 'true'
+                            returning id`;
+    if (!locked.length) return { ok: true, locked: 0 };
+    const tot = await tx`select (count(*) filter (where assignment->>'type' = 'date'))::int as dates,
+                                (count(*) filter (where assignment->>'type' = 'leave'))::int as leaves,
+                                (count(*) filter (where assignment is null))::int as unassigned
+                         from pharmacists where supervisor = ${ctx.who} and display_name <> ''`;
+    const id = "sub_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const data = { id, supervisor: ctx.who, submittedAt: at, newlyLocked: locked.length,
+                   dates: tot[0].dates, leaves: tot[0].leaves, unassigned: tot[0].unassigned, status: "New" };
+    await tx`insert into approvals (id, type, status, supervisor, pharmacist, submitted_at, decided_at, reason, data)
+             values (${id}, 'Submission', 'New', ${ctx.who}, '', ${at}, '', '', ${sql.json(data)})`;
+    return { ok: true, locked: locked.length };
   });
 }
 
@@ -553,7 +637,16 @@ function sameAssignment(a: any, b: any): boolean {
   return a.type === "date" ? a.dateId === b.dateId : a.status === b.status;
 }
 
-function validateSupervisorAssignment(ctx: Ctx, row: any, oldA: any, newA: any, days: Record<string, any>, counts: Record<string, number>, supCounts: Record<string, Record<string, number>>, defaultCap: number) {
+// A day can be visible to a supervisor but not editable by them ("readOnlySupervisors"): they can see it, but
+// can't put pharmacists on it or take them off it — the training team does that (or approves a Request Change).
+function readOnlyFor(day: any, who: string | undefined) {
+  return !!(day && Array.isArray(day.readOnlySupervisors) && day.readOnlySupervisors.indexOf(who) !== -1);
+}
+function validateSupervisorAssignment(ctx: Ctx, row: any, oldA: any, newA: any, curT: any, days: Record<string, any>, counts: Record<string, number>, supCounts: Record<string, Record<string, number>>, defaultCap: number) {
+  if (oldA && oldA.type === "date" && !(newA && newA.type === "date" && newA.dateId === oldA.dateId)
+      && readOnlyFor(days[oldA.dateId], ctx.who) && !isFailed(curT)) {
+    throw new Error("The training team manages that day — use Request Change.");
+  }
   if (newA === null) return null;
   if (!newA || typeof newA !== "object") throw new Error("Invalid assignment.");
   if (newA.type === "leave") {
@@ -567,6 +660,7 @@ function validateSupervisorAssignment(ctx: Ctx, row: any, oldA: any, newA: any, 
   if (!sameDay) {
     if (day.active === false) throw new Error("That training day is not open.");
     if ((day.visibleSupervisors || []).indexOf(ctx.who) === -1) throw new Error("That training day is not available to you.");
+    if (readOnlyFor(day, ctx.who)) throw new Error("The training team manages that day — use Request Change.");
     const pharmacistOnline = String(row.city).trim().toLowerCase() === "online";
     if (pharmacistOnline !== !!day.isOnline) throw new Error("Online pharmacists can only join online days (and vice versa).");
     if (day.deadline) {
@@ -606,6 +700,8 @@ function approvalColumns(key: string, obj: any) {
   const base = { supervisor: obj.supervisor || "", pharmacist: obj.displayName || "", reason: obj.rejectionReason || "", data: obj };
   if (key === "pending-pharmacists") return { ...base, type: "New Pharmacist", status: obj.status || "Pending", submitted_at: obj.addedAt || "", decided_at: obj.decidedAt || "" };
   if (key === "leave-requests") return { ...base, type: "Annual Leave", status: obj.status || "Pending", submitted_at: obj.requestedAt || "", decided_at: obj.decidedAt || "" };
+  if (key === "change-requests") return { ...base, type: "Date Change", status: obj.status || "Pending", submitted_at: obj.requestedAt || "", decided_at: obj.decidedAt || "" };
+  if (key === "supervisor-submissions") return { ...base, type: "Submission", status: obj.status || "New", submitted_at: obj.submittedAt || "", decided_at: obj.seenAt || "" };
   // quota-approval-history
   return { ...base, type: "Over-Quota Decision", status: obj.status || "", submitted_at: "", decided_at: obj.decidedAt || "" };
 }
@@ -663,6 +759,10 @@ async function patchTableGuarded(ctx: Ctx, key: string, records: Record<string, 
     if (v.supervisor !== ctx.who) throw new Error("Requests can only be submitted for your own name.");
     if (ex && (ex.supervisor !== ctx.who || ex.status !== "Pending")) throw new Error("This request has already been decided.");
     if (v.status !== "Pending") throw new Error("New requests must start as Pending.");
+    if (key === "change-requests") {
+      const own = await sql`select 1 from pharmacists where id = ${String(v.pharmacistId || "")} and supervisor = ${ctx.who}`;
+      if (!own.length) throw new Error("Not allowed: that pharmacist belongs to another supervisor.");
+    }
     safe[id] = v;
   }
   if (key === "pharmacist-notifications") return await patchNotifications(safe);

@@ -168,6 +168,8 @@ thead th.no-sort:hover{background:var(--navy);}
 tbody td{padding:10px 14px;border-bottom:none;white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis;color:var(--text);}
 tbody tr{box-shadow:inset 0 -1px 0 0 var(--border);}
 tbody td.no-truncate{max-width:none;overflow:visible;}
+/* names and emails are never cut off (the table scrolls sideways instead) */
+tbody td.name-cell, tbody td.email-cell{max-width:none;overflow:visible;}
 tbody tr:nth-child(even){background:var(--row-alt);}
 tbody tr.pending-row{background:var(--pending-bg) !important;}
 tbody tr:hover{background:#eaf3fb;}
@@ -353,3 +355,30 @@ p.small-note{margin:0 0 6px;}
 .status-filter-tag{display:inline-flex;align-items:center;gap:6px;margin-left:10px;padding:3px 6px 3px 11px;border-radius:20px;background:var(--navy);color:#fff;font-size:11.5px;font-weight:700;vertical-align:middle;}
 .status-filter-tag button{background:rgba(255,255,255,.2);border:none;color:#fff;width:20px;height:20px;border-radius:50%;font-size:11px;line-height:1;cursor:pointer;padding:0;}
 .status-filter-tag button:hover{background:rgba(255,255,255,.35);}
+
+/* Supervisors online (trainer top bar) */
+.presence-pill{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);padding:5px 12px;border-radius:20px;font-weight:600;white-space:nowrap;}
+.presence-pill .dot{width:8px;height:8px;border-radius:50%;background:#3ddc84;box-shadow:0 0 0 3px rgba(61,220,132,.25);}
+.presence-pill.none .dot{background:#9aa9bb;box-shadow:none;}
+/* Absent reason (Interaction / Pharmacy / LMS) */
+.absent-reasons{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:4px;}
+.absent-reasons .small-note{font-weight:700;color:var(--danger);}
+.att-btn.reason.active{background:var(--danger-bg);border-color:var(--danger);color:var(--danger);}
+/* Edit Training Day: Visible / Editable table + collapsed optional fields */
+.vis-table-wrap{max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;}
+.vis-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+.vis-table th{position:sticky;top:0;background:var(--row-alt);text-align:left;padding:6px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);}
+.vis-table td{padding:5px 10px;border-bottom:1px solid var(--border);}
+.vis-table .vis-cb{text-align:center;width:80px;}
+.vis-table input:disabled{opacity:.35;}
+.opt-fields{margin:6px 0 4px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;}
+.opt-fields summary{cursor:pointer;font-weight:700;color:var(--navy);font-size:13px;}
+.opt-fields[open] summary{margin-bottom:8px;}
+/* Supervisor page */
+.retrain-note{margin-top:4px;font-size:10.5px;font-weight:700;color:var(--warn);}
+.req-list{margin:6px 0 10px;padding-left:18px;max-height:180px;overflow:auto;font-size:13px;line-height:1.6;}
+.shift-select{min-width:120px;}
+/* Sideways scrollbar pinned to the bottom of the window while a wide table's own one is off-screen (common.js) */
+.hscroll-proxy{position:fixed;bottom:0;z-index:40;display:none;overflow-x:auto;overflow-y:hidden;height:17px;background:var(--card);border-top:1px solid var(--border);box-shadow:0 -4px 12px rgba(0,0,0,.08);}
+.hscroll-proxy > div{height:1px;}
+.exporting .hscroll-proxy{display:none !important;}
