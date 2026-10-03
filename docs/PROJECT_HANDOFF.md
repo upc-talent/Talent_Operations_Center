@@ -63,13 +63,13 @@ Project ref `aoqgabdsayaqgqroscdw`. Schema in `supabase/schema.sql`.
 
 | Table | Content |
 |---|---|
-| `pharmacists` | The roster, one row per person. Master columns + `assignment` / `attendance` (`jsonb`) + `note`, `completion_pct`, `work_shift` (Morning Shift / Night Shift, set by the supervisor). |
+| `pharmacists` | The roster, one row per person. Master columns + `assignment` / `attendance` (`jsonb`) + `note`, `completion_pct` (Core Completion), `capsule_pct` (Capsule Completion), `work_shift` (Morning Shift / Night Shift, set by the supervisor). |
 | `training_days` | One row per day; the whole day object lives in `data` (`jsonb`). |
 | `approvals` | `New Pharmacist` / `Annual Leave` / `Over-Quota Decision` / `Date Change` (Request Change) / `Submission` (supervisor pressed Submit) rows; columns for filtering, full record in `data`. |
 | `notifications` | Approval results shown to supervisors. |
 | `settings` | `key` → `value` (`jsonb`): maxCapacity, trainerNames, coordinatorNames, trainingNames, cityRoster (`[{name, supervisors}]`), completionCourse, completionLastSynced, logo. |
 | `venues` | `city` → recommended venue, offered in Add/Edit Training Day. |
-| `kv_cache` | Small expiring key/value store (login lockout counter, generated token secret, `presence:<supervisor>` pings for "supervisors online"). |
+| `kv_cache` | Small expiring key/value store (login lockout counter, generated token secret, `presence:<supervisor>` pings for "supervisors online", `backup_state` fingerprints for the backup Log). |
 
 **Every table has RLS enabled with no policies** → the public anon key can read/write nothing. Only the Edge
 Function touches the data, using the service-role connection. Indexes: `supervisor`, and an expression index on
@@ -108,8 +108,10 @@ Every response includes `_ms`, the server's own execution time.
 - **Trainer:** username/password compared to the `TRAINER_USER` / `TRAINER_PASS` secrets; returns an HMAC-signed
   token (`TOKEN_SECRET`), TTL 10 h, kept in `sessionStorage`. 8 failed logins in 10 min lock login for 10 min.
 - **Admin** (lower access): same sign-in page, credentials in the `ADMIN_USER` / `ADMIN_PASS` secrets; the token
-  carries `r:'admin'`. Sees only the Attendance tab; the server allows it to read roster / operations / days / pending
-  list and write only `operations` and `master-pharmacists` — everything else is refused.
+  carries `r:'admin'`. Tabs: Attendance · Calendar (view only) · Analytics & Export
+  (Master Sheet Preview only) · General Configurations (Import Completion only). The server lets it read roster /
+  operations / days / pending list and write `operations`, `master-pharmacists` and only the four completion-sync
+  settings of `training-config` (`ADMIN_SETTING_KEYS`) — everything else is refused.
 - **Supervisor:** picks a name (no password), validated by an indexed lookup. Server limits reads to that
   supervisor's own pharmacists (no phone/SCFHS) and scopes approvals/notifications; other supervisors' ops rows
   are reduced to `{type:'date',dateId}` (seat counts only).
@@ -158,6 +160,11 @@ Every response includes `_ms`, the server's own execution time.
   browser (`group-fix-ignored`) and not flagged again.
 - **Edit Selected** (Attendance tab): tick pharmacists → edit their master details in a grid → review a before/after
   list → Confirm saves (duplicate emails are refused; a brand-new supervisor name is flagged as a possible typo).
+- **Submit needs everything filled:** every one of the supervisor's pharmacists (Offline and Online) must have a Date
+  or other status AND a Work Shift, or Submit is refused (in the page and in `submitSupervisor`) and the table shows
+  only the missing rows. Work Shift: Night = red, Morning = green.
+- **No-date lock:** when every day a supervisor can see for a pharmacist's type is not editable for them, a pharmacist
+  with no date has the whole Date slot locked, leave statuses included (`noDateSlotLocked` / `supNoDateSlotLocked`).
 - **Submit & locks (supervisor).** Choices are free until the supervisor presses **Submit** (`submit` action): every
   pharmacist with a date or leave status gets `assignment.locked`, and a `Submission` row notifies the trainer
   (Approvals tab + badge). Locked pharmacists lose their dropdown; the supervisor asks via **Request Change**
@@ -168,8 +175,8 @@ Every response includes `_ms`, the server's own execution time.
 - **Visible vs Editable (per day).** Edit Training Day → Visible to has two columns; Editable defaults to Visible.
   Unticked = `readOnlySupervisors`: the supervisor sees the day but can't put pharmacists on it or move them off it
   (except someone who missed training) — only through Request Change. Enforced in `validateSupervisorAssignment`.
-- **Absent needs a reason** (Interaction / Pharmacy / LMS), stored as `reason` on the attendance (per day for split
-  trainings). Shown as "Absent - LMS" in exports and the supervisor view, and read back by the upload.
+- **Absent reason is optional** (Interaction / Pharmacy / LMS): one click on Absent records it; the reason buttons
+  under it add, change or remove `reason` on the attendance (per day for split trainings). Shown as "Absent - LMS" in exports and the supervisor view, and read back by the upload.
 - **City Roster** (General Configurations): cities + linked supervisors. "Auto-select by city" and the bulk "City"
   action make a day visible to exactly the linked supervisors (falls back to the old guess when none are linked).
   Renaming a city renames it on training days, not on pharmacists.
@@ -256,3 +263,15 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   `getMaster`/`patchMaster`, and the front-end master shape.
 - The Edge Function can't be type-checked on the owner's PC (no Deno) — review carefully, deploy, then exercise
   the supervisor path (it needs no password) to smoke-test reads *and* writes.
+
+## Later additions (v3)
+
+- **Two completion columns** in the Attendance tab: Core Completion (`completion_pct`) and Capsule Completion
+  (`capsule_pct`). General Configurations → Import Completion syncs each from its own LMS course (Capsule defaults to
+  "Learning Capsule - Selling Opps. in Acne & Dry Skin Condition") and the Excel upload has an "Import into" choice.
+- **Trainer's Attendance exports** (Excel / Image / PDF) leave out Core + Capsule Completion, Attendance, Late
+  Arrival Time and Notes; the admin's keep them (`col-export-skip` cells, hidden while `.exporting`).
+- **Hidden days** use 👁 (visible) / an eye-with-a-slash icon (hidden, `EYE_OFF_SVG`); dropdowns end hidden days
+  with "(hidden)". Attendance-tab day dropdowns are in date order.
+- **Hourly Google Sheet backup**: `supabase/functions/backup` + `supabase/backup.sql` (pg_cron); setup steps in
+  `supabase/README.md`.

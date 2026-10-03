@@ -82,6 +82,10 @@ function trainerBadge(name){
   return `<span class="badge" style="background:${c.bg};color:${c.text};border:1px solid ${c.text};">${esc(name)}</span>`;
 }
 
+// Hidden-from-supervisors state: 👁 = visible, this eye-with-a-slash = hidden (like a password field). Dropdowns can only show
+// text, so there a hidden day ends with "(hidden)" instead.
+const EYE_OFF_SVG = '<svg class="ico-eye-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
 /* City short-code labels (for pill text) */
 const CITY_CODE_PATTERNS = [
   {match:/jeddah\s*n|jed\s*n/i, code:'JED N'},
@@ -345,12 +349,12 @@ function syncBulkHeader(scope){
   h.indeterminate = sel>0 && sel<total;
 }
 function bulkAssignOptions(scope){
-  const days = (scope==='sup') ? supEditableDays() : (trainingConfig.dates||[]);
+  const days = (scope==='sup') ? supEditableDays() : (trainingConfig.dates||[]).slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   let html = `<option value="">— Assign selected to… —</option><optgroup label="Training Days">`;
   days.forEach(d=>{
     if(scope==='trainer'){ html += `<option value="date:${d.id}">${assignOptionLabel(d, false, true)}</option>`; return; }
     const passed = (scope==='sup' && isDeadlinePassed(d)) ? ' (Deadline passed)' : '';
-    const hidden = d.active===false ? ' (hidden from supervisors)' : '';
+    const hidden = d.active===false ? ' (hidden)' : '';
     html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed}${hidden}</option>`;
   });
   html += `</optgroup><optgroup label="Other Status">`;
@@ -372,7 +376,7 @@ function updateBulkBar(scope){
   }
   let html = `<span class="bulk-count">${n} selected</span>`;
   if(scope==='days'){
-    html += `<button class="btn btn-outline btn-sm" onclick="bulkDays('hide')">🙈 Hide</button>`
+    html += `<button class="btn btn-outline btn-sm" onclick="bulkDays('hide')">${EYE_OFF_SVG} Hide</button>`
           + `<button class="btn btn-outline btn-sm" onclick="bulkDays('unhide')">👁 Unhide</button>`
           + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('deadline')">⏰ Deadline</button>`
           + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('supervisors')">👥 Supervisors</button>`
@@ -577,8 +581,11 @@ function matchesDateSet(pid, set){
   return false;
 }
 
-function dateFilterOptions(days, short){
-  return days.map(d=>({value:'date:'+d.id, text: short ? shortDayText(d)+(d.active===false?' 🙈':'') : dayGroupText(d)+(d.active===false?' (hidden)':'')}))
+// `marks` (trainer-side lists): 👁 after a visible day, "(hidden)" after one hidden from supervisors.
+function dateFilterOptions(days, short, marks){
+  if(marks===undefined) marks = !!short;
+  const mark = d=> !marks ? (d.active===false?' (hidden)':'') : (d.active===false?' (hidden)':' 👁');
+  return days.map(d=>({value:'date:'+d.id, text: (short ? shortDayText(d) : dayGroupText(d))+mark(d)}))
     .concat(LEAVE_STATUSES.map(s=>({value:'leave:'+s, text:s})))
     .concat([{value:'unassigned', text:'Not Assigned'}]);
 }
@@ -603,8 +610,8 @@ function getSortValue(p, key){
     const s = attSummary(p.id, p);
     return s.status ? s.status + '_' + (s.punctuality||'') : '';
   }
-  if(key==='completionPct'){
-    const n = parseFloat(p.completionPct);
+  if(key==='completionPct' || key==='capsulePct'){
+    const n = parseFloat(p[key]);
     return isNaN(n) ? -1 : n;
   }
   return (p[key]||'').toString().toLowerCase();
@@ -643,9 +650,9 @@ function isDeadlinePassed(day){
 // just tells the trainer which days supervisors can't see — the day stays fully usable.
 // `short`: the trainer's Attendance tab uses the compact "Online QAS - 11,12 Oct 26" label (see shortDayText).
 function assignOptionLabel(d, enforceDeadline, short){
-  if(short) return `${esc(shortDayText(d))}${d.active===false?' 🙈':''}`;
+  if(short) return `${esc(shortDayText(d))}${d.active===false?' (hidden)':' 👁'}`;
   const passed = enforceDeadline && isDeadlinePassed(d);
-  return `${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed?' (Deadline passed)':''}${d.active===false?' (hidden from supervisors)':''}`;
+  return `${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed?' (Deadline passed)':''}${d.active===false?' (hidden)':''}`;
 }
 function assignmentOptionsHtml(pid, days, enforceDeadline, short){
   const current = ops.assignments[pid];
@@ -695,7 +702,8 @@ function fillAssignSelect(sel){
   const online = sel.dataset.online === '1';
   const enforceDeadline = fn === 'onAssignChange';
   // supervisor page: only the days this supervisor may pick for this pharmacist (supAssignableDays, supervisor.js)
-  const src = (fn === 'onAssignChange') ? supAssignableDays(pid) : trainingConfig.dates;
+  // trainer (Attendance tab): every day, in date order
+  const src = (fn === 'onAssignChange') ? supAssignableDays(pid) : trainingConfig.dates.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   const relevantDays = src.filter(d => !!d.isOnline === online);
   const cur = sel.value;
   const curText = sel.selectedIndex>=0 ? sel.options[sel.selectedIndex].text : '';
@@ -808,10 +816,12 @@ function cityCellHtml(p){
   }
   return p.city ? `<span class="city-badge">${esc(p.city)}</span>` : '—';
 }
-function completionCellHtml(p){
-  if(p.completionPct===undefined || p.completionPct===''){ return '<span class="small-note">—</span>'; }
-  const n = parseFloat(p.completionPct);
-  if(isNaN(n)) return esc(p.completionPct);
+// `key`: 'completionPct' (Core Completion) or 'capsulePct' (Capsule Completion)
+function completionCellHtml(p, key){
+  key = key || 'completionPct';
+  if(p[key]===undefined || p[key]===null || p[key]===''){ return '<span class="small-note">—</span>'; }
+  const n = parseFloat(p[key]);
+  if(isNaN(n)) return esc(p[key]);
   const clamped = Math.max(0, Math.min(100, n));
   const color = n>=100 ? 'var(--navy)' : 'var(--blue)';
   return `<div class="compl-cell">
@@ -932,6 +942,7 @@ function buildMasterRow(p){
     pharmacyNo:p.pharmacyNo||'', employeeId:p.employeeId||'', email:p.email||'', displayName:p.displayName||'',
     phone:p.phone||'', scfhs:p.scfhs||'',
     completionPct: p.completionPct!==undefined && p.completionPct!=='' ? p.completionPct+'%' : '',
+    capsulePct: p.capsulePct!==undefined && p.capsulePct!==null && p.capsulePct!=='' ? p.capsulePct+'%' : '',
     statusText,
     workShift: (ops.shifts && ops.shifts[p.id]) || '',
     note: p.note || (validDateAssignment && att && att.note ? att.note : ''),

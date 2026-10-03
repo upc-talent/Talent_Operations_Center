@@ -81,3 +81,38 @@ protocol between them only changes if a data key is added.
   advisory lock, so two people can't both grab the last seat.
 - **Per-supervisor quotas** apply to in-person days as well as online ones; the server enforces them in
   `validateSupervisorAssignment`.
+
+---
+
+## Hourly Google Sheet backup (optional, recommended)
+
+A second Edge Function, `backup` ([`functions/backup/index.ts`](functions/backup/index.ts)), copies every table
+into a Google Sheet once an hour: one tab per table (Pharmacists, Training Days, Approvals, Notifications,
+Settings, Venues — each fully replaced every run) plus a **Log** tab with one row per run (time, status, rows per
+table, and what was added / removed / changed since the previous backup, with names).
+
+**Why it is safe:** the app never talks to the Sheet. Supabase's scheduler calls the function with a secret, the
+function writes to the Sheet through a Google *service account* (a robot account that can open only the Sheets you
+share with it), and it never sends data back to whoever called it. `kv_cache` (which holds the login-token secret)
+is never backed up.
+
+1. **Google Cloud** (console.cloud.google.com, any Google account): create a project → *APIs & Services → Library*
+   → enable **Google Sheets API** → *IAM & Admin → Service Accounts* → **Create service account** (no roles needed)
+   → open it → *Keys → Add key → JSON*. A `.json` file downloads — keep it private, never put it in the repo.
+2. **Google Sheet:** create an empty Sheet, click **Share**, add the service account's email (the
+   `client_email` inside the .json, ends in `.iam.gserviceaccount.com`) as **Editor**. Copy the Sheet id from its
+   URL: `https://docs.google.com/spreadsheets/d/<THIS PART>/edit`.
+3. **Secrets** (Dashboard → Edge Functions → Secrets):
+   | Secret | Value |
+   |---|---|
+   | `GOOGLE_SERVICE_ACCOUNT` | the whole contents of the .json key file |
+   | `BACKUP_SHEET_ID` | the Sheet id from step 2 |
+   | `BACKUP_SECRET` | a long random string you make up (e.g. two UUIDs joined) |
+4. **Deploy** a new Edge Function named exactly `backup` with the code of `functions/backup/index.ts`
+   (Dashboard → Edge Functions → Deploy a new function → via editor), or `supabase functions deploy backup`.
+5. **Schedule it:** open [`backup.sql`](backup.sql), replace `<BACKUP_SECRET>` (same value as step 3) and
+   `<ANON_KEY>` (from `assets/js/config.js`), paste it in the SQL Editor → **Run**. It runs every hour on the hour.
+   To test right away, run the "Run a backup right now" lines at the bottom of `backup.sql`; within a few seconds
+   the Sheet gets its tabs and the Log its first row ("First backup").
+
+If a run fails, the Log gets a **FAILED** row with the reason (e.g. the Sheet isn't shared with the service account).

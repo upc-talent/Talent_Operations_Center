@@ -276,6 +276,7 @@ async function getMany(ctx: Ctx, keys: string[]) {
 }
 // The admin login only ever sees the Attendance tab: roster, operations and training days (plus the new-pharmacist list the page loads with them).
 const ADMIN_KEYS = ["master-pharmacists", "operations", "training-config", "pending-pharmacists"];
+const ADMIN_SETTING_KEYS = ["completionCourse", "completionLastSynced", "capsuleCourse", "capsuleLastSynced"];
 async function getKey(ctx: Ctx, key: string) {
   if (ctx.role === "admin" && ADMIN_KEYS.indexOf(key) === -1) throw new Error("Not available for this login.");
   switch (key) {
@@ -300,6 +301,7 @@ function masterOf(r: any) {
     displayName: r.display_name, phone: r.phone, scfhs: r.scfhs, note: r.note,
   };
   if (r.completion_pct !== null && r.completion_pct !== undefined && r.completion_pct !== "") m.completionPct = r.completion_pct;
+  if (r.capsule_pct !== null && r.capsule_pct !== undefined && r.capsule_pct !== "") m.capsulePct = r.capsule_pct;
   return m;
 }
 // Only the columns the caller actually receives are read — and a supervisor's rows are filtered in SQL rather
@@ -316,7 +318,7 @@ async function getMaster(ctx: Ctx) {
     }), settings: {} };
   }
   const rows = await sql`select id, district, area_manager, city, supervisor, pharmacy_no, employee_id, email,
-                                display_name, phone, scfhs, note, completion_pct
+                                display_name, phone, scfhs, note, completion_pct, capsule_pct
                          from pharmacists where display_name <> '' order by created_at`;
   return { records: rows.map((r: any) => ({ id: r.id, v: masterOf(r) })), settings: {} };
 }
@@ -349,7 +351,7 @@ async function getConfig(ctx: Ctx) {
   let days = await daysList();
   const st = await settingsMap();
   let settings: Record<string, any> = {};
-  ["maxCapacity", "trainerNames", "coordinatorNames", "trainingNames", "cityRoster", "completionCourse", "completionLastSynced"].forEach((k) => {
+  ["maxCapacity", "trainerNames", "coordinatorNames", "trainingNames", "cityRoster", "completionCourse", "completionLastSynced", "capsuleCourse", "capsuleLastSynced"].forEach((k) => {
     if (Object.prototype.hasOwnProperty.call(st, k) && st[k] !== null) settings[k] = st[k];
   });
   if (ctx.role === "supervisor") {
@@ -408,11 +410,15 @@ async function patchKey(ctx: Ctx, req: any) {
   const key = req.key;
   const records = req.records || {};
   const settings = req.settings || {};
-  if (ctx.role === "admin" && key !== "operations" && key !== "master-pharmacists") throw new Error("Not available for this login.");
+  // The admin may also record which LMS course a completion sync used (General Configurations → Import Completion),
+  // but nothing else in the training config.
+  const adminConfigOk = key === "training-config" && !Object.keys(records).length
+    && Object.keys(settings).every((k) => ADMIN_SETTING_KEYS.indexOf(k) !== -1);
+  if (ctx.role === "admin" && key !== "operations" && key !== "master-pharmacists" && !adminConfigOk) throw new Error("Not available for this login.");
   switch (key) {
     case "operations": await patchOps(ctx, records); break;
     case "master-pharmacists": requireStaff(ctx); await patchMaster(records); break;
-    case "training-config": requireTrainer(ctx); await patchConfig(records, settings); break;
+    case "training-config": requireStaff(ctx); await patchConfig(records, settings); break;
     case "company-logo": requireTrainer(ctx); await patchSettings({ logo: settings.logo === undefined ? null : settings.logo }); break;
     case "pending-pharmacists":
     case "leave-requests":
@@ -443,6 +449,9 @@ async function patchMaster(records: Record<string, any>) {
       scfhs: pick((m) => s(m.scfhs)), note: pick((m) => s(m.note)),
       noteSet: pick((m) => (m.note !== undefined ? "1" : "0")),   // a note is only written when the caller sent one
       completion: pick((m) => (m.completionPct === undefined || m.completionPct === null) ? null : String(m.completionPct)),
+      // Capsule Completion is only written when the caller sent it, so a record built without it never wipes it
+      capsule: pick((m) => (m.capsulePct === undefined || m.capsulePct === null) ? null : String(m.capsulePct)),
+      capsuleSet: pick((m) => (m.capsulePct !== undefined ? "1" : "0")),
     };
   };
   await sql.begin(async (tx: any) => {
@@ -457,21 +466,23 @@ async function patchMaster(records: Record<string, any>) {
       await tx`update pharmacists p set
           district = d.district, area_manager = d.area, city = d.city, supervisor = d.sup, pharmacy_no = d.pharmacy,
           employee_id = d.emp, email = d.email, display_name = d.name, phone = d.phone, scfhs = d.scfhs,
-          completion_pct = d.completion, note = case when d.note_set = '1' then d.note else p.note end
+          completion_pct = d.completion, note = case when d.note_set = '1' then d.note else p.note end,
+          capsule_pct = case when d.capsule_set = '1' then d.capsule else p.capsule_pct end
         from (select unnest(${upd}::text[]) as id, unnest(${c.district}::text[]) as district, unnest(${c.area}::text[]) as area,
                      unnest(${c.city}::text[]) as city, unnest(${c.sup}::text[]) as sup, unnest(${c.pharmacy}::text[]) as pharmacy,
                      unnest(${c.emp}::text[]) as emp, unnest(${c.email}::text[]) as email, unnest(${c.name}::text[]) as name,
                      unnest(${c.phone}::text[]) as phone, unnest(${c.scfhs}::text[]) as scfhs, unnest(${c.note}::text[]) as note,
-                     unnest(${c.noteSet}::text[]) as note_set, unnest(${c.completion}::text[]) as completion) d
+                     unnest(${c.noteSet}::text[]) as note_set, unnest(${c.completion}::text[]) as completion,
+                     unnest(${c.capsule}::text[]) as capsule, unnest(${c.capsuleSet}::text[]) as capsule_set) d
         where p.id = d.id`;
     }
     if (ins.length) {
       const c = cols(ins);
       await tx`insert into pharmacists
-          (id, district, area_manager, city, supervisor, pharmacy_no, employee_id, email, display_name, phone, scfhs, note, completion_pct)
+          (id, district, area_manager, city, supervisor, pharmacy_no, employee_id, email, display_name, phone, scfhs, note, completion_pct, capsule_pct)
         select * from unnest(${ins}::text[], ${c.district}::text[], ${c.area}::text[], ${c.city}::text[], ${c.sup}::text[],
                              ${c.pharmacy}::text[], ${c.emp}::text[], ${c.email}::text[], ${c.name}::text[], ${c.phone}::text[],
-                             ${c.scfhs}::text[], ${c.note}::text[], ${c.completion}::text[])`;
+                             ${c.scfhs}::text[], ${c.note}::text[], ${c.completion}::text[], ${c.capsule}::text[])`;
     }
   });
 }
@@ -606,6 +617,10 @@ async function submitSupervisor(ctx: Ctx) {
   if (ctx.role !== "supervisor") throw new Error("Only supervisors can submit.");
   const at = nowIso();
   return await sql.begin(async (tx: any) => {
+    // Every pharmacist needs a Date (or another status) and a Work Shift before the supervisor can submit.
+    const missing = await tx`select count(*)::int as n from pharmacists
+                             where supervisor = ${ctx.who} and display_name <> '' and (assignment is null or work_shift = '')`;
+    if (missing[0].n) throw new Error(missing[0].n + " pharmacist(s) still need a Date and a Work Shift before you can submit.");
     const locked = await tx`update pharmacists
                             set assignment = assignment || ${sql.json({ locked: true, lockedAt: at })}::jsonb
                             where supervisor = ${ctx.who} and assignment is not null
@@ -642,7 +657,18 @@ function sameAssignment(a: any, b: any): boolean {
 function readOnlyFor(day: any, who: string | undefined) {
   return !!(day && Array.isArray(day.readOnlySupervisors) && day.readOnlySupervisors.indexOf(who) !== -1);
 }
+// A pharmacist with no training day yet: when every day this supervisor can see for them (offline or online) is
+// managed by the training team, their whole Date slot is locked — leave statuses included.
+function noDateSlotLocked(ctx: Ctx, row: any, days: Record<string, any>) {
+  const online = String(row.city).trim().toLowerCase() === "online";
+  const mine = Object.values(days).filter((d: any) => d && d.active !== false && !!d.isOnline === online
+    && (d.visibleSupervisors || []).indexOf(ctx.who) !== -1);
+  return mine.length > 0 && mine.every((d: any) => readOnlyFor(d, ctx.who));
+}
 function validateSupervisorAssignment(ctx: Ctx, row: any, oldA: any, newA: any, curT: any, days: Record<string, any>, counts: Record<string, number>, supCounts: Record<string, Record<string, number>>, defaultCap: number) {
+  if (!(oldA && oldA.type === "date") && noDateSlotLocked(ctx, row, days)) {
+    throw new Error("The training team manages your training days — use Request Change.");
+  }
   if (oldA && oldA.type === "date" && !(newA && newA.type === "date" && newA.dateId === oldA.dateId)
       && readOnlyFor(days[oldA.dateId], ctx.who) && !isFailed(curT)) {
     throw new Error("The training team manages that day — use Request Change.");

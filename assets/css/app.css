@@ -382,3 +382,18 @@ p.small-note{margin:0 0 6px;}
 .hscroll-proxy{position:fixed;bottom:0;z-index:40;display:none;overflow-x:auto;overflow-y:hidden;height:17px;background:var(--card);border-top:1px solid var(--border);box-shadow:0 -4px 12px rgba(0,0,0,.08);}
 .hscroll-proxy > div{height:1px;}
 .exporting .hscroll-proxy{display:none !important;}
+/* Hidden-from-supervisors state: 👁 visible / eye-with-a-slash hidden */
+.ico-eye-off{display:inline-block;vertical-align:-2px;flex-shrink:0;}
+.eye-ico{font-size:14px;line-height:1;display:block;}
+/* Supervisor: Work Shift colours, and cells still missing before Submit */
+.shift-select.shift-night{background:var(--danger-bg);border-color:var(--danger);color:var(--danger);font-weight:700;}
+.shift-select.shift-morning{background:var(--ok-bg);border-color:var(--ok);color:var(--ok);font-weight:700;}
+tbody td.cell-missing{background:var(--danger-bg) !important;box-shadow:inset 0 0 0 2px var(--danger);}
+/* Import Completion: one row per completion column */
+.sync-label{min-width:150px;color:var(--navy);}
+/* Admin (UPC_Co) view: only the allowed parts of each tab, calendar is view-only */
+.admin-hidden{display:none !important;}
+.admin-view .cal-edit{display:none !important;}
+.admin-view .cal-cell, .admin-view .cal-event{cursor:default;}
+/* Trainer's Attendance exports (Image / PDF) leave out Completion, Attendance and Notes */
+body:not(.admin-view) #trainerCard.exporting .col-export-skip{display:none !important;}

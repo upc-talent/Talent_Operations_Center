@@ -30,6 +30,8 @@ create table if not exists pharmacists (
 );
 -- Work Shift (Morning Shift / Night Shift), set by the supervisor. Added later — this line also upgrades an existing database.
 alter table pharmacists add column if not exists work_shift text not null default '';
+-- Capsule Completion (second LMS course; "completion_pct" is the Core Completion). Also an upgrade line.
+alter table pharmacists add column if not exists capsule_pct text;
 create index if not exists pharmacists_supervisor_idx on pharmacists (supervisor);
 create index if not exists pharmacists_assignment_day_idx on pharmacists ((assignment->>'dateId'));
 

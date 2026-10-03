@@ -46,6 +46,7 @@ function clearSupFilters(){
   supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set() };
   supSearchQ='';
   supStatusFilter = null;
+  supMissingFilter = false;
   buildSupervisorFilterBar();
   renderSupervisorChips();
   renderSupervisorTable();
@@ -68,7 +69,7 @@ async function initSupervisor(){
 async function loadSupervisorView(silent){
   const name = document.getElementById('supervisorSelect').value;
   if(!name){ toast('Please select your name first','err'); return; }
-  if(name!==currentSupervisor) supStatusFilter = null;
+  if(name!==currentSupervisor){ supStatusFilter = null; supMissingFilter = false; }
   currentSupervisor = name;
   API.setSupervisor(name);
   await setPersonal('last-supervisor-name', name);
@@ -214,6 +215,7 @@ function renderSupervisorChips(){
 let supStatusFilter = null;
 function setSupStatusFilter(kind){
   supStatusFilter = (kind && kind!==supStatusFilter) ? kind : null;
+  if(supStatusFilter) supMissingFilter = false;
   renderSupervisorChips();
   renderSupervisorTable();
   if(supStatusFilter){
@@ -226,6 +228,7 @@ function applySupFilters(list){
   const status = supStatusFilter ? STATUS_GROUPS[supStatusFilter].test : null;
   return list.filter(p=>{
     if(status && !status(p)) return false;
+    if(supMissingFilter && !isMissingSubmitData(p)) return false;
     if(!inSet(p.district, supFilterState.district)) return false;
     if(!inSet(p.areaManager, supFilterState.areaManager)) return false;
     if(!inSet(p.city, supFilterState.city)) return false;
@@ -239,11 +242,15 @@ function applySupFilters(list){
 }
 
 function renderSupervisorTable(){
+  // the "missing Date / Work Shift" view ends by itself once nothing is missing any more
+  if(supMissingFilter && !masterData.some(p=>p.supervisor===currentSupervisor && isMissingSubmitData(p))) supMissingFilter = false;
   let own = applySupFilters(currentSupervisorScope());
   // New pharmacists still awaiting approval belong to none of the status cards, so a card filter hides them.
-  const pending = supStatusFilter ? [] : applySupFilters(currentSupervisorPendingScope());
+  const pending = (supStatusFilter || supMissingFilter) ? [] : applySupFilters(currentSupervisorPendingScope());
   const tag = document.getElementById('supStatusTag');
-  if(tag) tag.innerHTML = statusFilterTagHtml(supStatusFilter, 'setSupStatusFilter');
+  if(tag) tag.innerHTML = supMissingFilter
+    ? `<span class="status-filter-tag">Showing: Missing Date / Work Shift <button type="button" title="Show everyone" onclick="setSupMissingFilter(false)">✕</button></span>`
+    : statusFilterTagHtml(supStatusFilter, 'setSupStatusFilter');
   own = applySort('sup', own);
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
@@ -269,9 +276,9 @@ function renderSupervisorTable(){
       ${nameCell(i, p)}
       <td>${esc(p.pharmacyNo||'—')}</td>
       <td class="email-cell">${esc(p.email||'—')}</td>
-      <td class="no-truncate">${dateHtml}</td>
+      <td class="no-truncate${supMissingFilter && !ops.assignments[p.id] ? ' cell-missing' : ''}">${dateHtml}</td>
       <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
-      <td>${workShiftSelectHtml(p)}</td>
+      <td class="${supMissingFilter && !(ops.shifts && ops.shifts[p.id]) ? 'cell-missing' : ''}">${workShiftSelectHtml(p)}</td>
       <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
@@ -318,7 +325,14 @@ function supLockReason(p){
   const a = ops.assignments[p.id];
   if(a && a.locked) return 'submitted';
   if(a && a.type==='date' && !isDayEditableForSup(dayById(a.dateId))) return 'managed';
+  // no date yet, and every day this supervisor can see for them is managed by the training team → the whole slot is locked
+  if((!a || a.type!=='date') && supNoDateSlotLocked(p)) return 'managed';
   return null;
+}
+function supNoDateSlotLocked(p){
+  const online = isOnlinePharmacist(p);
+  const days = visibleDaysFor(currentSupervisor).filter(d=>!!d.isOnline===online);
+  return days.length>0 && days.every(d=>!isDayEditableForSup(d));
 }
 const SUP_LOCK_TEXT = {
   attended:  {note:'🔒 Attended — can\'t be reassigned', title:'This pharmacist already attended the training. Only the training team can change it.'},
@@ -333,15 +347,32 @@ function currentChoiceText(p){
   return d ? dayGroupText(d) : 'Not Assigned';
 }
 
+// Submit needs every pharmacist (Offline and Online) to have a Date (or another status) and a Work Shift; otherwise
+// the table shows just the ones still missing something, with the empty cells outlined in red.
+function isMissingSubmitData(p){ return !ops.assignments[p.id] || !(ops.shifts && ops.shifts[p.id]); }
+let supMissingFilter = false;
+function setSupMissingFilter(on){
+  supMissingFilter = !!on;
+  renderSupervisorTable();
+}
 async function submitSupervisorChoices(){
   const mine = masterData.filter(p=>p.supervisor===currentSupervisor);
-  const toLock = mine.filter(p=>{ const a = ops.assignments[p.id]; return a && !a.locked; });
-  if(!toLock.length){
-    toast(mine.some(p=>ops.assignments[p.id]) ? 'Everything you have chosen is already submitted' : 'Choose dates for your pharmacists first', 'info');
+  const missing = mine.filter(isMissingSubmitData);
+  if(missing.length){
+    supStatusFilter = null;
+    supMissingFilter = true;
+    // show the tab (Offline / Online) that has missing pharmacists
+    if(!missing.some(p=>isOnlinePharmacist(p)===(supTrack==='online'))) switchSupTrack(supTrack==='online' ? 'offline' : 'online');
+    renderSupervisorChips();
+    renderSupervisorTable();
+    const card = document.getElementById('supTableCard');
+    if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
+    toast(`Can't submit yet — ${missing.length} pharmacist(s) still need a Date and a Work Shift (shown below, empty cells in red)`, 'err');
     return;
   }
-  const open = mine.filter(p=>!ops.assignments[p.id]).length;
-  const go = await confirmDialog(`Submit ${toLock.length} pharmacist(s)? Their dates and statuses will be locked and the training team will be notified. To change a locked pharmacist afterwards you'll need to send a Request Change.${open ? ` The ${open} pharmacist(s) with no date yet stay open — you can choose and submit them later.` : ''}`);
+  const toLock = mine.filter(p=>{ const a = ops.assignments[p.id]; return a && !a.locked; });
+  if(!toLock.length){ toast('Everything you have chosen is already submitted', 'info'); return; }
+  const go = await confirmDialog(`Submit ${toLock.length} pharmacist(s)? Their dates and statuses will be locked and the training team will be notified. To change a locked pharmacist afterwards you'll need to send a Request Change.`);
   if(!go) return;
   if(!await setShared(K_OPS, ops)) return;   // every change made on this page reaches the server before locking
   try{
@@ -408,15 +439,19 @@ async function sendChangeRequest(){
 
 /* Work Shift (Morning / Night), chosen per pharmacist — always editable, even after Submit. */
 const WORK_SHIFTS = ['Morning Shift','Night Shift'];
+// Night Shift shows red, Morning Shift green.
+const shiftClass = v=> v==='Night Shift' ? 'shift-night' : (v==='Morning Shift' ? 'shift-morning' : '');
 function workShiftSelectHtml(p){
   const cur = (ops.shifts && ops.shifts[p.id]) || '';
-  return `<select class="shift-select" onchange="onShiftChange('${p.id}', this.value)"><option value="" ${cur?'':'selected'}>—</option>${WORK_SHIFTS.map(s=>`<option value="${s}" ${cur===s?'selected':''}>${s}</option>`).join('')}</select>`;
+  return `<select class="shift-select ${shiftClass(cur)}" onchange="onShiftChange('${p.id}', this.value, this)"><option value="" ${cur?'':'selected'}>—</option>${WORK_SHIFTS.map(s=>`<option value="${s}" ${cur===s?'selected':''}>${s}</option>`).join('')}</select>`;
 }
-function onShiftChange(pid, value){
+function onShiftChange(pid, value, el){
   if(!ops.shifts) ops.shifts = {};
   if(value) ops.shifts[pid] = value; else delete ops.shifts[pid];
+  if(el) el.className = 'shift-select '+shiftClass(value);
   toast('Saved','ok');
   saveShared(K_OPS, ()=>ops);
+  if(supMissingFilter) renderSupervisorTable();
 }
 
 /* "Supervisors online" on the trainer page: ping every minute while this page is open (a closed page drops off
