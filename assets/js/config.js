@@ -14,13 +14,11 @@
     SUPABASE_ANON: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFvcWdhYmRzYXlhcWdxcm9zY2R3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNzI5NzYsImV4cCI6MjEwNTY0ODk3Nn0.xJ_aTcn6XtYbQGRi_DjlczgVRG7JV5gpi7RYwUxOH4s',
     API_URL: SUPABASE_URL + '/functions/v1/api',
 
-    // Course-completion report source (used by Trainer > General Configurations > "Sync Now"). This is a separate,
-    // read-only reporting service — not the app's database.
-    COMPLETION_REPORTS_URL: 'https://script.google.com/macros/s/AKfycbzLmYSVLykZNjjYKWeWxhJOlsHoDNKzxlGH8zg931_rr6y4VHTPxqNVj5W7zFvWNTuS/exec',
+    // Course completion lives in this app's own database since v5 (Moodle Reports → public reports.html) —
+    // there is no Google Sheet / Apps Script source any more.
 
-    // Landing-page cards
+    // Landing-page cards that open another site (the Course Progress Reports card is now this app's reports.html)
     LINKS: {
-      progressReports: 'https://upc-talent.github.io/LMS-reporting/'
       // LMS Ticketing System card is switched off for now. To bring it back: add this link here
       //   ticketing: 'https://forms.clickup.com/90152546261/f/2kyr5byn-5335/DH1J7W33E380VYJM8C'
       // and re-add the card (see the "c-ticket" style in assets/css/app.css) to index.html.

@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Moodle Completion Rate Tool</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  --bg:#f5f7f6; --panel:#ffffff; --ink:#18241f; --muted:#5d6b65; --line:#d9e1dd;
+  --accent:#0f766e; --accent-ink:#ffffff; --accent-soft:#dff3ef;
+  --ok:#157f43; --warn:#a15c07; --bad:#b3261e; --track:#e3e9e6;
+  --chip-on:#0f766e; --chip-on-ink:#fff;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#101614; --panel:#18211e; --ink:#e6efeb; --muted:#9baba3; --line:#2b3833;
+    --accent:#2dd4bf; --accent-ink:#06211d; --accent-soft:#17332f;
+    --ok:#4ade80; --warn:#f5b14c; --bad:#ff8a80; --track:#2b3833;
+    --chip-on:#2dd4bf; --chip-on-ink:#06211d; --muted:#9baba3;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#101614; --panel:#18211e; --ink:#e6efeb; --muted:#9baba3; --line:#2b3833;
+  --accent:#2dd4bf; --accent-ink:#06211d; --accent-soft:#17332f;
+  --ok:#4ade80; --warn:#f5b14c; --bad:#ff8a80; --track:#2b3833;
+  --chip-on:#2dd4bf; --chip-on-ink:#06211d;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+h1{font:600 26px/1.2 "IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;margin:0 0 4px;letter-spacing:.2px}
+.sub{color:var(--muted);margin:0 0 22px;max-width:70ch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+.panel h2{font:600 16px/1.3 "IBM Plex Sans",sans-serif;margin:0 0 4px}
+.hint{color:var(--muted);font-size:13px;margin:0 0 12px}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;color:var(--muted);transition:border-color .15s,background .15s}
+.drop:hover,.drop.over,.drop:focus-visible{border-color:var(--accent);background:var(--accent-soft);outline:none}
+.drop b{color:var(--ink)}
+input[type=file]{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none}
+label.btn{display:inline-block;cursor:pointer;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);padding:9px 16px;font-weight:600}
+label.btn:hover{filter:brightness(.95)}
+label.btn.sec{background:var(--panel);color:var(--ink);border-color:var(--line);font-weight:500}
+input[type=file]:focus-visible + label.btn{outline:2px solid var(--accent);outline-offset:2px}
+.browse{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.browse span{color:var(--muted);font-size:13px}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted);min-width:0}
+select,input[type=search],input[type=date],input[type=time]{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:220px;max-width:100%}
+select:focus-visible,input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button:hover{filter:brightness(.97)}
+.dl-inputs input[type=date],.dl-inputs input[type=time]{min-width:150px}
+.note{margin-top:10px;font-size:13px;padding:8px 12px;border-radius:8px;background:var(--accent-soft);color:var(--ink)}
+.note.warn{background:color-mix(in srgb,var(--warn) 16%,var(--panel))}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer;background:var(--bg);user-select:none}
+.chip input{display:none}
+.chip.on{background:var(--chip-on);color:var(--chip-on-ink);border-color:var(--chip-on)}
+.chip .n{opacity:.75;font-variant-numeric:tabular-nums}
+details summary{cursor:pointer;font-weight:500}
+.vids{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px 16px;margin-top:10px;max-height:260px;overflow:auto}
+.vids label{display:flex;gap:8px;align-items:flex-start;font-size:13px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.stat .v{font:600 24px/1.2 "IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;font-variant-numeric:tabular-nums}
+.stat .l{font-size:12.5px;color:var(--muted)}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.toolbar .sp{flex:1}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{position:sticky;top:0;background:var(--panel);font-weight:600;cursor:pointer;user-select:none;font-size:13px}
+th .ar{color:var(--accent)}
+tbody tr:hover{background:var(--accent-soft)}
+td.num{font-variant-numeric:tabular-nums}
+.bar{display:inline-block;width:80px;height:7px;background:var(--track);border-radius:4px;vertical-align:middle;margin-right:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+.tag{font-size:12.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--line)}
+.tag.ok{color:var(--ok);border-color:currentColor}
+.tag.mid{color:var(--warn);border-color:currentColor}
+.tag.no{color:var(--bad);border-color:currentColor}
+.files{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.frow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg)}
+.frow input{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;min-width:160px;flex:0 1 220px}
+.fmeta{color:var(--muted);font-size:13px;flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
+.cov{font-size:12px;color:var(--muted);margin-left:4px}
+.cov.part{color:var(--warn)}
+textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;max-width:640px;min-height:92px;resize:vertical}
+textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+tr.excl td{opacity:.5}
+.hide{display:none}
+.empty{padding:28px;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Moodle completion rate tool</h1>
+  <p class="sub">Upload a Moodle completion export. Get each student's completion rate and the date they finished the final video. Everything runs in your browser; the file is not uploaded anywhere.</p>
+
+  <div class="panel">
+    <h2>1. Upload the completion sheets</h2>
+    <p class="hint">Excel (.xlsx, .xls) or CSV. Layout: name, email, then each video's status followed by its timestamp column. Working with several platforms? Add one sheet per platform for the same course and they are merged automatically by email.</p>
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose files">
+      <div id="dropText"><b>Drop one or more files here</b> or click to browse. Adding more files merges them with the ones already loaded.</div>
+    </div>
+    <div class="browse">
+      <input type="file" id="file" accept=".xlsx,.xls,.csv" multiple>
+      <label class="btn" for="file">Browse files on your device</label>
+      <span>In the file window, hold Ctrl (Cmd on Mac) or Shift to pick several sheets at once.</span>
+    </div>
+    <div class="files" id="fileList"></div>
+    <div class="note hide" id="mergeNote"></div>
+    <div class="note warn hide" id="err"></div>
+  </div>
+
+  <div id="app" class="hide">
+    <div class="panel">
+      <h2>2. Final video</h2>
+      <p class="hint">Video order differs between courses, so pick the video that marks the end of the course. With several sheets, choose a final video for each sheet. A student counts as finished when they complete the final video of any sheet they appear in. The tool remembers your choices by video name and picks them automatically next time.</p>
+      <div class="row" id="finalSels"></div>
+      <div class="row" style="margin-top:10px"><button type="button" id="finalSame" class="hide">Use the first sheet's final video in every sheet that has it</button></div>
+      <div class="note hide" id="finalNote"></div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Which statuses count as completed</h2>
+      <p class="hint">These are all the different status texts found in the uploaded files. Click one to include or exclude it.</p>
+      <div class="chips" id="chips"></div>
+      <details style="margin-top:14px">
+        <summary>Videos included in the rate (<span id="incCount"></span>)</summary>
+        <div class="row" style="margin-top:8px">
+          <button id="allOn" type="button">Select all</button>
+          <button id="allOff" type="button">Clear all</button>
+        </div>
+        <div class="vids" id="vids"></div>
+      </details>
+    </div>
+
+    <div class="panel">
+      <h2>4. Deadline (optional)</h2>
+      <p class="hint">Set the date the course had to be finished. Each student is then marked On time, Late, or Overdue based on when they completed the final video. The time defaults to the end of the day.</p>
+      <div class="row dl-inputs">
+        <label class="f">Deadline date
+          <input type="date" id="dlDate">
+        </label>
+        <label class="f">Time
+          <input type="time" id="dlTime" value="23:59">
+        </label>
+        <button type="button" id="dlClear">Clear deadline</button>
+      </div>
+      <div class="note hide" id="dlNote"></div>
+    </div>
+
+    <div class="panel">
+      <h2>5. Who completed before a date (optional)</h2>
+      <p class="hint">A simple cut-off check, separate from the deadline. Pick a date to see who had completed the course before it, and who had not.</p>
+      <div class="row dl-inputs">
+        <label class="f">Date
+          <input type="date" id="cbDate">
+        </label>
+        <label class="f">Completed
+          <select id="cbMode">
+            <option value="before">before this date</option>
+            <option value="onbefore">on or before this date</option>
+          </select>
+        </label>
+        <label class="f">Counts as completed when
+          <select id="cbBasis">
+            <option value="final">the final video is completed</option>
+            <option value="all">every included video is completed</option>
+          </select>
+        </label>
+        <button type="button" id="cbClear">Clear date</button>
+      </div>
+      <div class="note hide" id="cbNote"></div>
+    </div>
+
+    <div class="panel">
+      <h2>6. Hide emails from the download (optional)</h2>
+      <p class="hint">Paste the emails that must not appear in the downloaded Excel file, or upload a sheet that lists them (any column; every email address found is added to the list). Start an entry with @ to hide a whole domain, for example @example.com. Hidden students stay on this page (dimmed) so you can check them, but they are left out of the file. The list is remembered in this browser, so the sheet only needs to be uploaded once.</p>
+      <textarea id="exText" placeholder="name1@company.com&#10;name2@company.com&#10;@partner-domain.com" aria-label="Emails to hide from the download" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <input type="file" id="exFile" accept=".xlsx,.xls,.csv,.txt">
+        <label class="btn sec" for="exFile">Upload a sheet of emails</label>
+        <button type="button" id="exClear">Clear list</button>
+      </div>
+      <div class="note hide" id="exUpMsg"></div>
+      <div class="note hide" id="exNote"></div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Search name or email" aria-label="Search">
+      <select id="stateFilter" aria-label="Filter by state"></select>
+      <select id="srcFilter" class="hide" aria-label="Filter by source"></select>
+      <select id="schedFilter" class="hide" aria-label="Filter by schedule"></select>
+      <select id="cbFilter" class="hide" aria-label="Filter by completed before date"></select>
+      <span class="sp"></span>
+      <button class="primary" id="export" type="button">Download Excel</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr id="thead"></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="empty hide" id="noRows">No students match.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var $ = function(id){return document.getElementById(id)};
+  var S = {cutoff:null, cutoffMode:'before', deadline:null, files:[], acts:[], students:[], statuses:{}, done:{}, include:{}, finals:{}, res:[], sortKey:'rate', sortDir:1};
+  var LS_KEY = 'moodle_final_video';
+
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  function clean(s){return String(s==null?'':s).replace(/&amp;/g,'&').replace(/\s+/g,' ').trim()}
+  function norm(s){return clean(s).toLowerCase()}
+  function lsGetList(){
+    var raw=''; try{raw=localStorage.getItem(LS_KEY)||''}catch(e){}
+    if(!raw) return [];
+    try{ var v=JSON.parse(raw); if(Array.isArray(v)) return v.map(String); }catch(e){}
+    return [raw];
+  }
+  function lsAddFinal(name){
+    var list = lsGetList().filter(function(x){return norm(x)!==norm(name)});
+    list.unshift(name); list = list.slice(0,30);
+    try{localStorage.setItem(LS_KEY, JSON.stringify(list))}catch(e){}
+  }
+  function defaultFinalKey(f){
+    var saved = lsGetList().map(norm);
+    for(var i=0;i<saved.length;i++){
+      var hit = f.acts.filter(function(a){return a.key===saved[i]})[0];
+      if(hit) return hit.key;
+    }
+    return f.acts[f.acts.length-1].key;
+  }
+  function finalOf(f){ return f.acts.filter(function(a){return a.key===S.finals[f.id]})[0] || f.acts[f.acts.length-1]; }
+  function defaultDone(s){return /^(complet|done|pass)/i.test(s) && !/\b(not|fail)/i.test(s)}
+
+  /* ---------- upload ---------- */
+  var drop = $('drop'), fileIn = $('file'), fileSeq = 0;
+  drop.addEventListener('click', function(){fileIn.click()});
+  drop.addEventListener('keydown', function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();fileIn.click()}});
+  ['dragenter','dragover'].forEach(function(ev){drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.add('over')})});
+  ['dragleave','drop'].forEach(function(ev){drop.addEventListener(ev,function(e){e.preventDefault();drop.classList.remove('over')})});
+  drop.addEventListener('drop', function(e){ if(e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files) });
+  fileIn.addEventListener('change', function(){
+    var arr = Array.prototype.slice.call(fileIn.files);
+    fileIn.value = '';
+    addFiles(arr);
+  });
+
+  function showErr(m){var e=$('err');e.textContent=m;e.classList.toggle('hide',!m)}
+
+  function addFiles(list){
+    var arr = Array.prototype.slice.call(list||[]);
+    if(!arr.length) return;
+    showErr('');
+    var errs = [];
+    Promise.all(arr.map(function(f){
+      var sig = f.name+'|'+f.size+'|'+f.lastModified;
+      if(S.files.some(function(x){return x.sig===sig})) return Promise.resolve(null);
+      return f.arrayBuffer().then(function(buf){
+        var wb = XLSX.read(new Uint8Array(buf), {type:'array'});
+        var ws = wb.Sheets[wb.SheetNames[0]];
+        var aoa = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:'', blankrows:false});
+        var p = parseAoa(aoa);
+        p.sig = sig; p.fileName = f.name; p.id = 'f'+(++fileSeq);
+        p.label = f.name.replace(/\.[^.]+$/,'');
+        return p;
+      }).catch(function(err){ errs.push(f.name+': '+err.message); return null; });
+    })).then(function(ps){
+      ps.forEach(function(p){ if(p) S.files.push(p) });
+      if(errs.length) showErr(errs.join(' | '));
+      rebuild();
+    });
+  }
+
+  /* ---------- parse one file ---------- */
+  function parseAoa(aoa){
+    if(!aoa.length) throw new Error('The file is empty.');
+    var h = aoa[0].map(function(x){return clean(x)});
+    var emailCol = h.findIndex(function(x){return /e-?mail/i.test(x)});
+    if(emailCol<0) emailCol = 1;
+    var acts = [];
+    var c = emailCol+1;
+    while(c<h.length){
+      if(h[c]){
+        var a = {name:h[c], key:norm(h[c]), sCol:c, tCol:null};
+        if(c+1<h.length && !h[c+1]){a.tCol=c+1; c++}
+        acts.push(a);
+      }
+      c++;
+    }
+    if(!acts.length) throw new Error('No video columns found after the email column.');
+    var rows = aoa.slice(1).filter(function(r){return clean(r[0])||clean(r[emailCol])});
+    return {acts:acts, rows:rows, emailCol:emailCol};
+  }
+
+  /* ---------- merge all loaded files ---------- */
+  function rebuild(){
+    renderFileList();
+    if(!S.files.length){
+      S.acts=[]; S.students=[]; S.res=[];
+      $('app').classList.add('hide'); $('mergeNote').classList.add('hide');
+      return;
+    }
+
+    // union of videos, matched by name
+    var vmap = {}, acts = [];
+    S.files.forEach(function(f){
+      f.acts.forEach(function(a){
+        var v = vmap[a.key];
+        if(!v){ v = vmap[a.key] = {name:a.name, key:a.key, files:[]}; acts.push(v); }
+        if(v.files.indexOf(f.id)<0) v.files.push(f.id);
+      });
+    });
+
+    // union of students, matched by email
+    var smap = {}, studs = [], rowCount = 0;
+    S.statuses = {};
+    S.files.forEach(function(f){
+      f.rows.forEach(function(r, ri){
+        rowCount++;
+        var name = clean(r[0]), email = clean(r[f.emailCol]);
+        var key = email ? 'e:'+email.toLowerCase() : 'n:'+f.id+':'+ri;
+        var st = smap[key];
+        if(!st){ st = smap[key] = {name:name, email:email, srcIds:[], cells:{}}; studs.push(st); }
+        if(!st.name && name) st.name = name;
+        if(!st.email && email) st.email = email;
+        if(st.srcIds.indexOf(f.id)<0) st.srcIds.push(f.id);
+        f.acts.forEach(function(a){
+          var sx = clean(r[a.sCol]) || '(blank)';
+          S.statuses[sx] = (S.statuses[sx]||0)+1;
+          (st.cells[a.key] = st.cells[a.key] || []).push({st:sx, ts: a.tCol!=null ? clean(r[a.tCol]) : '', src:f.id});
+        });
+      });
+    });
+
+    // keep earlier choices when files are added or removed
+    var oldDone = S.done || {}; S.done = {};
+    Object.keys(S.statuses).forEach(function(k){ S.done[k] = (k in oldDone) ? oldDone[k] : defaultDone(k) });
+    var oldInc = S.include || {}; S.include = {};
+    acts.forEach(function(a){ S.include[a.key] = (a.key in oldInc) ? oldInc[a.key] : true });
+
+    S.acts = acts; S.students = studs;
+    S.rowCount = rowCount;
+
+    var oldFinals = S.finals || {}; S.finals = {};
+    S.files.forEach(function(f){
+      var k = oldFinals[f.id];
+      if(!(k && f.acts.some(function(a){return a.key===k}))) k = defaultFinalKey(f);
+      S.finals[f.id] = k;
+    });
+
+    buildUI();
+    updateMergeNote();
+    $('app').classList.remove('hide');
+    recompute();
+  }
+
+  function updateMergeNote(){
+    var n = $('mergeNote');
+    if(S.files.length<2){ n.classList.add('hide'); return; }
+    var multi = S.students.filter(function(x){return x.srcIds.length>1}).length;
+    var partial = S.acts.filter(function(a){return a.files.length<S.files.length});
+    var msg = 'Merged '+S.files.length+' sheets: '+S.rowCount+' rows became '+S.students.length+' students ('+multi+' appear in more than one sheet). '+
+      'A video counts as completed if it is completed in any sheet, using the earliest timestamp.';
+    if(partial.length){
+      var names = partial.slice(0,5).map(function(a){return '"'+a.name+'"'}).join(', ');
+      msg += ' '+partial.length+' video'+(partial.length===1?' is':'s are')+' not in every sheet: '+names+(partial.length>5?', ...':'')+'. If these should be the same video, check that the names match exactly.';
+    }
+    n.textContent = msg;
+    n.classList.remove('hide');
+    n.classList.toggle('warn', partial.length>0);
+  }
+
+  function renderFileList(){
+    $('fileList').innerHTML = S.files.map(function(f){
+      return '<div class="frow"><input type="text" data-id="'+f.id+'" value="'+esc(f.label)+'" aria-label="Platform name">'+
+        '<span class="fmeta">'+esc(f.fileName)+' &middot; '+f.rows.length+' rows &middot; '+f.acts.length+' videos</span>'+
+        '<button type="button" data-rm="'+f.id+'">Remove</button></div>';
+    }).join('') + (S.files.length>1 ? '<div><button type="button" data-rm="*">Remove all</button></div>' : '');
+  }
+  $('fileList').addEventListener('input', function(e){
+    var id = e.target.getAttribute && e.target.getAttribute('data-id');
+    if(!id) return;
+    var f = S.files.filter(function(x){return x.id===id})[0];
+    if(!f) return;
+    f.label = e.target.value;
+    buildSrcFilter();
+    buildFinalSels();
+    if(S.acts.length) recompute();
+  });
+  $('fileList').addEventListener('click', function(e){
+    var id = e.target.getAttribute && e.target.getAttribute('data-rm');
+    if(!id) return;
+    S.files = id==='*' ? [] : S.files.filter(function(x){return x.id!==id});
+    showErr('');
+    rebuild();
+  });
+
+  function buildSrcFilter(){
+    var sel = $('srcFilter'), cur = sel.value;
+    sel.innerHTML = '<option value="">All sources</option>' + S.files.map(function(f){return '<option value="'+f.id+'">'+esc(f.label||f.fileName)+'</option>'}).join('');
+    sel.value = S.files.some(function(f){return f.id===cur}) ? cur : '';
+    sel.classList.toggle('hide', S.files.length<2);
+  }
+
+  /* ---------- UI ---------- */
+  function buildUI(){
+    buildFinalSels();
+    updateFinalNote();
+    loadDeadline();
+    buildChips();
+    buildVids();
+    buildSrcFilter();
+    var states = ['All students','Completed','Final video done, others missing','In progress','Not started'];
+    $('stateFilter').innerHTML = states.map(function(s,i){return '<option value="'+(i?esc(s):'')+'">'+esc(s)+'</option>'}).join('');
+  }
+
+  function buildFinalSels(){
+    var multi = S.files.length>1;
+    $('finalSels').innerHTML = S.files.map(function(f){
+      var opts = f.acts.map(function(a,i){
+        return '<option value="'+esc(a.key)+'"'+(S.finals[f.id]===a.key?' selected':'')+'>'+(i+1)+'. '+esc(a.name)+'</option>';
+      }).join('');
+      return '<label class="f">'+(multi ? 'Final video for '+esc(f.label||f.fileName) : 'Final video')+'<select data-fid="'+f.id+'">'+opts+'</select></label>';
+    }).join('');
+    $('finalSame').classList.toggle('hide', !multi);
+  }
+
+  function updateFinalNote(){
+    var n = $('finalNote'), msg = '', warn = false;
+    if(S.files.length===1){
+      var f = S.files[0], cur = finalOf(f), last = f.acts[f.acts.length-1];
+      if(last.key !== cur.key){
+        msg = 'In this file the last column is "'+last.name+'", but your final video "'+cur.name+'" is at position '+(f.acts.indexOf(cur)+1)+' of '+f.acts.length+'. The order differs from the file ending.';
+        warn = true;
+      } else {
+        msg = 'Final video is the last column in this file: "'+cur.name+'".';
+      }
+    } else {
+      var notLast = [];
+      S.files.forEach(function(f){
+        var cur = finalOf(f), last = f.acts[f.acts.length-1];
+        if(last.key !== cur.key) notLast.push((f.label||f.fileName)+' (its last column is "'+last.name+'")');
+      });
+      msg = 'Each sheet uses its own final video. A student counts as finished when they complete the final video of any sheet they appear in, using the earliest timestamp.';
+      if(notLast.length) msg += ' Not the last column in: '+notLast.join('; ')+'.';
+    }
+    n.textContent = msg;
+    n.classList.remove('hide');
+    n.classList.toggle('warn', warn);
+  }
+
+  function buildChips(){
+    var keys = Object.keys(S.statuses).sort(function(a,b){return S.statuses[b]-S.statuses[a]});
+    $('chips').innerHTML = keys.map(function(k){
+      return '<label class="chip'+(S.done[k]?' on':'')+'"><input type="checkbox" data-s="'+esc(k)+'"'+(S.done[k]?' checked':'')+'>'+esc(k)+' <span class="n">'+S.statuses[k]+'</span></label>';
+    }).join('');
+    Array.prototype.forEach.call($('chips').querySelectorAll('input'), function(cb){
+      cb.addEventListener('change', function(){
+        S.done[cb.getAttribute('data-s')] = cb.checked;
+        cb.parentNode.classList.toggle('on', cb.checked);
+        recompute();
+      });
+    });
+  }
+
+  function buildVids(){
+    $('vids').innerHTML = S.acts.map(function(a){
+      var cov = '';
+      if(S.files.length>1){
+        cov = ' <span class="cov'+(a.files.length<S.files.length?' part':'')+'">'+a.files.length+'/'+S.files.length+' sheets</span>';
+      }
+      return '<label><input type="checkbox" data-k="'+esc(a.key)+'"'+(S.include[a.key]?' checked':'')+'><span>'+esc(a.name)+cov+'</span></label>';
+    }).join('');
+    Array.prototype.forEach.call($('vids').querySelectorAll('input'), function(cb){
+      cb.addEventListener('change', function(){S.include[cb.getAttribute('data-k')] = cb.checked; recompute()});
+    });
+  }
+  function setAllVids(v){
+    S.acts.forEach(function(a){S.include[a.key]=v});
+    Array.prototype.forEach.call($('vids').querySelectorAll('input'), function(cb){cb.checked=v});
+    recompute();
+  }
+  $('allOn').addEventListener('click', function(){setAllVids(true)});
+  $('allOff').addEventListener('click', function(){setAllVids(false)});
+
+  $('finalSels').addEventListener('change', function(e){
+    var fid = e.target.getAttribute && e.target.getAttribute('data-fid');
+    if(!fid) return;
+    S.finals[fid] = e.target.value;
+    var f = S.files.filter(function(x){return x.id===fid})[0];
+    var a = f && f.acts.filter(function(x){return x.key===e.target.value})[0];
+    if(a) lsAddFinal(a.name);
+    updateFinalNote();
+    loadDeadline(true);
+    recompute();
+  });
+  $('finalSame').addEventListener('click', function(){
+    var k = S.finals[S.files[0].id];
+    S.files.forEach(function(f){ if(f.acts.some(function(a){return a.key===k})) S.finals[f.id] = k; });
+    buildFinalSels();
+    updateFinalNote();
+    loadDeadline(true);
+    recompute();
+  });
+
+  /* ---------- deadline ---------- */
+  var SCHED = ['On time','Late','Overdue','Still within deadline','Completed (date unknown)'];
+  $('schedFilter').innerHTML = '<option value="">All schedule results</option>' + SCHED.map(function(x){return '<option value="'+esc(x)+'">'+esc(x)+'</option>'}).join('');
+
+  function dlKey(){
+    var seen = {}, names = [];
+    S.files.forEach(function(f){ var k = norm(finalOf(f).name); if(!seen[k]){seen[k]=1; names.push(k)} });
+    return 'moodle_deadline:'+names.join('||');
+  }
+  function fmtDeadline(){return $('dlDate').value+' '+($('dlTime').value||'23:59')}
+  function readDeadline(){
+    var d=$('dlDate').value, t=$('dlTime').value||'23:59';
+    S.deadline = d ? new Date(d+'T'+t+':59').getTime() : null;
+    var n=$('dlNote');
+    if(S.deadline){
+      n.textContent = 'Deadline: '+fmtDeadline()+'. Timestamps in the sheet are compared as written, so make sure they use the same time zone as your deadline.';
+      n.classList.remove('hide');
+    } else n.classList.add('hide');
+    $('schedFilter').classList.toggle('hide', !S.deadline);
+    if(!S.deadline) $('schedFilter').value='';
+  }
+  function loadDeadline(keep){
+    var v=''; try{v=localStorage.getItem(dlKey())||''}catch(e){}
+    if(!v && keep) return;
+    var p=v.split('|');
+    $('dlDate').value=p[0]||''; $('dlTime').value=p[1]||'23:59';
+    readDeadline();
+  }
+  function onDeadlineChange(){
+    readDeadline();
+    try{localStorage.setItem(dlKey(), $('dlDate').value+'|'+$('dlTime').value)}catch(e){}
+    if(S.acts.length) recompute();
+  }
+  $('dlDate').addEventListener('change', onDeadlineChange);
+  $('dlTime').addEventListener('change', onDeadlineChange);
+  $('dlClear').addEventListener('click', function(){
+    $('dlDate').value=''; $('dlTime').value='23:59'; onDeadlineChange();
+  });
+
+  function plural(n,w){return n+' '+w+(n===1?'':'s')}
+  function schedule(fDone, fTimeStr){
+    if(!S.deadline) return {s:'', t:'', c:'', days:0, rank:0};
+    if(fDone){
+      var t = Date.parse(String(fTimeStr||'').replace(' ','T'));
+      if(!fTimeStr || isNaN(t)) return {s:'Completed (date unknown)', t:'Completed (date unknown)', c:'mid', days:0, rank:2};
+      if(t<=S.deadline) return {s:'On time', t:'On time', c:'ok', days:0, rank:0};
+      var d=Math.ceil((t-S.deadline)/864e5);
+      return {s:'Late', t:'Late by '+plural(d,'day'), c:'no', days:d, rank:3};
+    }
+    if(Date.now()>S.deadline){
+      var o=Math.ceil((Date.now()-S.deadline)/864e5);
+      return {s:'Overdue', t:'Overdue by '+plural(o,'day'), c:'no', days:o, rank:4};
+    }
+    return {s:'Still within deadline', t:'Still within deadline', c:'mid', days:0, rank:1};
+  }
+
+  /* ---------- completed before a date ---------- */
+  var CBLIST = ['Yes','No, completed later','No, not completed','Completed (date unknown)'];
+  $('cbFilter').innerHTML = '<option value="">All results</option>' + CBLIST.map(function(x){return '<option value="'+esc(x)+'">'+esc(x)+'</option>'}).join('');
+
+  function cutoffLabel(){return ($('cbMode').value==='before' ? 'before ' : 'on or before ')+$('cbDate').value}
+  function readCutoff(){
+    var d=$('cbDate').value, m=$('cbMode').value;
+    S.cutoffMode = m;
+    S.cutoff = d ? new Date(d+(m==='before'?'T00:00:00':'T23:59:59')).getTime() : null;
+    var n=$('cbNote');
+    if(S.cutoff){
+      var what = $('cbBasis').value==='all' ? 'every included video' : 'the final video';
+      n.textContent = 'Checking who completed '+what+' '+cutoffLabel()+'. Use the results filter above the table, then Download Excel to export only the students you filtered.';
+      n.classList.remove('hide');
+    } else n.classList.add('hide');
+    $('cbFilter').classList.toggle('hide', !S.cutoff);
+    if(!S.cutoff) $('cbFilter').value='';
+  }
+  function onCutoffChange(){ readCutoff(); if(S.acts.length) recompute(); }
+  ['cbDate','cbMode','cbBasis'].forEach(function(id){$(id).addEventListener('change', onCutoffChange)});
+  $('cbClear').addEventListener('click', function(){ $('cbDate').value=''; onCutoffChange(); });
+
+  function cutoffCheck(done, ts){
+    if(!S.cutoff) return {s:'', c:'', rank:0};
+    if(!done) return {s:'No, not completed', c:'no', rank:3};
+    var t = Date.parse(String(ts||'').replace(' ','T'));
+    if(!ts || isNaN(t)) return {s:'Completed (date unknown)', c:'mid', rank:2};
+    var ok = S.cutoffMode==='before' ? t<S.cutoff : t<=S.cutoff;
+    return ok ? {s:'Yes', c:'ok', rank:0} : {s:'No, completed later', c:'mid', rank:1};
+  }
+
+  /* ---------- hide emails from download ---------- */
+  var EX_KEY = 'moodle_hidden_emails';
+  S.exEmails = {}; S.exDomains = []; S.exItems = [];
+  function readEx(){
+    var items = $('exText').value.split(/[\s,;]+/).map(function(x){return x.trim().toLowerCase()}).filter(Boolean);
+    var seen = {}; S.exItems = items.filter(function(x){ if(seen[x]) return false; seen[x]=true; return true; });
+    S.exEmails = {}; S.exDomains = [];
+    S.exItems.forEach(function(x){ if(x.charAt(0)==='@') S.exDomains.push(x); else S.exEmails[x] = true; });
+  }
+  function isExcluded(email){
+    var e = String(email||'').toLowerCase();
+    if(!e) return false;
+    if(S.exEmails[e]) return true;
+    return S.exDomains.some(function(d){return e.length>=d.length && e.slice(e.length-d.length)===d});
+  }
+  function updateExNote(){
+    var n = $('exNote');
+    if(!S.exItems.length){ n.classList.add('hide'); return; }
+    var hidden = S.res.filter(function(x){return isExcluded(x.email)}).length;
+    var have = {};
+    S.students.forEach(function(st){ if(st.email) have[st.email.toLowerCase()] = true; });
+    var unknown = S.exItems.filter(function(x){return x.charAt(0)!=='@' && !have[x]});
+    var msg = hidden+' student'+(hidden===1?'':'s')+' in the loaded data will be left out of the download.';
+    if(unknown.length){
+      msg += ' Not found in the loaded data: '+unknown.slice(0,5).join(', ')+(unknown.length>5?' and '+(unknown.length-5)+' more':'')+'. Check for typos.';
+    }
+    n.textContent = msg;
+    n.classList.remove('hide');
+    n.classList.toggle('warn', unknown.length>0);
+  }
+  try{ $('exText').value = localStorage.getItem(EX_KEY) || ''; }catch(e){}
+  readEx();
+  $('exText').addEventListener('input', function(){
+    readEx();
+    try{ localStorage.setItem(EX_KEY, $('exText').value); }catch(e){}
+    if(S.acts.length){ updateExNote(); renderBody(); }
+  });
+  $('exClear').addEventListener('click', function(){
+    $('exText').value = '';
+    $('exText').dispatchEvent(new Event('input'));
+  });
+
+  /* upload a sheet that lists the emails to hide */
+  $('exFile').addEventListener('change', function(){
+    var f = $('exFile').files[0];
+    $('exFile').value = '';
+    if(!f) return;
+    var msg = $('exUpMsg');
+    f.arrayBuffer().then(function(buf){
+      var wb = XLSX.read(new Uint8Array(buf), {type:'array'});
+      var found = [];
+      wb.SheetNames.forEach(function(name){
+        var aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:false, defval:'', blankrows:false});
+        aoa.forEach(function(row){
+          row.forEach(function(cell){
+            var t = String(cell||'').trim();
+            if(!t) return;
+            if(/^@[^\s@,;]+\.[^\s@,;]+$/.test(t)){ found.push(t.toLowerCase()); return; }
+            var m = t.match(/[^\s,;<>"'()\[\]]+@[^\s,;<>"'()\[\]]+\.[^\s,;<>"'()\[\]]+/g);
+            if(m) m.forEach(function(e){found.push(e.toLowerCase())});
+          });
+        });
+      });
+      var before = {}; S.exItems.forEach(function(x){before[x]=true});
+      var added = 0, dup = 0, seen = {};
+      found.forEach(function(x){ if(seen[x]) return; seen[x]=true; if(before[x]) dup++; else added++; });
+      if(!Object.keys(seen).length){
+        msg.textContent = 'No email addresses were found in "'+f.name+'".';
+        msg.classList.remove('hide'); msg.classList.add('warn');
+        return;
+      }
+      var merged = S.exItems.concat(Object.keys(seen).filter(function(x){return !before[x]}));
+      $('exText').value = merged.join('\n');
+      $('exText').dispatchEvent(new Event('input'));
+      msg.textContent = 'Added '+added+(added===1?' entry':' entries')+' from "'+f.name+'"'+(dup? ' ('+dup+' already in the list)':'')+'. The list is saved in this browser.';
+      msg.classList.remove('hide'); msg.classList.remove('warn');
+    }).catch(function(err){
+      msg.textContent = 'Could not read "'+f.name+'": '+err.message;
+      msg.classList.remove('hide'); msg.classList.add('warn');
+    });
+  });
+
+  /* ---------- compute ---------- */
+  function isDone(s){return !!S.done[clean(s)||'(blank)']}
+
+  // Display/export only: keep the date part of a timestamp (comparisons still use the full timestamp)
+  function dateOnly(ts){
+    var t = String(ts||'').trim();
+    if(!t) return '';
+    var m = t.match(/^(\d{4}-\d{2}-\d{2})/);
+    if(m) return m[1];
+    return t.replace(/[\sT]+\d{1,2}:\d{2}(:\d{2})?(\.\d+)?\s*(AM|PM)?\s*(Z|[+-]\d{2}:?\d{2})?$/i,'').trim();
+  }
+  function tsVal(ts){var t=Date.parse(String(ts||'').replace(' ','T')); return isNaN(t)?null:t}
+  function srcLabel(id){var f=S.files.filter(function(x){return x.id===id})[0]; return f?f.label:''}
+
+  // earliest completed entry (done in ANY sheet); entries with a readable timestamp win
+  function pickDone(arr){
+    var pick = null, pt = null;
+    arr.forEach(function(e){
+      if(!isDone(e.st)) return;
+      var t = tsVal(e.ts);
+      if(pick===null || (t!==null && (pt===null || t<pt))){pick=e; pt=t}
+    });
+    return pick;
+  }
+  // One student, one video: done if completed in ANY sheet; timestamp = earliest completion
+  function cellInfo(stu, a){
+    var arr = stu.cells[a.key];
+    if(!arr || !arr.length) return {done:false, st:'(not in file)', ts:''};
+    var pick = pickDone(arr);
+    if(pick) return {done:true, st:pick.st, ts:pick.ts};
+    return {done:false, st:arr[0].st, ts:''};
+  }
+  // Final video: each sheet has its own; check the student against the final video of every sheet they appear in
+  function finalInfo(stu){
+    var entries = [];
+    S.files.forEach(function(f){
+      (stu.cells[S.finals[f.id]] || []).forEach(function(e){ if(e.src===f.id) entries.push(e); });
+    });
+    if(!entries.length) return {done:false, st:'(not in file)', ts:''};
+    var pick = pickDone(entries);
+    if(pick) return {done:true, st:pick.st, ts:pick.ts};
+    return {done:false, st:entries[0].st, ts:''};
+  }
+
+  function recompute(){
+    var inc = S.acts.filter(function(a){return S.include[a.key]});
+    $('incCount').textContent = inc.length+' of '+S.acts.length;
+    S.res = S.students.map(function(stu){
+      var done=0, missing=[], latest=null, latestStr='';
+      inc.forEach(function(a){
+        var c = cellInfo(stu, a);
+        if(c.done){
+          done++;
+          var t = tsVal(c.ts);
+          if(c.ts && (latest===null || (t!==null && t>latest))){latest = (t===null ? latest : t); latestStr = c.ts}
+        } else missing.push(a.name);
+      });
+      var total = inc.length;
+      var fc = finalInfo(stu), fDone = fc.done, fTime = fDone ? fc.ts : '';
+      var state;
+      if(total>0 && done===total) state='Completed';
+      else if(fDone) state='Final video done, others missing';
+      else if(done>0) state='In progress';
+      else state='Not started';
+      var sc = schedule(fDone, fTime);
+      var cbAll = ($('cbBasis').value==='all');
+      var cc = cutoffCheck(cbAll ? state==='Completed' : fDone, cbAll ? latestStr : fTime);
+      return {
+        cb:cc.s, cbCls:cc.c, cbSort:cc.rank,
+        sched:sc.s, sText:sc.t, sCls:sc.c, sDays:sc.days, sSort:sc.rank*100000+sc.days,
+        name:stu.name, email:stu.email, srcIds:stu.srcIds, srcText:stu.srcIds.map(srcLabel).join(', '),
+        done:done, total:total, rate: total? done/total*100 : 0,
+        fDone:fDone, fStatus:fc.st, fTime:fTime, fDate:dateOnly(fTime),
+        latest:latestStr, missing:missing, state:state
+      };
+    });
+    renderStats();
+    renderHead();
+    renderBody();
+    updateExNote();
+  }
+
+  function renderStats(){
+    var n=S.res.length, full=0, fin=0, sum=0;
+    S.res.forEach(function(x){if(x.state==='Completed')full++; if(x.fDone)fin++; sum+=x.rate});
+    var avg = n? sum/n : 0;
+    var items = [
+      [n, S.files.length>1 ? 'Students (merged)' : 'Students in file'],
+      [avg.toFixed(1)+'%','Average completion rate'],
+      [full+' ('+(n?(full/n*100).toFixed(1):0)+'%)','Completed every included video'],
+      [fin+' ('+(n?(fin/n*100).toFixed(1):0)+'%)','Finished the final video']
+    ];
+    if(S.files.length>1){
+      var multiN = S.res.filter(function(x){return x.srcIds.length>1}).length;
+      items.push([multiN,'Found in more than one sheet']);
+    }
+    if(S.deadline){
+      var on=0, late=0, over=0;
+      S.res.forEach(function(x){if(x.sched==='On time')on++; else if(x.sched==='Late')late++; else if(x.sched==='Overdue')over++});
+      var pc=function(v){return v+' ('+(n?(v/n*100).toFixed(1):0)+'%)'};
+      items.push([pc(on),'Finished on time'],[pc(late),'Finished late'],[pc(over),'Overdue, not finished']);
+    }
+    if(S.cutoff){
+      var yes=0;
+      S.res.forEach(function(x){if(x.cb==='Yes')yes++});
+      items.push([yes+' ('+(n?(yes/n*100).toFixed(1):0)+'%)','Completed '+cutoffLabel()]);
+    }
+    $('stats').innerHTML = items.map(function(i){return '<div class="stat"><div class="v">'+esc(i[0])+'</div><div class="l">'+esc(i[1])+'</div></div>'}).join('');
+  }
+
+  function cols(){
+    var c = [{k:'name',l:'Name'},{k:'email',l:'Email'}];
+    if(S.files.length>1) c.push({k:'srcText',l:'Source'});
+    c.push({k:'done',l:'Videos done'},{k:'rate',l:'Completion rate'},{k:'fTime',l:'Final video completed at'},{k:'state',l:'State'});
+    if(S.deadline) c.push({k:'sSort',l:'Schedule'});
+    if(S.cutoff) c.push({k:'cbSort',l:'Completed '+cutoffLabel()});
+    return c;
+  }
+  function renderHead(){
+    $('thead').innerHTML = cols().map(function(c){
+      var ar = S.sortKey===c.k ? (S.sortDir>0?' <span class="ar">&#9650;</span>':' <span class="ar">&#9660;</span>') : '';
+      return '<th data-k="'+c.k+'">'+esc(c.l)+ar+'</th>';
+    }).join('');
+    Array.prototype.forEach.call($('thead').querySelectorAll('th'), function(th){
+      th.addEventListener('click', function(){
+        var k=th.getAttribute('data-k');
+        if(S.sortKey===k) S.sortDir*=-1; else {S.sortKey=k; S.sortDir=(k==='rate'||k==='done')?-1:1}
+        renderHead(); renderBody();
+      });
+    });
+  }
+
+  function view(){
+    var q = norm($('q').value), st = $('stateFilter').value, sf = S.deadline ? $('schedFilter').value : '', cf = S.cutoff ? $('cbFilter').value : '', sr = S.files.length>1 ? $('srcFilter').value : '';
+    var out = S.res.filter(function(x){
+      return (!q || norm(x.name).indexOf(q)>-1 || norm(x.email).indexOf(q)>-1) && (!st || x.state===st) && (!sf || x.sched===sf) && (!cf || x.cb===cf) && (!sr || x.srcIds.indexOf(sr)>-1);
+    });
+    var k=S.sortKey, d=S.sortDir;
+    if(k==='sSort' && !S.deadline) k='rate';
+    if(k==='cbSort' && !S.cutoff) k='rate';
+    out.sort(function(a,b){
+      var av=a[k], bv=b[k];
+      if(k==='fTime'){av=av||''; bv=bv||''; if(!av&&bv) return 1; if(av&&!bv) return -1}
+      if(typeof av==='string') return av.localeCompare(bv)*d;
+      return (av-bv)*d;
+    });
+    return out;
+  }
+
+  function renderBody(){
+    var rows = view();
+    $('noRows').classList.toggle('hide', rows.length>0);
+    $('tbody').innerHTML = rows.map(function(x){
+      var cls = x.state==='Completed' ? 'ok' : (x.state==='Not started' ? 'no' : 'mid');
+      var tip = x.missing.length ? ' title="Missing: '+esc(x.missing.join(' | '))+'"' : '';
+      var ex = isExcluded(x.email);
+      return '<tr'+(ex?' class="excl"':'')+'>'+
+        '<td>'+esc(x.name)+'</td>'+
+        '<td>'+esc(x.email)+(ex?' <span class="tag no">hidden from download</span>':'')+'</td>'+
+        (S.files.length>1 ? '<td>'+esc(x.srcText)+'</td>' : '')+
+        '<td class="num"'+tip+'>'+x.done+' / '+x.total+'</td>'+
+        '<td class="num"><span class="bar"><i style="width:'+x.rate.toFixed(1)+'%"></i></span>'+x.rate.toFixed(1)+'%</td>'+
+        '<td class="num">'+(x.fDate?esc(x.fDate):(x.fDone?'(no date)':'&ndash;'))+'</td>'+
+        '<td><span class="tag '+cls+'">'+esc(x.state)+'</span></td>'+
+        (S.deadline ? '<td><span class="tag '+x.sCls+'">'+esc(x.sText)+'</span></td>' : '')+
+        (S.cutoff ? '<td><span class="tag '+x.cbCls+'">'+esc(x.cb)+'</span></td>' : '')+
+      '</tr>';
+    }).join('');
+  }
+  $('q').addEventListener('input', renderBody);
+  $('stateFilter').addEventListener('change', renderBody);
+  $('schedFilter').addEventListener('change', renderBody);
+  $('cbFilter').addEventListener('change', renderBody);
+  $('srcFilter').addEventListener('change', renderBody);
+
+  /* ---------- export ---------- */
+  $('export').addEventListener('click', function(){
+    var data = view().filter(function(x){return !isExcluded(x.email)}).map(function(x){
+      var o = {'Name':x.name, 'Email':x.email};
+      if(S.files.length>1) o['Source'] = x.srcText;
+      o['Videos completed'] = x.done;
+      o['Total videos'] = x.total;
+      o['Completion rate %'] = Math.round(x.rate*10)/10;
+      o['Final video status'] = x.fStatus;
+      o['Final video completed at'] = x.fDate;
+      o['Latest completion timestamp (any video)'] = x.latest;
+      o['State'] = x.state;
+      if(S.deadline){
+        o['Deadline'] = fmtDeadline();
+        o['Schedule'] = x.sText;
+        o['Days late / overdue'] = x.sDays || '';
+      }
+      if(S.cutoff){
+        o['Cut-off'] = cutoffLabel();
+        o['Completed by cut-off'] = x.cb;
+      }
+      return o;
+    });
+    var ws = XLSX.utils.json_to_sheet(data);
+    if(!data.length){ showErr('Nothing to download: every student in the current view is hidden or filtered out.'); return; }
+    var keys = Object.keys(data[0]||{});
+    ws['!cols'] = keys.map(function(k){return {wch: k==='Name'?30 : k==='Email'?36 : Math.max(14,k.length+2)}});
+    var info = [
+      ['Source files', S.files.map(function(f){return f.label+' ('+f.fileName+', '+f.rows.length+' rows)'}).join(' | ')],
+      ['Videos included in rate', S.acts.filter(function(a){return S.include[a.key]}).length+' of '+S.acts.length],
+      ['Statuses counted as completed', Object.keys(S.done).filter(function(k){return S.done[k]}).join(' | ')],
+      ['Statuses NOT counted', Object.keys(S.done).filter(function(k){return !S.done[k]}).join(' | ')]
+    ];
+    S.files.forEach(function(f,i){ info.splice(1+i, 0, ['Final video'+(S.files.length>1 ? ' ('+f.label+')' : ''), finalOf(f).name]); });
+    if(S.deadline) info.push(['Deadline', fmtDeadline()]);
+    if(S.cutoff) info.push(['Cut-off check', 'Completed '+cutoffLabel()+' ('+($('cbBasis').value==='all'?'every included video completed':'final video completed')+')']);
+    if(S.files.length>1) info.push(['Merge rule','Students matched by email. A video counts as completed if completed in any sheet; the earliest completion timestamp is used. Each sheet has its own final video; a student is finished when they complete the final video of any sheet they appear in.']);
+    var ws2 = XLSX.utils.aoa_to_sheet(info);
+    ws2['!cols'] = [{wch:32},{wch:80}];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Completion');
+    XLSX.utils.book_append_sheet(wb, ws2, 'Settings used');
+    var base = S.files.length>1 ? 'merged_'+S.files.length+'_sheets' : S.files[0].fileName.replace(/\.[^.]+$/,'');
+    var fname = base+'_completion_rate.xlsx';
+    var buf = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+    var viaPlatform = (window.claude && typeof window.claude.use === 'function')
+      ? window.claude.use('downloads') : Promise.resolve(null);
+    viaPlatform.then(function(dl){
+      if(dl){
+        return dl.save({filename:fname, data:buf}).catch(function(err){
+          if(err && err.code==='declined') return;
+          showErr('Download was not completed ('+(err && err.code ? err.code : 'unknown')+').');
+        });
+      }
+      XLSX.writeFile(wb, fname);
+    }).catch(function(){
+      try{XLSX.writeFile(wb, fname)}catch(e){showErr('Download is not available in this view.')}
+    });
+  });
+})();
+</script>
+</body>
+</html>

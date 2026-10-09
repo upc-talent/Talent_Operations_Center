@@ -39,11 +39,12 @@ function buildSupervisorFilterBar(){
     renderMsFilter('sup','areaManager','Area Manager', distinctValues(scope,'areaManager').map(v=>({value:v,text:v}))) +
     renderMsFilter('sup','city','City', distinctValues(scope,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('sup','date','Date', dateFilterOptions(days)) +
+    renderMsFilter('sup','retrain','Retraining', RETRAIN_FILTER_OPTIONS) +
     `<button class="btn btn-outline btn-sm" onclick="clearSupFilters()">Clear Filters</button>`;
 }
 function onSupSearch(v){ supSearchQ=v; renderSupervisorTable(); }
 function clearSupFilters(){
-  supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set() };
+  supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set(), retrain:new Set() };
   supSearchQ='';
   supStatusFilter = null;
   supMissingFilter = false;
@@ -74,10 +75,13 @@ async function loadSupervisorView(silent){
   API.setSupervisor(name);
   await setPersonal('last-supervisor-name', name);
   await loadCoreData();
-  supChangeRequests = await getShared(K_CHANGE_REQ, []);
+  const req = await getSharedMany([K_CHANGE_REQ, K_DATA_EDIT], {[K_CHANGE_REQ]:[], [K_DATA_EDIT]:[]});
+  supChangeRequests = req[K_CHANGE_REQ] || [];
+  supDataEdits = req[K_DATA_EDIT] || [];
   registerFilterFacets('sup', { items: currentSupervisorScope, values: {
     district: p=>[p.district], areaManager: p=>[p.areaManager], city: p=>[p.city],
-    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; }
+    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; },
+    retrain: p=>[retrainKey(p)]
   }});
 
   document.getElementById('supMain').classList.remove('hidden');
@@ -107,20 +111,24 @@ async function openSubmissionHistoryModal(){
   const changeDecided = supChangeRequests.filter(r=>r.supervisor===currentSupervisor && (r.status==='Approved'||r.status==='Rejected'))
     .map(r=>({displayName:r.displayName, status:r.status, reason:r.rejectionReason||'', decidedAt:r.decidedAt, type:'Date Change'}));
 
-  const list = [...pendingDecided, ...quotaDecided, ...leaveDecided, ...changeDecided]
+  supDataEdits = await getShared(K_DATA_EDIT, []);
+  const editDecided = supDataEdits.filter(r=>r.supervisor===currentSupervisor && r.status && r.status!=='Pending')
+    .map(r=>({displayName:r.displayName, status:r.status, reason:r.decisionNote||r.rejectionReason||'', decidedAt:r.decidedAt, type:'Data Edit'}));
+
+  const list = [...pendingDecided, ...quotaDecided, ...leaveDecided, ...changeDecided, ...editDecided]
     .sort((a,b)=> new Date(b.decidedAt||0) - new Date(a.decidedAt||0));
 
   const rows = list.length ? list.map((r,i)=>`
     <tr>
       <td class="name-cell" style="white-space:normal;min-width:160px;"><span class="rownum">${i+1}</span>${esc(r.displayName)}</td>
       <td style="white-space:normal;"><span class="badge badge-empty">${esc(r.type)}</span></td>
-      <td><span class="badge ${r.status==='Approved'?'badge-date':'badge-leave'}">${esc(r.status)}</span></td>
+      <td><span class="badge ${r.status==='Approved'?'badge-date':(r.status==='Partially Approved'?'badge-pending':'badge-leave')}">${esc(r.status)}</span></td>
       <td style="white-space:normal;min-width:100px;">${esc(r.reason||'—')}</td>
       <td style="white-space:nowrap;">${r.decidedAt ? new Date(r.decidedAt).toLocaleDateString('en-GB') : '—'}</td>
     </tr>`).join('') : `<tr><td colspan="5" class="empty-msg">No decisions yet</td></tr>`;
   showModal(`
     <h3>Submission History</h3>
-    <p class="small-note">New pharmacists, over-quota assignments, Annual Leave and date change requests you've submitted, and what happened to them — these stay here permanently.</p>
+    <p class="small-note">New pharmacists, over-quota assignments, Annual Leave, date change and data edit requests you've submitted, and what happened to them — these stay here permanently.</p>
     <div class="table-wrap"><table>
       <thead><tr><th>Pharmacist Name</th><th>Type</th><th>Status</th><th>Reason</th><th>Decided</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -138,8 +146,8 @@ async function checkSupervisorNotifications(){
   const mine = notifs.filter(n=>n.supervisor===currentSupervisor && !n.read);
   if(mine.length){
     mine.forEach(n=>{
-      const msg = n.result==='Rejected' && n.reason ? `${n.pharmacistName}: Rejected — ${n.reason}` : `${n.pharmacistName}: ${n.result}`;
-      toast(msg, n.result==='Approved' ? 'ok' : 'err');
+      const msg = (n.result==='Rejected' || n.result==='Partially Approved') && n.reason ? `${n.pharmacistName}: ${n.result} — ${n.reason}` : `${n.pharmacistName}: ${n.result}`;
+      toast(msg, n.result==='Rejected' ? 'err' : (n.result==='Approved' ? 'ok' : 'info'));
     });
     notifs = notifs.map(n=> (n.supervisor===currentSupervisor && !n.read) ? {...n, read:true} : n);
     await setShared(K_NOTIF, notifs);
@@ -233,6 +241,7 @@ function applySupFilters(list){
     if(!inSet(p.areaManager, supFilterState.areaManager)) return false;
     if(!inSet(p.city, supFilterState.city)) return false;
     if(!matchesDateSet(p.id, supFilterState.date)) return false;
+    if(!inSet(retrainKey(p), supFilterState.retrain)) return false;
     if(supSearchQ){
       const q = supSearchQ.toLowerCase();
       if(!p.displayName.toLowerCase().includes(q) && !(p.email||'').toLowerCase().includes(q)) return false;
@@ -249,19 +258,20 @@ function renderSupervisorTable(){
   const pending = (supStatusFilter || supMissingFilter) ? [] : applySupFilters(currentSupervisorPendingScope());
   const tag = document.getElementById('supStatusTag');
   if(tag) tag.innerHTML = supMissingFilter
-    ? `<span class="status-filter-tag">Showing: Missing Date / Work Shift <button type="button" title="Show everyone" onclick="setSupMissingFilter(false)">✕</button></span>`
+    ? `<span class="status-filter-tag">Showing: Training day without a Work Shift <button type="button" title="Show everyone" onclick="setSupMissingFilter(false)">✕</button></span>`
     : statusFilterTagHtml(supStatusFilter, 'setSupStatusFilter');
   own = applySort('sup', own);
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
   if(!own.length && !pending.length){
-    tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No pharmacists match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="10" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
     bulkSyncAfterRender('sup', []);
     return;
   }
   let i = 0;
-  // Column order: Pharmacist Name (with its row number), Pharmacy No., Email, Date, Attendance Status, Work Shift, Notes
+  // Column order: Pharmacist Name (with its row number), Pharmacy No., Email, Date, Attendance Status, Work Shift, Core %, Capsule %, Notes
+  ['core','capsule'].forEach(slot=>{ const th = document.getElementById('th-sup-'+slot); if(th) th.title = courseSlotHeaderTitle(slot); });
   const nameCell = (n, p) => `<td class="name-cell"><span class="rownum">${n}</span>${esc(p.displayName)}</td>`;
   let rows = own.map(p=>{
     i++;
@@ -271,14 +281,18 @@ function renderSupervisorTable(){
       : dateCellHtml(p, true, days, 'onAssignChange');
     if(!lock && ops.assignments[p.id]?.locked && isFailedAttendance(p)) dateHtml += `<div class="retrain-note">↻ Missed the training — pick a new day</div>`;
     if(pendingChangeFor(p.id)) dateHtml += `<div class="small-note" style="color:var(--pending);font-weight:700;">⏳ Change requested</div>`;
+    const editReq = pendingDataEditFor(p.id);
+    const editNote = editReq ? `<div class="small-note edit-pending">✎ Edit requested <button type="button" class="link-btn" onclick="cancelDataEdit('${editReq.id}')">cancel</button></div>` : '';
     return `<tr>
       ${bulkCheckboxCell('sup', p.id)}
-      ${nameCell(i, p)}
+      ${nameCell(i, p).replace(/<\/td>$/, editNote+'</td>')}
       <td>${esc(p.pharmacyNo||'—')}</td>
       <td class="email-cell">${esc(p.email||'—')}</td>
-      <td class="no-truncate${supMissingFilter && !ops.assignments[p.id] ? ' cell-missing' : ''}">${dateHtml}</td>
+      <td class="no-truncate">${dateHtml}</td>
       <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
-      <td class="${supMissingFilter && !(ops.shifts && ops.shifts[p.id]) ? 'cell-missing' : ''}">${workShiftSelectHtml(p)}</td>
+      <td class="${supMissingFilter && isMissingSubmitData(p) ? 'cell-missing' : ''}">${workShiftSelectHtml(p)}</td>
+      <td>${courseSlotPctHtml(p, 'core')}</td>
+      <td>${courseSlotPctHtml(p, 'capsule')}</td>
       <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
@@ -296,11 +310,14 @@ function renderSupervisorTable(){
       <td></td>
       <td></td>
       <td></td>
+      <td></td>
+      <td></td>
     </tr>`;
   }).join('');
   tb.innerHTML = rows;
   updateSortIndicators('sup');
   bulkSyncAfterRender('sup', own.map(p=>p.id));
+  onSupSelectionChange();
 }
 
 /* ═══════════════════════════════ LOCKS: SUBMIT, TRAINER-MANAGED DAYS, RETRAINING ═══════════════════════════════
@@ -347,9 +364,10 @@ function currentChoiceText(p){
   return d ? dayGroupText(d) : 'Not Assigned';
 }
 
-// Submit needs every pharmacist (Offline and Online) to have a Date (or another status) and a Work Shift; otherwise
-// the table shows just the ones still missing something, with the empty cells outlined in red.
-function isMissingSubmitData(p){ return !ops.assignments[p.id] || !(ops.shifts && ops.shifts[p.id]); }
+// Submit locks what has been filled so far; empty rows stay open and can be submitted later. The one rule: a
+// pharmacist booked on a TRAINING DAY (not a leave status) needs a Work Shift. If any don't, the table shows just
+// those, with the empty Work Shift cells outlined in red.
+function isMissingSubmitData(p){ const a = ops.assignments[p.id]; return !!(a && a.type==='date') && !(ops.shifts && ops.shifts[p.id]); }
 let supMissingFilter = false;
 function setSupMissingFilter(on){
   supMissingFilter = !!on;
@@ -367,12 +385,14 @@ async function submitSupervisorChoices(){
     renderSupervisorTable();
     const card = document.getElementById('supTableCard');
     if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
-    toast(`Can't submit yet — ${missing.length} pharmacist(s) still need a Date and a Work Shift (shown below, empty cells in red)`, 'err');
+    toast(`Can't submit yet — ${missing.length} pharmacist(s) booked on a training day still need a Work Shift (shown below, in red)`, 'err');
     return;
   }
   const toLock = mine.filter(p=>{ const a = ops.assignments[p.id]; return a && !a.locked; });
-  if(!toLock.length){ toast('Everything you have chosen is already submitted', 'info'); return; }
-  const go = await confirmDialog(`Submit ${toLock.length} pharmacist(s)? Their dates and statuses will be locked and the training team will be notified. To change a locked pharmacist afterwards you'll need to send a Request Change.`);
+  const empty = mine.filter(p=>!ops.assignments[p.id]).length;
+  if(!toLock.length){ toast(empty ? 'Nothing new to submit — choose a Date or status for more pharmacists first' : 'Everything you have chosen is already submitted', 'info'); return; }
+  const go = await confirmDialog(`Submit ${toLock.length} pharmacist(s)? Their dates and statuses will be locked and the training team will be notified. To change a locked pharmacist afterwards you'll need to send a Request Change.`
+    + (empty ? ` ${empty} pharmacist(s) with no Date yet stay open — you can fill them and Submit again later.` : ''));
   if(!go) return;
   if(!await setShared(K_OPS, ops)) return;   // every change made on this page reaches the server before locking
   try{
@@ -385,18 +405,32 @@ async function submitSupervisorChoices(){
 /* Request Change: for pharmacists the supervisor can't change themselves. Goes to the trainer's Approvals tab. */
 let supChangeRequests = [];
 function pendingChangeFor(pid){ return supChangeRequests.find(r=>r.pharmacistId===pid && r.status==='Pending'); }
+// Only for pharmacists the supervisor can't change themselves: submitted (locked) or managed by the training team.
+function canRequestChange(p){ const r = supLockReason(p); return r==='submitted' || r==='managed'; }
 function onSupSelectionChange(){
+  const eb = document.getElementById('requestEditBtn');
+  if(eb){ eb.disabled = !bulkSel.sup.size; eb.title = bulkSel.sup.size ? 'Ask the training team to correct the ticked pharmacists\' details' : 'Tick pharmacists in the table first'; }
   const b = document.getElementById('requestChangeBtn');
-  if(b){ b.disabled = !bulkSel.sup.size; b.title = bulkSel.sup.size ? 'Ask the training team to change the ticked pharmacists' : 'Tick pharmacists in the table first'; }
+  if(!b) return;
+  const anyLocked = masterData.some(p=>p.supervisor===currentSupervisor && canRequestChange(p));
+  b.classList.toggle('hidden', !anyLocked);
+  const eligible = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(p=>p && canRequestChange(p)).length;
+  b.disabled = !eligible;
+  b.title = eligible ? 'Ask the training team to change the ticked locked pharmacists'
+    : (bulkSel.sup.size ? 'Request Change is only for submitted or training-team-managed (🔒) pharmacists — change the others directly in the table' : 'Tick locked (🔒) pharmacists in the table first');
 }
 function openRequestChangeModal(){
   const selected = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
   if(!selected.length){ toast('Tick pharmacists in the table first','err'); return; }
-  const people = selected.filter(p=>!pendingChangeFor(p.id));
-  const waiting = selected.length - people.length;
+  const lockedSel = selected.filter(canRequestChange);
+  const notLocked = selected.length - lockedSel.length;
+  if(!lockedSel.length){ toast('Request Change is only for submitted or training-team-managed (🔒) pharmacists — change the others directly in the table','info'); return; }
+  const people = lockedSel.filter(p=>!pendingChangeFor(p.id));
+  const waiting = lockedSel.length - people.length;
   if(!people.length){ toast('The ticked pharmacists already have a change request waiting','info'); return; }
-  const online = supTrack==='online';
-  const days = visibleDaysFor(currentSupervisor).filter(d=>!!d.isOnline===online);
+  // Target days follow each pharmacist's own type (online / in-person); a mixed selection gets both lists.
+  const kinds = new Set(people.map(p=>isOnlinePharmacist(p)));
+  const days = visibleDaysFor(currentSupervisor).filter(d=>kinds.has(!!d.isOnline));
   const opts = `<option value="">— choose —</option>`
     + `<optgroup label="Training Days">${days.map(d=>`<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}</option>`).join('')}</optgroup>`
     + `<optgroup label="Other Status">${LEAVE_STATUSES.map(s=>`<option value="leave:${esc(s)}">${esc(s)}</option>`).join('')}</optgroup>`
@@ -405,6 +439,8 @@ function openRequestChangeModal(){
     <p class="small-note">The training team reviews the request in their Approvals tab; you'll see their decision in your notifications and Submission History.</p>
     <ul class="req-list">${people.map(p=>`<li><b>${esc(p.displayName)}</b> <span class="small-note">— now: ${esc(currentChoiceText(p))}</span></li>`).join('')}</ul>
     ${waiting ? `<p class="small-note">${waiting} ticked pharmacist(s) already have a request waiting and are left out.</p>` : ''}
+    ${notLocked ? `<p class="small-note">${notLocked} ticked pharmacist(s) aren't locked and are left out — change them directly in the table.</p>` : ''}
+    ${kinds.size>1 ? `<p class="small-note">A training day only applies to pharmacists of the same type (🌐 online / in-person); the others are left out.</p>` : ''}
     <div class="field"><label class="field-label req">Change to</label><select id="reqChangeTo">${opts}</select></div>
     <div class="field"><label class="field-label req">Reason</label><textarea id="reqChangeReason" rows="3" placeholder="Why is the change needed?"></textarea></div>
     <div class="modal-actions">
@@ -419,7 +455,10 @@ async function sendChangeRequest(){
   if(!reason){ toast('Please give a reason for the training team','err'); return; }
   let to = null;
   if(val!=='__none__'){ const [type, rest] = val.split(':'); to = type==='date' ? {type:'date', dateId:rest} : {type:'leave', status:rest}; }
-  const people = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(p=>p && !pendingChangeFor(p.id));
+  const targetDay = to && to.type==='date' ? dayById(to.dateId) : null;
+  const people = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id))
+    .filter(p=>p && canRequestChange(p) && !pendingChangeFor(p.id) && (!targetDay || !!targetDay.isOnline===isOnlinePharmacist(p)));
+  if(!people.length){ toast('None of the ticked pharmacists can move to that day (online and in-person days don\'t mix)','err'); return; }
   supChangeRequests = await getShared(K_CHANGE_REQ, []);
   const now = nowIso();
   people.forEach(p=>{
@@ -435,6 +474,90 @@ async function sendChangeRequest(){
     renderSupervisorTable();
     toast(`Request sent for ${people.length} pharmacist(s) — the training team will review it`,'ok');
   }
+}
+
+/* Request Data Edit: ask the training team to correct a pharmacist's details (name, email, pharmacy no., employee
+   ID, phone, SCFHS, city / online-physical). Works for any of the supervisor's own pharmacists, locked or not. The
+   trainer approves all, some or none of the changes; the outcome arrives in notifications and Submission History. */
+let supDataEdits = [];
+function pendingDataEditFor(pid){ return supDataEdits.find(r=>r.pharmacistId===pid && r.status==='Pending'); }
+function openDataEditModal(){
+  const selected = [...bulkSel.sup].map(id=>masterData.find(m=>m.id===id)).filter(Boolean);
+  if(!selected.length){ toast('Tick pharmacists in the table first','err'); return; }
+  const people = selected.filter(p=>!pendingDataEditFor(p.id)).slice(0, 15);
+  const waiting = selected.filter(p=>pendingDataEditFor(p.id)).length;
+  if(!people.length){ toast('The ticked pharmacists already have an edit request waiting','info'); return; }
+  const cities = allKnownCities().filter(c=>c.trim().toLowerCase()!=='online');
+  const block = p=>{
+    const online = isOnlinePharmacist(p);
+    const input = f=> f.hidden
+      ? `<input class="de-in" data-pid="${p.id}" data-field="${f.key}" placeholder="Not shown — type a new value to change it">`
+      : `<input class="de-in" data-pid="${p.id}" data-field="${f.key}" value="${esc(p[f.key]||'')}">`;
+    return `<div class="de-block">
+      <div class="de-head">${esc(p.displayName)} <span class="small-note">${esc(p.email||'')}</span></div>
+      <div class="de-grid">
+        ${DATA_EDIT_FIELDS.filter(f=>f.key!=='city').map(f=>`<label><span class="field-label">${esc(f.label)}</span>${input(f)}</label>`).join('')}
+        <label><span class="field-label">Training type</span>
+          <select class="de-type" data-pid="${p.id}" onchange="this.closest('.de-block').querySelector('.de-city').disabled = this.value==='online'">
+            <option value="physical" ${online?'':'selected'}>Physical (in person)</option><option value="online" ${online?'selected':''}>Online</option></select></label>
+        <label><span class="field-label">City (physical)</span>
+          <select class="de-city" data-pid="${p.id}" ${online?'disabled':''}><option value="">— choose —</option>${cities.map(c=>`<option ${c===p.city?'selected':''}>${esc(c)}</option>`).join('')}</select></label>
+      </div></div>`;
+  };
+  showModal(`<h3>Request Data Edit — ${people.length} pharmacist(s)</h3>
+    <p class="small-note">Change only what is wrong; the training team reviews each change and can accept some and refuse others. You'll see their decision in your notifications and Submission History.</p>
+    ${waiting ? `<p class="small-note">${waiting} ticked pharmacist(s) already have an edit request waiting and are left out.</p>` : ''}
+    ${selected.length - waiting > 15 ? `<p class="small-note">Only the first 15 are shown — send the rest in another request.</p>` : ''}
+    <div class="de-list">${people.map(block).join('')}</div>
+    <div class="field"><label class="field-label req">Reason</label><textarea id="deReason" rows="2" placeholder="What is wrong / where does the correct information come from?"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="sendDataEditRequest()">Send Request</button>
+    </div>`, 'max-width:860px;');
+}
+async function sendDataEditRequest(){
+  const reason = document.getElementById('deReason').value.trim();
+  if(!reason){ toast('Please give a reason for the training team','err'); return; }
+  const pids = [...new Set([...document.querySelectorAll('.de-block .de-in')].map(i=>i.dataset.pid))];
+  const requests = [];
+  for(const pid of pids){
+    const p = masterData.find(m=>m.id===pid);
+    if(!p) continue;
+    const changes = [];
+    document.querySelectorAll(`.de-in[data-pid="${pid}"]`).forEach(inp=>{
+      const f = DATA_EDIT_FIELDS.find(x=>x.key===inp.dataset.field);
+      const v = inp.value.trim();
+      if(f.hidden){ if(v) changes.push({field:f.key, from:'', to:v}); }
+      else if(v && v!==(p[f.key]||'')) changes.push({field:f.key, from:p[f.key]||'', to:v});
+    });
+    const type = document.querySelector(`.de-type[data-pid="${pid}"]`).value;
+    const city = type==='online' ? 'Online' : document.querySelector(`.de-city[data-pid="${pid}"]`).value;
+    if(type==='physical' && !city){ toast(`Choose the city for ${p.displayName} (physical training)`,'err'); return; }
+    if(city && city!==p.city) changes.push({field:'city', from:p.city||'', to:city});
+    const em = changes.find(c=>c.field==='email');
+    if(em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em.to)){ toast(`The email for ${p.displayName} doesn't look right`,'err'); return; }
+    if(em && masterData.some(m=>m.id!==p.id && (m.email||'').toLowerCase()===em.to.toLowerCase())){ toast(`${em.to} already belongs to another of your pharmacists`,'err'); return; }
+    if(changes.length) requests.push({id:uid('edt'), supervisor:currentSupervisor, pharmacistId:p.id, displayName:p.displayName, email:p.email||'',
+      changes, reason, requestedAt:nowIso(), status:'Pending'});
+  }
+  if(!requests.length){ toast('Nothing was changed','info'); return; }
+  supDataEdits = await getShared(K_DATA_EDIT, []);
+  supDataEdits.push(...requests);
+  const ok = await setShared(K_DATA_EDIT, supDataEdits);
+  closeModal();
+  if(ok){
+    bulkClear('sup');
+    renderSupervisorTable();
+    toast(`Edit request sent for ${requests.length} pharmacist(s) — the training team will review it`,'ok');
+  } else supDataEdits = await getShared(K_DATA_EDIT, []);
+}
+async function cancelDataEdit(id){
+  if(!await confirmDialog('Cancel this data edit request?')) return;
+  supDataEdits = await getShared(K_DATA_EDIT, []);
+  const i = supDataEdits.findIndex(r=>r.id===id && r.status==='Pending');
+  if(i<0){ toast('That request was already decided','info'); renderSupervisorTable(); return; }
+  supDataEdits.splice(i,1);
+  if(await setShared(K_DATA_EDIT, supDataEdits)){ toast('Request cancelled','ok'); renderSupervisorTable(); }
 }
 
 /* Work Shift (Morning / Night), chosen per pharmacist — always editable, even after Submit. */
@@ -830,7 +953,7 @@ async function confirmAnnualLeaveUpload(){
 async function exportSupervisorExcel(){
   const list = applySupFilters(currentSupervisorScope());
   if(!list.length){ toast('No data to export','err'); return; }
-  const headers = ['Pharmacist Name','Pharmacy No.','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Work Shift','Notes'];
+  const headers = ['Pharmacist Name','Pharmacy No.','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Work Shift','Core %','Capsule %','Notes'];
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
@@ -845,9 +968,10 @@ async function exportSupervisorExcel(){
       const att = ops.attendance[p.id];
       lateTime = (att&&att.status==='Attended'&&att.punctuality==='Late')?(att.time||''):'';
     }
-    rows.push([r.displayName,r.pharmacyNo,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.workShift,r.note]);
+    rows.push([r.displayName,r.pharmacyNo,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.workShift,
+      courseSlotText(p,'core'),courseSlotText(p,'capsule'),r.note]);
   });
-  const colWidths = [28,14,28,20,14,18,12,24,16,14,14,26];
+  const colWidths = [28,14,28,20,14,18,12,24,16,14,14,10,10,26];
   const ok = await downloadStyledXlsx('my-pharmacists.xlsx', 'My Pharmacists', headers, rows, colWidths);
   if(ok) toast('Excel downloaded','ok');
 }
@@ -858,6 +982,8 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   API.init('supervisor');
   // if the server refuses a save (day full, deadline passed…) show the real state again
   APP_HOOKS.onSaveFailed = ()=>{ if(currentSupervisor) loadSupervisorView(true); };
+  // the server stored a "Retraining #n" marker / attempt history for a re-booked pharmacist — show it right away
+  APP_HOOKS.onOpsUpdated = (pids, historyChanged)=>{ if(currentSupervisor && historyChanged){ renderSupervisorChips(); renderSupervisorTable(); } };
   initSyncStatusIndicator();
   loadLogo();
   await initSupervisor();

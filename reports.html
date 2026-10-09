@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>Course Progress Reports — Talent Operations Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body class="pub">
+<div class="topbar">
+  <div class="brand">
+    <div id="logoBox"><img src="assets/img/logo.png" alt="Talent Operations Center logo"></div>
+    <div>
+      <span class="dept-label">Talent Management</span>
+      <h1>Course Progress Reports</h1>
+      <p>Live course completion across the pharmacy network</p>
+    </div>
+  </div>
+  <div class="role-indicator no-print">
+    <a class="home-link" href="index.html">← Home</a>
+  </div>
+</div>
+
+<!-- live / offline status + refresh -->
+<div class="pub-bar pub-status no-print">
+  <span class="pub-live" id="pubLive"><i class="dot"></i><b id="pubStatusTitle">Live — Course Progress Reports</b></span>
+  <span class="pub-status-meta" id="pubStatusMeta"></span>
+  <button type="button" class="btn btn-outline btn-sm pub-refresh" onclick="pubRefresh()">↻ Refresh</button>
+</div>
+
+<!-- view picker (hidden on a shared link) -->
+<div class="pub-bar pub-viewbar no-print" id="pubViewBar">
+  <span class="pub-view-label">View</span>
+  <div class="pub-view-select">
+    <span class="ic" id="pubViewIcon">📊</span>
+    <select id="pubSelect" onchange="pubOnSelect(this.value)" aria-label="Choose a course"></select>
+    <span class="pub-count" id="pubViewCount"></span>
+  </div>
+</div>
+<div id="pubLocked" class="pub-bar pub-locked hidden"></div>
+
+<!-- search, filters and exports (one course) -->
+<div class="pub-bar pub-toolbar no-print hidden" id="pubToolbar">
+  <div class="pub-filters" id="pubFilterBar"></div>
+  <div class="pub-actions">
+    <button class="btn btn-outline btn-sm" onclick="pubCopyShare()">🔗 Share link</button>
+    <button class="btn btn-outline btn-sm" onclick="pubExportExcel()">⬇ Excel</button>
+    <button class="btn btn-sm pub-btn-pdf" onclick="pubExportPdf()">🖨 PDF</button>
+    <button class="btn btn-navy btn-sm" onclick="pubExportImage()">📷 Image</button>
+  </div>
+</div>
+
+<div class="pub-bar pub-legend-bar" id="pubLegend">
+  <span class="pub-legend-title">Status:</span>
+  <span><i class="lg fin"></i>Completed (100%)</span>
+  <span><i class="lg prog"></i>In Progress (1–99%)</span>
+  <span><i class="lg not"></i>Not Started (0%)</span>
+  <span><i class="lg nod"></i>No data</span>
+</div>
+
+<main class="pub-main">
+  <div id="pubError" class="rp-note warn hidden" role="alert"></div>
+
+  <section id="pubOverview" class="pub-grid"></section>
+
+  <section id="pubCourse" class="hidden">
+    <div class="pub-summary card" id="pubSummary"></div>
+    <div id="pubEmpty" class="card empty-msg hidden"></div>
+    <div class="card pub-table-card" id="pubTableCard">
+      <div class="small-note pub-print-title" id="pubPrintTitle"></div>
+      <div class="table-wrap"><table>
+        <thead><tr id="pubThead"></tr></thead>
+        <tbody id="pubTbody"></tbody>
+      </table></div>
+      <div class="small-note" id="pubCount" style="margin-top:8px"></div>
+    </div>
+  </section>
+</main>
+
+<div id="modalRoot"></div>
+<div id="toast"></div>
+<script src="assets/vendor/jszip.min.js"></script>
+<script src="assets/vendor/html2canvas.min.js"></script>
+<script src="assets/vendor/jspdf.umd.min.js"></script>
+<script src="assets/js/config.js"></script>
+<script src="assets/js/api.js"></script>
+<script src="assets/js/common.js"></script>
+<script src="assets/js/reports.js"></script>
+</body>
+</html>

@@ -178,8 +178,8 @@ supervisor's in-person day card shows *"2/2 reached"*.
   Excel file in the browser. Each day's code (e.g. `RUH 3`) identifies it, so importing again updates
   existing days instead of adding copies.
 - **Docs:** README, `supabase/README.md` and `PROJECT_HANDOFF.md` were rewritten for the new setup.
-- **Kept on purpose:** `COMPLETION_REPORTS_URL`. It is the separate, read-only LMS reports service behind
-  Trainer → Setup → "Sync completion %", not the app's database.
+- **Kept on purpose (until v5):** the LMS completion reports link. It was removed in v5, when course completion moved
+  into this app (Moodle Reports and the public reports.html).
 
 **Verified:** the live supervisor page loads from Supabase (27 supervisors), no Google URL is left in the
 config, every file the HTML pages load exists, and the console shows no errors.

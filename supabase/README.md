@@ -23,12 +23,31 @@ Dashboard → **Edge Functions → Secrets** (or `supabase secrets set NAME=valu
 
 | Secret | Value |
 |---|---|
-| `TRAINER_USER` | the trainer‑page username (same one you use today) |
-| `TRAINER_PASS` | the trainer‑page password |
-| `ADMIN_USER` / `ADMIN_PASS` | the lower‑access Admin login (Attendance tab only). Optional — admin sign‑in stays off until both are set. |
+| `STAFF_ACCOUNTS` | every Admins Dashboard account, as built by [`dev/password-hash.html`](../dev/password-hash.html) (see *Staff accounts* below) |
 | `TOKEN_SECRET` | any long random string (e.g. paste a UUID or two). Optional — if you skip it, the function generates and stores one automatically. |
 
 `SUPABASE_DB_URL`, `SUPABASE_URL`, etc. are provided by Supabase automatically — don't add those.
+
+### Staff accounts (Admins Dashboard sign-in)
+Everyone on the training team has their own account, so every change is recorded under their name in the
+**Activity Log** (only the super admin can read it).
+
+| Username | Role | Can do |
+|---|---|---|
+| `UPC_TMD` | superadmin | everything, plus the Activity Log tab |
+| `UPC_T1` … `UPC_T4` | trainer | everything except the Activity Log |
+| `UPC_Co`, `UPC_Co1`, `UPC_Co2` | coordinator | Attendance tab, Calendar (view only), Master Sheet Preview, Import Completion |
+
+Passwords are **never stored** — only a one-way PBKDF2 hash of each one. To set or change passwords:
+1. Open `dev/password-hash.html` in your browser (double-click the file — it works offline and is blocked from the network).
+2. Type a password for every account (or **Generate all**), write them down, and give each person theirs privately.
+3. **Build STAFF_ACCOUNTS** → **Copy** → paste as the value of the `STAFF_ACCOUNTS` secret → Save.
+   Changing one person's password = rebuild the whole value (the others need their passwords typed again too, or
+   keep the previous hashes by editing that one entry).
+4. Once the new accounts work, **delete the old `TRAINER_USER`, `TRAINER_PASS`, `ADMIN_USER`, `ADMIN_PASS` secrets**
+   (they are only a fallback used while `STAFF_ACCOUNTS` is missing).
+
+Wrong passwords lock **that username** for 10 minutes after 8 tries (other people can still sign in).
 
 ## Step 3 — Deploy the Edge Function
 
@@ -89,7 +108,8 @@ protocol between them only changes if a data key is added.
 A second Edge Function, `backup` ([`functions/backup/index.ts`](functions/backup/index.ts)), copies every table
 into a Google Sheet once an hour: one tab per table (Pharmacists, Training Days, Approvals, Notifications,
 Settings, Venues — each fully replaced every run) plus a **Log** tab with one row per run (time, status, rows per
-table, and what was added / removed / changed since the previous backup, with names).
+table, and what was added / removed / changed since the previous backup, with names), and an **Activity** tab that
+gets the new Activity Log rows appended each hour (never rewritten — an off-site copy of who did what).
 
 **Why it is safe:** the app never talks to the Sheet. Supabase's scheduler calls the function with a secret, the
 function writes to the Sheet through a Google *service account* (a robot account that can open only the Sheets you
@@ -109,10 +129,33 @@ is never backed up.
    | `BACKUP_SHEET_ID` | the Sheet id from step 2 |
    | `BACKUP_SECRET` | a long random string you make up (e.g. two UUIDs joined) |
 4. **Deploy** a new Edge Function named exactly `backup` with the code of `functions/backup/index.ts`
-   (Dashboard → Edge Functions → Deploy a new function → via editor), or `supabase functions deploy backup`.
-5. **Schedule it:** open [`backup.sql`](backup.sql), replace `<BACKUP_SECRET>` (same value as step 3) and
-   `<ANON_KEY>` (from `assets/js/config.js`), paste it in the SQL Editor → **Run**. It runs every hour on the hour.
+   (Dashboard → Edge Functions → Deploy a new function → via editor), or `supabase functions deploy backup --no-verify-jwt`.
+   In its settings, switch **Verify JWT** OFF — the function checks its own `BACKUP_SECRET` instead, so no Supabase key
+   is needed in the scheduled job.
+5. **Schedule it:** open [`backup.sql`](backup.sql), replace `<BACKUP_SECRET>` (same value as step 3), paste it in the SQL Editor → **Run**. It runs every hour on the hour.
    To test right away, run the "Run a backup right now" lines at the bottom of `backup.sql`; within a few seconds
    the Sheet gets its tabs and the Log its first row ("First backup").
 
 If a run fails, the Log gets a **FAILED** row with the reason (e.g. the Sheet isn't shared with the service account).
+
+---
+
+## v5 — Reports (Moodle Reports, Reports Configuration, public `reports.html`)
+
+**Database:** re-run [`schema.sql`](schema.sql) (safe to re-run). Its new "v5 — Reports" block creates `courses`,
+`course_progress`, `course_uploads` and `lms_learners` (RLS on, no policies). Run it **before** deploying the new `api`.
+
+**Edge Function `api`** — new actions (all writes go to the Activity Log):
+
+| Action | Who |
+|---|---|
+| `coursesList`, `courseSave`, `courseShareRotate`, `courseSlotsSet`, `coursePublish`, `courseExport`, `lmsLearnersList` / `Upsert` / `Delete` | superadmin + coordinator (trainers are refused) |
+| `courseDelete` | superadmin only |
+| `reportsPublic`, `reportsPublicCourse {slug}` | anyone (no login) — read-only, only the columns switched on are sent (full emails when the Email column is on), 30 requests / minute / IP, cached 60 s |
+
+New read key `course-slots` (Core / Capsule columns): staff get state, rate, date and finished flag per email; a
+supervisor gets only their own pharmacists' percentage. The roster no longer returns or writes `completion_pct` /
+`capsule_pct` (the columns stay in the table as old data), and the coordinator can no longer change the training config.
+
+**Backup function:** adds the tabs **Courses** (without the public share link), **Course Progress**, **Course Uploads**
+and **Onboarding Learners**. Redeploy `backup` after `api`.

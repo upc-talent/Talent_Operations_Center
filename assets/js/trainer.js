@@ -46,7 +46,7 @@ async function redoCalendarChange(){
 }
 
 async function handleCalendarDrop(e, iso){
-  if(isAdminRole()) return;   // the admin's calendar is view-only
+  if(isCoordinatorRole()) return;   // the admin's calendar is view-only
   e.preventDefault();
   e.stopPropagation();
   if(!dragDayId) return;
@@ -201,8 +201,8 @@ function renderCalendarMonth(year, month, sectionIdx, dayLabels){
       const label = dayLabels[d.id] || c.code;
       const trainerLine = (d.trainerNames && d.trainerNames.length) ? `<br><span style="font-weight:400;">${esc(d.trainerNames.join(', '))}</span>` : '';
       const dayTag = isContinuation ? '<br><span style="font-weight:400;font-size:8.5px;opacity:.8;">· Day 2</span>' : '';
-      const dragAttrs = (isContinuation || isAdminRole()) ? '' : `draggable="true" ondragstart="event.stopPropagation(); dragDayId='${d.id}'; event.dataTransfer.effectAllowed='move'; this.classList.add('cal-event-dragging');" ondragend="dragDayId=null; this.classList.remove('cal-event-dragging'); document.querySelectorAll('.cal-cell-dragover').forEach(el=>el.classList.remove('cal-cell-dragover'));"`;
-      return `<span class="cal-event" ${dragAttrs} style="background:${c.bg};color:${c.text};border:1px ${isActive?'solid':'dashed'} ${c.border};${isContinuation?'opacity:.85;':''}" onclick="event.stopPropagation(); openEditDayModal('${d.id}')" title="${esc(d.city)}${d.trainingName?' — '+esc(d.trainingName):''} — ${count}/${dayCapacity(d)}${isActive?'':' — Hidden from supervisors'}${isContinuation?' — Day 2 of split online training':''}">${esc(label)}${!isActive?' '+EYE_OFF_SVG:''}${trainerLine}${dayTag}</span>`;
+      const dragAttrs = (isContinuation || isCoordinatorRole()) ? '' : `draggable="true" ondragstart="event.stopPropagation(); dragDayId='${d.id}'; event.dataTransfer.effectAllowed='move'; this.classList.add('cal-event-dragging');" ondragend="dragDayId=null; this.classList.remove('cal-event-dragging'); document.querySelectorAll('.cal-cell-dragover').forEach(el=>el.classList.remove('cal-cell-dragover'));"`;
+      return `<span class="cal-event" ${dragAttrs} style="background:${c.bg};color:${c.text};border:1px ${isActive?'solid':'dashed'} ${c.border};${isContinuation?'opacity:.85;':''}" onclick="event.stopPropagation(); openEditDayModal('${d.id}')" title="${esc(d.city)}${d.trainingName?' — '+esc(d.trainingName):''} — ${count}/${dayCapacity(d)}${isActive?'':' — Hidden from supervisors'}${isContinuation?' — Day 2 of split online training':''}${activeMergeOf(d.id)?' — Merged with '+esc(mergePartnersText(d.id, dayLabels)):''}">${activeMergeOf(d.id)?'🔗 ':''}${esc(label)}${!isActive?' '+EYE_OFF_SVG:''}${trainerLine}${dayTag}</span>`;
     }).join('');
     html += `<div class="cal-cell" onclick="openAddDayModal('${iso}')" ondragover="event.preventDefault();" ondragenter="event.preventDefault(); this.classList.add('cal-cell-dragover');" ondragleave="this.classList.remove('cal-cell-dragover');" ondrop="this.classList.remove('cal-cell-dragover'); handleCalendarDrop(event, '${iso}')"><div class="cal-daynum">${cell.day}</div>${eventsHtml}</div>`;
   });
@@ -519,6 +519,7 @@ function showColumnMappingModal(headerRow, autoIndices, totalRows){
   });
 }
 
+// The signed-in account (e.g. UPC_T2): shown as "marked by" / "assigned by". The server stamps the same name itself.
 let currentTrainerIdentity = '';
 
 /* ═══════════════════════════════ LOGO ═══════════════════════════════ */
@@ -572,37 +573,57 @@ function switchTrainerTab(id){
   if(id==='t-approvals') renderApprovalsTab();
   if(id==='t-analytics') refreshAnalytics();
   if(id==='t-calendar') renderCalendar();
+  if(id==='t-activity') loadActivity();
+  // reports tabs (assets/js/reports-admin.js)
+  if(id==='t-moodle' && typeof rpOpenMoodleTab==='function') rpOpenMoodleTab();
+  if(id==='t-sap' && typeof rpOpenSapTab==='function') rpOpenSapTab();
+  if(id==='t-repconf' && typeof rpOpenConfigTab==='function') rpOpenConfigTab();
 }
 
-// The admin login (lower access) sees only the Attendance tab; the server refuses everything else for it too.
-function isAdminRole(){ return API.role==='admin'; }
-// Admin tabs, in this order: Attendance (opens first) · Calendar (view only) · Analytics & Export (Master Sheet Preview only)
-// · General Configurations (Import Completion only). The trainer keeps every tab in the usual order.
-const ADMIN_TABS = ['t-attend','t-calendar','t-analytics','t-setup'];
+/* Accounts: every staff member signs in with their own account, so every change is recorded under their name.
+   superadmin (UPC_TMD) — everything + the Activity Log · trainer (UPC_T1…T4) — everything else ·
+   coordinator (UPC_Co, UPC_Co1, UPC_Co2) — lower access; the server refuses everything else for it too. */
+function isCoordinatorRole(){ return API.role==='coordinator'; }
+function isSuperAdmin(){ return API.role==='superadmin'; }
+// Moodle Reports / SAP Reports / Reports Configuration (class "reports-only"): superadmin + coordinators, never trainers.
+function isReportsAdmin(){ return API.role==='superadmin' || API.role==='coordinator'; }
+const ROLE_LABELS = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'Coordinator'};
+// Coordinator tabs, in this order: Attendance (opens first) · Calendar (view only) · Analytics & Export (Master Sheet Preview only)
+// · Moodle Reports · SAP Reports · Reports Configuration. Trainers keep every tab in the usual order (without the reports
+// tabs); the Activity Log tab is the superadmin's.
+const COORD_TABS = ['t-attend','t-calendar','t-analytics','t-moodle','t-sap','t-repconf'];
 function applyRoleToPage(){
-  const admin = isAdminRole();
-  document.body.classList.toggle('admin-view', admin);
+  const coord = isCoordinatorRole();
+  // the CSS hooks keep their old "admin" names (admin-view / admin-hidden)
+  document.body.classList.toggle('admin-view', coord);
   const bar = document.querySelector('#screen-trainer .tabs');
   if(!bar._trainerOrder) bar._trainerOrder = [...bar.querySelectorAll('.tab')].map(t=>t.dataset.tab);
-  const order = admin ? ADMIN_TABS.concat(bar._trainerOrder.filter(id=>!ADMIN_TABS.includes(id))) : bar._trainerOrder;
+  const order = coord ? COORD_TABS.concat(bar._trainerOrder.filter(id=>!COORD_TABS.includes(id))) : bar._trainerOrder;
   order.forEach(id=>bar.appendChild(bar.querySelector(`.tab[data-tab="${id}"]`)));
-  bar.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', admin && !ADMIN_TABS.includes(t.dataset.tab)));
-  document.querySelectorAll('#t-analytics > *').forEach(el=>el.classList.toggle('admin-hidden', admin && el.id!=='masterSheetPreviewCard'));
-  document.querySelectorAll('#t-setup > *').forEach(el=>el.classList.toggle('admin-hidden', admin && el.id!=='importCompletionCard'));
+  bar.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden',
+    (coord && !COORD_TABS.includes(t.dataset.tab)) || (t.dataset.tab==='t-activity' && !isSuperAdmin())
+    || (t.classList.contains('reports-only') && !isReportsAdmin())));
+  document.querySelectorAll('#t-analytics > *').forEach(el=>el.classList.toggle('admin-hidden', coord && el.id!=='masterSheetPreviewCard'));
+  document.querySelectorAll('#t-setup > *').forEach(el=>el.classList.toggle('admin-hidden', coord));   // the coordinator has no General Configurations tab (v5)
   const badge = document.getElementById('roleBadge');
-  if(badge) badge.textContent = admin ? 'Admin' : 'Trainer';
-  if(admin) switchTrainerTab('t-attend');
+  if(badge){
+    badge.textContent = (ROLE_LABELS[API.role] || 'Trainer') + (API.user ? ' · '+API.user : '');
+    badge.title = 'Signed in as '+(API.user||'')+' — everything you change is recorded under this account';
+  }
+  if(coord) switchTrainerTab('t-attend');
 }
 
 async function initTrainer(){
+  currentTrainerIdentity = API.user || '';
   applyRoleToPage();
   groupFixIgnored = await getPersonal('group-fix-ignored', []);
-  if(isAdminRole()) await loadCoreData();
-  else await Promise.all([loadCoreData(), loadVenues()]);
+  if(isCoordinatorRole()) await Promise.all([loadCoreData(), loadMerges()]);
+  else await Promise.all([loadCoreData(), loadVenues(), loadMerges()]);
   registerTrainerFilterFacets();
-  if(!isAdminRole()){ renderSetupTab(); buildDaysFilterBar(); renderDaysTable(); }
+  if(!isCoordinatorRole()){ renderSetupTab(); buildDaysFilterBar(); renderDaysTable(); }
   buildTrainerFilterBar();
   renderTrainerTable();
+  renderMergesTable();
   updatePendingDot();
   startPresencePolling();
 }
@@ -623,25 +644,11 @@ async function refreshPresence(){
 }
 function startPresencePolling(){
   const pill = document.getElementById('presencePill');
-  if(isAdminRole()){ if(pill) pill.classList.add('hidden'); return; }
+  if(isCoordinatorRole()){ if(pill) pill.classList.add('hidden'); return; }
   if(presenceTimer) return;
   refreshPresence();
   presenceTimer = setInterval(()=>{ if(!document.hidden) refreshPresence(); }, 60000);
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) refreshPresence(); });
-}
-
-function renderTrainerIdentitySelect(){
-  const sel = document.getElementById('trainerIdentitySelect');
-  if(!sel) return;
-  sel.innerHTML = `<option value="">-- Select your name --</option>` +
-    trainingConfig.trainerNames.map(n=>`<option value="${esc(n)}" ${currentTrainerIdentity===n?'selected':''}>${esc(n)}</option>`).join('');
-}
-async function saveTrainerIdentity(){
-  currentTrainerIdentity = document.getElementById('trainerIdentitySelect').value;
-  await setPersonal('current-trainer-identity', currentTrainerIdentity);
-  toast(currentTrainerIdentity ? 'Marking attendance as '+currentTrainerIdentity : 'Identity cleared', 'ok');
-  renderConductedBySelect();
-  renderTrainerTable();
 }
 
 function renderSetupTab(){
@@ -651,7 +658,23 @@ function renderSetupTab(){
   renderCoordinatorNamesList();
   renderTrainingNamesList();
   renderCityRoster();
-  loadCompletionCourseList();
+  renderCompletionSourceCard();
+}
+
+// General Configurations: where Core / Capsule completion comes from now (read-only — set in Reports Configuration).
+function renderCompletionSourceCard(){
+  const el = document.getElementById('completionSourceText');
+  if(!el) return;
+  const part = (label, s)=> `${label}: ${s ? '<b>'+esc(s.name)+'</b> ('+(s.lastPublishedAt ? 'published '+esc(ksaDateText(s.lastPublishedAt)) : 'not published yet')+')' : '<i>none chosen</i>'}`;
+  el.innerHTML = `Course completion now comes from <b>Reports Configuration → Hub columns</b> (superadmin and coordinators). `
+    + part('Core', courseSlots.core) + ' · ' + part('Capsule', courseSlots.capsule) + '.';
+}
+// Attendance tab: the Core / Capsule headers say which course they show
+function updateCourseSlotHeaders(){
+  ['core','capsule'].forEach(slot=>{
+    const th = document.getElementById('th-trainer-'+slot);
+    if(th) th.title = courseSlotHeaderTitle(slot);
+  });
 }
 
 function renderMasterPreview(){
@@ -766,6 +789,7 @@ function attendanceFromText(text, day){
   }
   if(n.startsWith('absent')) return split ? {day1:mark('Absent'), day2:mark('Absent')} : mark('Absent');
   if(n.startsWith('partial') && split) return /day 1/.test(n) ? {day1:mark('Absent'), day2:mark('Attended')} : {day1:mark('Attended'), day2:mark('Absent')};
+  if(n.startsWith('day 1 attended') && split) return {day1:mark('Attended', /\blate\b/.test(n) ? 'Late' : 'On Time')};   // Day 2 not marked yet
   return null;
 }
 
@@ -917,165 +941,6 @@ async function importMasterRows(dataRows, mapping){
     <div class="modal-actions"><button class="btn btn-navy btn-sm" onclick="closeModal()">OK</button></div>`, 'max-width:620px;');
 }
 
-async function handleCompletionUpload(input){
-  const file = input.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = async (e)=>{
-    try{
-      const wb = XLSX.read(e.target.result, {type:'array', cellDates:true});
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const aoa = XLSX.utils.sheet_to_json(ws, {header:1, defval:'', raw:false, blankrows:false});
-      if(!aoa.length){ toast('The file is empty','err'); input.value=''; return; }
-      const headerRow = aoa[0].map(h=>String(h||'').trim());
-      const emailIdx = headerRow.findIndex(h=>/email/i.test(h));
-      const pctIdx = headerRow.findIndex(h=>/completion|progress|%/i.test(h));
-      if(emailIdx===-1 || pctIdx===-1){
-        toast('Could not detect an Email column and a Completion % column in this file','err');
-        input.value=''; return;
-      }
-      const rows = aoa.slice(1).map(r=>({
-        email: String(r[emailIdx]??'').trim().toLowerCase(),
-        pct: String(r[pctIdx]??'').replace('%','').trim()
-      })).filter(r=>r.email);
-
-      // which column the file fills: Core Completion or Capsule Completion
-      const tSel = document.getElementById('completionTarget');
-      const field = tSel && tSel.value==='capsulePct' ? 'capsulePct' : 'completionPct';
-      const label = field==='capsulePct' ? 'Capsule Completion' : 'Core Completion';
-      const proceed = await confirmDialog(`This will match ${rows.length} rows by email against your ${masterData.length} pharmacists and update their ${label}. Continue?`);
-      if(!proceed){ input.value=''; return; }
-
-      masterData = await getShared(K_MASTER, []);
-      const byEmail = {};
-      rows.forEach(r=>{ byEmail[r.email] = r.pct; });
-      let matched = 0;
-      masterData = masterData.map(p=>{
-        const key = (p.email||'').trim().toLowerCase();
-        if(key && byEmail[key] !== undefined){
-          matched++;
-          return {...p, [field]: byEmail[key]};
-        }
-        return p;
-      });
-      const ok = await setShared(K_MASTER, masterData);
-      if(ok){
-        toast(`${label}: matched and updated ${matched} of ${masterData.length} pharmacists`,'ok');
-        renderMasterPreview();
-        renderTrainerTable();
-      }
-    }catch(err){
-      console.error(err);
-      toast('Error reading file: '+(err.message||''), 'err');
-    }
-    input.value = '';
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-async function apsFetch(action, params){
-  params = params || {};
-  const qs = Object.entries(Object.assign({action:action}, params)).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&');
-  const url = APP_CONFIG.COMPLETION_REPORTS_URL + '?' + qs + '&_t=' + Date.now();
-  const res = await fetch(url);
-  if(!res.ok) throw new Error('HTTP '+res.status);
-  return res.json();
-}
-function extractLearnerRate(l, totalModules){
-  let rate = l.completionRate;
-  if(l.modulesDone!==undefined && l.totalModules!==undefined && l.totalModules>0){
-    rate = Math.round((l.modulesDone / l.totalModules) * 100);
-  } else if(l.modulesCompleted!==undefined && totalModules>0){
-    rate = Math.round((l.modulesCompleted / totalModules) * 100);
-  } else if(typeof rate==='string'){
-    rate = parseInt(rate,10) || 0;
-  }
-  if(typeof rate!=='number' || isNaN(rate)) rate = 0;
-  return Math.min(100, Math.max(0, rate));
-}
-// Two completion columns, each pulled from its own LMS course: Core Completion (completionPct) and Capsule Completion
-// (capsulePct). The course chosen for each, and when it was last synced, are remembered in the training config.
-const COMPLETION_KINDS = {
-  core:    {field:'completionPct', label:'Core Completion', select:'completionCourseSelect', status:'completionSyncStatus', courseKey:'completionCourse', syncedKey:'completionLastSynced', defaultCourse:''},
-  capsule: {field:'capsulePct', label:'Capsule Completion', select:'capsuleCourseSelect', status:'capsuleSyncStatus', courseKey:'capsuleCourse', syncedKey:'capsuleLastSynced', defaultCourse:'Learning Capsule - Selling Opps. in Acne & Dry Skin Condition'}
-};
-const courseKey = s=>String(s||'').toLowerCase().replace(/[‒-―−]/g,'-').replace(/\s+/g,' ').trim();
-function completionStatusText(k){
-  const at = trainingConfig[k.syncedKey];
-  return at ? 'Last synced: '+new Date(at).toLocaleString('en-GB')+(trainingConfig[k.courseKey]?' — '+trainingConfig[k.courseKey]:'') : '';
-}
-async function loadCompletionCourseList(){
-  const kinds = Object.values(COMPLETION_KINDS);
-  kinds.forEach(k=>{ const sel = document.getElementById(k.select); if(sel) sel.innerHTML = `<option value="">Loading courses…</option>`; });
-  trainingConfig = await getShared(K_CONFIG, trainingConfig);
-  let courses = null;
-  try{ courses = (await apsFetch('meta')).courses || []; }
-  catch(err){ console.error(err); }
-  kinds.forEach(k=>{
-    const sel = document.getElementById(k.select), statusEl = document.getElementById(k.status);
-    if(!sel) return;
-    const saved = trainingConfig[k.courseKey] || '';
-    if(!courses){
-      sel.innerHTML = saved ? `<option value="${esc(saved)}" selected>${esc(saved)}</option>` : `<option value="">Could not connect</option>`;
-      if(statusEl) statusEl.textContent = 'Could not reach the Training Completion Reports source — check your internet connection.';
-      return;
-    }
-    // the saved course, else this column's default course (matched loosely), else nothing picked
-    const want = courseKey(saved || k.defaultCourse);
-    const pick = courses.find(c=>courseKey(c)===want) || '';
-    sel.innerHTML = `<option value="">-- Choose a course --</option>` + courses.map(c=>`<option value="${esc(c)}" ${c===pick?'selected':''}>${esc(c)}</option>`).join('');
-    if(!courses.length) sel.innerHTML = `<option value="">No courses found</option>`;
-    if(statusEl) statusEl.textContent = completionStatusText(k);
-  });
-}
-async function syncCompletionFromCourse(kind){
-  const k = COMPLETION_KINDS[kind] || COMPLETION_KINDS.core;
-  const sel = document.getElementById(k.select);
-  const statusEl = document.getElementById(k.status);
-  const courseName = sel ? sel.value : '';
-  if(!courseName){ toast(`Choose the course for ${k.label} first`,'err'); return; }
-  if(statusEl) statusEl.textContent = 'Syncing…';
-  try{
-    const data = await apsFetch('course', {name: courseName});
-    if(data.error) throw new Error(data.error);
-    const learners = data.learners || [];
-    const totalModules = data.totalModules || 0;
-    const byEmail = {};
-    learners.forEach(l=>{
-      const em = (l.email||'').toLowerCase().trim();
-      if(em) byEmail[em] = extractLearnerRate(l, totalModules);
-    });
-
-    masterData = await getShared(K_MASTER, []);
-    let matched = 0;
-    masterData = masterData.map(p=>{
-      const key = (p.email||'').trim().toLowerCase();
-      if(key && byEmail[key]!==undefined){
-        matched++;
-        return {...p, [k.field]: byEmail[key]};
-      }
-      return p;
-    });
-    const ok = await setShared(K_MASTER, masterData);
-
-    trainingConfig = await getShared(K_CONFIG, trainingConfig);
-    trainingConfig[k.courseKey] = courseName;
-    trainingConfig[k.syncedKey] = new Date().toISOString();
-    // the admin login may save only these two settings; the trainer's save also feeds the calendar undo history
-    if(isAdminRole()) await setShared(K_CONFIG, trainingConfig); else await setConfigWithHistory(trainingConfig);
-
-    if(ok){
-      toast(`${k.label}: synced "${courseName}" — matched ${matched} of ${masterData.length} pharmacists`,'ok');
-      if(statusEl) statusEl.textContent = completionStatusText(k);
-      renderMasterPreview();
-      renderTrainerTable();
-    }
-  }catch(err){
-    console.error(err);
-    if(statusEl) statusEl.textContent = 'Sync failed — check your internet connection and try again.';
-    toast(`Could not sync ${k.label}: `+(err.message||''), 'err');
-  }
-}
 async function clearMasterData(){
   const n = masterData.length;
   if(!n){ toast('There is no pharmacist data to clear','info'); return; }
@@ -1157,7 +1022,7 @@ async function renameTrainerName(oldName){
   const ok = await setConfigWithHistory(trainingConfig);
   if(ok){
     toast('Trainer renamed','ok');
-    renderTrainerNamesList(); renderTrainerIdentitySelect(); renderConductedBySelect();
+    renderTrainerNamesList(); renderConductedBySelect();
     renderDaysTable(); renderCalendar();
   }
 }
@@ -1170,13 +1035,13 @@ async function addTrainerName(){
   trainingConfig.trainerNames.push(name);
   const ok = await setConfigWithHistory(trainingConfig);
   input.value = '';
-  if(ok){ toast('Trainer added','ok'); renderTrainerNamesList(); renderTrainerIdentitySelect(); renderConductedBySelect(); }
+  if(ok){ toast('Trainer added','ok'); renderTrainerNamesList(); renderConductedBySelect(); }
 }
 async function removeTrainerName(name){
   trainingConfig = await getShared(K_CONFIG, trainingConfig);
   trainingConfig.trainerNames = trainingConfig.trainerNames.filter(n=>n!==name);
   const ok = await setConfigWithHistory(trainingConfig);
-  if(ok){ toast('Trainer removed','ok'); renderTrainerNamesList(); renderTrainerIdentitySelect(); renderConductedBySelect(); }
+  if(ok){ toast('Trainer removed','ok'); renderTrainerNamesList(); renderConductedBySelect(); }
 }
 
 function renderCoordinatorNamesList(){
@@ -1452,7 +1317,7 @@ function renderDaysTable(){
       ${bulkCheckboxCell('days', d.id)}
       <td>${i+1}</td>
       <td>${dayDateLabel(d)} ${isActive?'':'<span class="badge badge-empty" title="Supervisors can\'t see this day. You can still edit it and assign pharmacists to it.">'+EYE_OFF_SVG+' Hidden from supervisors</span>'}</td>
-      <td>${cityHtml}${d.trainingName?'<br><span class="small-note">'+esc(d.trainingName)+'</span>':''}<br><span class="badge badge-leave">${esc(typeText)}</span>${onlineText}</td>
+      <td>${cityHtml}${d.trainingName?'<br><span class="small-note">'+esc(d.trainingName)+'</span>':''}<br><span class="badge badge-leave">${esc(typeText)}</span>${onlineText}${mergeBadgeHtml(d.id, dayLabels)}</td>
       <td>${trainers}</td>
       <td style="white-space:normal;max-width:200px;">${esc(visText)}</td>
       <td>${count} / ${dayCapacity(d)} ${d.capacity?'<span class="badge badge-date">Custom</span>':''}${d.deadline?`<br><span class="small-note" style="${isDeadlinePassed(d)?'color:var(--danger);font-weight:700;':''}">Deadline: ${formatDateTime(d.deadline)}${isDeadlinePassed(d)?' (Passed)':''}</span>`:''}</td>
@@ -1470,7 +1335,7 @@ function renderDaysTable(){
 }
 
 function openEditDayModal(dayId){
-  if(isAdminRole()) return;   // view-only calendar for the admin
+  if(isCoordinatorRole()) return;   // view-only calendar for the admin
   const day = trainingConfig.dates.find(d=>d.id===dayId);
   if(!day) return;
   const supNames = allSupervisorNames();
@@ -1733,7 +1598,7 @@ function venueDatalistHtml(){
 }
 
 function openAddDayModal(presetDate){
-  if(isAdminRole()) return;
+  if(isCoordinatorRole()) return;
   const supNames = sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
   const checkboxes = supNames.map(n=>`<label><input type="checkbox" class="day-sup-cb" value="${esc(n)}" onchange="syncQuotaVisibility('new')"> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found in the master data yet.</span>';
   const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="day-trainer-cb-new" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet — add some in General Configurations.</span>';
@@ -2043,7 +1908,7 @@ function bulkApplyTrainerAssign(){
   const ids = [...bulkSel.trainer];
   if(!ids.length) return;
   let done = 0, skipped = 0;
-  const by = 'Trainer'+(currentTrainerIdentity?' ('+currentTrainerIdentity+')':'');
+  const by = (currentTrainerIdentity||'Trainer');
   if(value==='__none__'){
     ids.forEach(pid=>{ delete ops.assignments[pid]; delete ops.attendance[pid]; done++; });
   } else {
@@ -2286,7 +2151,8 @@ function openDayStatusModal(dayId){
 function pharmacistFacetValues(){
   return {
     district: p=>[p.district], areaManager: p=>[p.areaManager], city: p=>[p.city], supervisor: p=>[p.supervisor],
-    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; }
+    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; },
+    retrain: p=>[retrainKey(p)]
   };
 }
 function registerTrainerFilterFacets(){
@@ -2305,12 +2171,13 @@ function buildTrainerFilterBar(){
     renderMsFilter('trainer','city','City', distinctValues(masterData,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('trainer','supervisor','Supervisor', distinctValues(masterData,'supervisor').map(v=>({value:v,text:v}))) +
     renderMsFilter('trainer','date','Date', dateFilterOptions(trainingConfig.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)), true)) +
+    renderMsFilter('trainer','retrain','Retraining', RETRAIN_FILTER_OPTIONS) +
     `<button class="btn btn-outline btn-sm" onclick="clearTrainerFilters()">Clear Filters</button>`;
   renderConductedBySelect();
 }
 function onTrainerSearch(v){ trainerSearchQ=v; renderTrainerTable(); }
 function clearTrainerFilters(){
-  trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
+  trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set(), retrain:new Set() };
   trainerSearchQ='';
   buildTrainerFilterBar();
   renderTrainerTable();
@@ -2372,6 +2239,7 @@ function applyTrainerFilters(list){
     if(!inSet(p.city, trainerFilterState.city)) return false;
     if(!inSet(p.supervisor, trainerFilterState.supervisor)) return false;
     if(!matchesDateSet(p.id, trainerFilterState.date)) return false;
+    if(!inSet(retrainKey(p), trainerFilterState.retrain)) return false;
     if(trainerSearchQ){
       const q = trainerSearchQ.toLowerCase();
       if(!p.displayName.toLowerCase().includes(q) && !(p.email||'').toLowerCase().includes(q)) return false;
@@ -2398,6 +2266,14 @@ function renderConductedBySelect(){
   const assignedTrainerText = (day.trainerNames && day.trainerNames.length) ? ` — Assigned trainer(s): ${day.trainerNames.join(', ')}.` : '';
   const venueText = day.venue ? ` Venue: ${day.venue}.` : '';
   document.getElementById('sessionHint').textContent = `Session: ${dayGroupText(day)}.${assignedTrainerText}${venueText}`;
+  const m = activeMergeOf(day.id);
+  const mergeEl = document.getElementById('sessionMergeNote');
+  if(mergeEl){
+    mergeEl.innerHTML = m ? `<span class="merge-badge">🔗 Merged with ${esc(mergePartnersText(day.id, computeDayLabels()))}</span>
+      <span class="small-note">Run by ${esc(m.trainer||'—')}${m.coordinator?' · coordinator '+esc(m.coordinator):''} · ${m.attendees} attendee(s) in total</span>
+      <button class="btn btn-outline btn-sm" onclick="openMergeModal('${m.id}')">Edit merge</button>` : '';
+    mergeEl.classList.toggle('hidden', !m);
+  }
   const zoomBtn = document.getElementById('sessionZoomLink');
   if(zoomBtn){
     if(day.isOnline && day.zoomLink){
@@ -2457,7 +2333,7 @@ function attendanceCellHtml(p){
     let summaryHtml = '';
     if(summary.status==='Attended') summaryHtml = `<span class="badge badge-date">✔ Both days complete</span>`;
     else if(summary.status==='Partial') summaryHtml = `<span class="badge badge-danger">⚠️ Day ${summary.missingDay} still missing — eligible for make-up</span>`;
-    else if(summary.status==='Absent') summaryHtml = `<span class="badge badge-danger">Both days absent</span>`;
+    else if(summary.status==='Absent') summaryHtml = `<span class="badge badge-danger">${summary.day1==='Absent' && summary.day2==='Absent' ? 'Both days absent' : 'Absent'}</span>`;
     return `<div style="display:flex;gap:10px;align-items:flex-start;"><div style="flex:1;min-width:0;">${dayBlock(1,d1)}</div><div style="flex:1;min-width:0;">${dayBlock(2,d2)}</div></div><div style="margin-top:6px;">${summaryHtml}</div>
       ${(d1.status||d2.status) ? `<div style="margin-top:3px;"><button class="att-btn" style="color:var(--muted);" onclick="clearAttendanceStatus('${p.id}')">↺ Clear both</button></div>` : ''}`;
   }
@@ -2557,14 +2433,15 @@ function trainerRowCells(p, rownum){
       <td class="no-truncate">${dateCellHtml(p, true, days, 'onTrainerAssignChange')}</td>
       <td class="email-cell">${esc(p.email||'—')}</td>
       <td class="name-cell">${esc(p.displayName)}</td>
-      <td class="col-export-skip">${completionCellHtml(p)}</td>
-      <td class="col-export-skip">${completionCellHtml(p, 'capsulePct')}</td>
+      <td class="col-export-skip">${courseSlotCellHtml(p, 'core')}</td>
+      <td class="col-export-skip">${courseSlotCellHtml(p, 'capsule')}</td>
       <td class="no-truncate col-export-skip">${attendanceCellHtml(p)}</td>
       <td class="col-export-skip">${noteCellHtml(p)}</td>`;
 }
 
 function renderTrainerTable(){
   document.getElementById('trainerTableTitle').textContent = trainerFilterState.date.size ? 'Filtered Records' : 'All Records';
+  updateCourseSlotHeaders();
   renderGroupMixBanner();
 
   let list = applyTrainerFilters(masterData);
@@ -2619,9 +2496,9 @@ async function onTrainerAssignChange(pid, value){
       if(!prevAssignment || prevAssignment.type!=='date' || prevAssignment.dateId!==rest){
         delete ops.attendance[pid];
       }
-      ops.assignments[pid] = {type:'date', dateId:rest, assignedBy:'Trainer'+(currentTrainerIdentity?' ('+currentTrainerIdentity+')':''), assignedAt: nowIso()};
+      ops.assignments[pid] = {type:'date', dateId:rest, assignedBy:(currentTrainerIdentity||'Trainer'), assignedAt: nowIso()};
     } else {
-      ops.assignments[pid] = {type:'leave', status:rest, assignedBy:'Trainer'+(currentTrainerIdentity?' ('+currentTrainerIdentity+')':''), assignedAt: nowIso()};
+      ops.assignments[pid] = {type:'leave', status:rest, assignedBy:(currentTrainerIdentity||'Trainer'), assignedAt: nowIso()};
       delete ops.attendance[pid];
     }
   }
@@ -2819,7 +2696,6 @@ const EDITABLE_FIELDS = [
   {key:'employeeId', label:'User/Employee ID', w:110},
   {key:'phone', label:'Phone (WhatsApp)', w:120},
   {key:'scfhs', label:'SCFHS', w:100},
-  {key:'completionPct', label:'Core Completion %', w:80},
   {key:'note', label:'Notes', w:200}
 ];
 let editDraft = null;   // {pid: {field: value}}
@@ -2866,7 +2742,6 @@ function collectEditSelectedChanges(){
     const name = d.displayName || p.displayName;
     if(!d.displayName) errors.push(`${esc(p.displayName)}: the pharmacist name can't be empty.`);
     if(!d.supervisor) errors.push(`${esc(name)}: the supervisor can't be empty.`);
-    if(d.completionPct!=='' && !(Number(d.completionPct)>=0 && Number(d.completionPct)<=100)) errors.push(`${esc(name)}: Completion % must be a number from 0 to 100, or blank.`);
     const em = d.email.toLowerCase();
     if(em){
       const owner = emailOwner.get(em);
@@ -2920,8 +2795,7 @@ async function confirmEditSelected(){
   if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
   changes.forEach(c=>{
     c.fieldChanges.forEach(fc=>{
-      if(fc.f.key==='completionPct' && fc.to==='') delete c.p.completionPct;
-      else c.p[fc.f.key] = fc.to;
+      c.p[fc.f.key] = fc.to;
     });
   });
   editDraft = null;
@@ -2937,9 +2811,10 @@ async function confirmEditSelected(){
 }
 
 async function refreshTrainer(){
-  await loadCoreData();
+  await Promise.all([loadCoreData(), loadMerges()]);
   buildTrainerFilterBar();
   renderTrainerTable();
+  renderMergesTable();
   updatePendingDot();
   toast('Refreshed','ok');
 }
@@ -2948,19 +2823,21 @@ async function refreshTrainer(){
 // `leaveRequests`, when passed, is a freshly-loaded list the caller already has — avoids fetching it again just for the dot count.
 let changeRequestsCache = [], submissionsCache = [];
 async function updatePendingDot(leaveRequests){
-  if(isAdminRole()) return;
+  if(isCoordinatorRole()) return;
   const n = pendingList.filter(p=>p.status==='Pending').length;
   const quotaCount = Object.values(ops.assignments||{}).filter(a=>a.type==='date' && a.overQuota && !a.quotaApproved).length;
   // one request for whatever isn't already in hand
-  const keys = [K_CHANGE_REQ, K_SUBMISSIONS].concat(leaveRequests ? [] : [K_LEAVE_REQUESTS]);
-  const r = await getSharedMany(keys, {[K_CHANGE_REQ]:changeRequestsCache, [K_SUBMISSIONS]:submissionsCache, [K_LEAVE_REQUESTS]:[]});
+  const keys = [K_CHANGE_REQ, K_SUBMISSIONS, K_DATA_EDIT].concat(leaveRequests ? [] : [K_LEAVE_REQUESTS]);
+  const r = await getSharedMany(keys, {[K_CHANGE_REQ]:changeRequestsCache, [K_SUBMISSIONS]:submissionsCache, [K_DATA_EDIT]:dataEditCache, [K_LEAVE_REQUESTS]:[]});
   changeRequestsCache = r[K_CHANGE_REQ] || [];
   submissionsCache = r[K_SUBMISSIONS] || [];
+  dataEditCache = r[K_DATA_EDIT] || [];
   const lr = leaveRequests || r[K_LEAVE_REQUESTS] || [];
   const leaveCount = lr.filter(x=>x.status==='Pending').length;
   const changeCount = changeRequestsCache.filter(x=>x.status==='Pending').length;
   const subCount = submissionsCache.filter(x=>x.status==='New').length;
-  const total = n + quotaCount + leaveCount + changeCount + subCount;
+  const editCount = dataEditCache.filter(x=>x.status==='Pending').length;
+  const total = n + quotaCount + leaveCount + changeCount + subCount + editCount;
   const dot = document.getElementById('pendingDot');
   if(dot) dot.innerHTML = total>0 ? `<span class="dot-badge">${total}</span>` : '';
   if(subCount && !updatePendingDot.toldSubs){
@@ -2986,7 +2863,7 @@ async function renderSubmissions(){
   if(!list.length){ tb.innerHTML = `<tr><td colspan="7" class="empty-msg">No submissions yet</td></tr>`; return; }
   tb.innerHTML = list.map((s,i)=>`
     <tr>
-      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(s.supervisor)} ${s.status==='New'?'<span class="badge badge-date">New</span>':''}</td>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(s.supervisor)} ${s.status==='New'?'<span class="badge badge-date">New</span>':''} ${s.unassigned>0?'<span class="badge badge-pending" title="Submitted with some pharmacists still empty — they can be filled and submitted later">Partial</span>':''}</td>
       <td>${s.submittedAt ? new Date(s.submittedAt).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'}) : '—'}</td>
       <td>${s.newlyLocked||0}</td>
       <td>${s.dates||0}</td>
@@ -3080,6 +2957,110 @@ async function confirmRejectChangeRequest(id){
   if(await setShared(K_CHANGE_REQ, changeRequestsCache)){
     await pushNotification(cr.supervisor, `${cr.displayName} — Date Change to ${assignmentText(cr.to)}`, 'Rejected', reason);
     toast('Rejected','ok'); renderChangeRequests(); updatePendingDot(leaveRequestsCache);
+  }
+}
+
+/* ═══ Data Edit Requests (T-P7): a supervisor asked to correct a pharmacist's details. The trainer ticks which
+   changes to apply — all, some (Partially Approved) or none (Reject). ═══ */
+let dataEditCache = [];
+function dataEditValueText(field, v){
+  if(field==='city') return !v ? '—' : (String(v).trim().toLowerCase()==='online' ? 'Online' : v+' (Physical)');
+  return v==null || v==='' ? '—' : String(v);
+}
+async function renderDataEditRequests(){
+  dataEditCache = await getShared(K_DATA_EDIT, []);
+  const tb = document.getElementById('dataEditBody');
+  if(!tb) return;
+  const list = dataEditCache.filter(r=>r.status==='Pending').sort((a,b)=>String(a.requestedAt||'').localeCompare(String(b.requestedAt||'')));
+  if(!list.length){ tb.innerHTML = `<tr><td colspan="6" class="empty-msg">No data edit requests</td></tr>`; return; }
+  tb.innerHTML = list.map((r,i)=>{
+    const p = masterData.find(m=>m.id===r.pharmacistId);
+    const rows = (r.changes||[]).map(c=>{
+      const f = DATA_EDIT_FIELDS.find(x=>x.key===c.field);
+      const cur = p ? p[c.field] : c.from;
+      return `<tr><td><label style="display:flex;gap:6px;align-items:center;"><input type="checkbox" class="de-tick" data-req="${r.id}" data-field="${esc(c.field)}" checked> ${esc(f ? f.label : c.field)}</label></td>
+        <td class="act-from">${esc(dataEditValueText(c.field, cur))}</td><td><b>${esc(dataEditValueText(c.field, c.to))}</b></td></tr>`;
+    }).join('');
+    return `<tr>
+      <td class="name-cell"><span class="rownum">${i+1}</span>${esc(p ? p.displayName : r.displayName)}${p ? '' : ' <span class="badge badge-danger">No longer in the roster</span>'}<br><span class="small-note">${esc(p ? p.email||'' : r.email||'')}</span></td>
+      <td>${esc(r.supervisor)}</td>
+      <td class="no-truncate"><table class="mini-table"><thead><tr><th>Apply</th><th>Current</th><th>Requested</th></tr></thead><tbody>${rows}</tbody></table></td>
+      <td class="no-truncate" style="max-width:220px;white-space:normal;">${esc(r.reason||'—')}</td>
+      <td style="white-space:nowrap">${r.requestedAt ? new Date(r.requestedAt).toLocaleDateString('en-GB') : '—'}</td>
+      <td class="no-truncate"><button class="btn btn-ok btn-sm" onclick="applyDataEdit('${r.id}')" ${p?'':'disabled'}>✔ Apply ticked</button>
+        <button class="btn btn-danger btn-sm" onclick="rejectDataEdit('${r.id}')">Reject all</button></td>
+    </tr>`;
+  }).join('');
+}
+async function applyDataEdit(id){
+  const ticked = new Set([...document.querySelectorAll(`.de-tick[data-req="${id}"]:checked`)].map(i=>i.dataset.field));
+  if(!ticked.size){ toast('Nothing is ticked — use "Reject all" to refuse the whole request','err'); return; }
+  dataEditCache = await getShared(K_DATA_EDIT, []);
+  const req = dataEditCache.find(x=>x.id===id);
+  if(!req || req.status!=='Pending'){ toast('This request was already decided','info'); renderDataEditRequests(); return; }
+  const p = masterData.find(m=>m.id===req.pharmacistId);
+  if(!p){ toast('That pharmacist is no longer in the roster','err'); return; }
+  const apply = (req.changes||[]).filter(c=>ticked.has(c.field));
+  // same checks as Edit Selected: an email can belong to one pharmacist only
+  const em = apply.find(c=>c.field==='email');
+  if(em && masterData.some(m=>m.id!==p.id && (m.email||'').trim().toLowerCase()===em.to.trim().toLowerCase())){
+    toast(`${em.to} already belongs to another pharmacist — untick Email or reject the request`,'err'); return;
+  }
+  // Physical ↔ Online: a booked day of the other kind can't be kept
+  const ct = apply.find(c=>c.field==='city');
+  let clearDay = false;
+  if(ct){
+    const nowOnline = isOnlinePharmacist(p), willOnline = ct.to.trim().toLowerCase()==='online';
+    const a = ops.assignments[p.id], day = a && a.type==='date' ? dayById(a.dateId) : null;
+    if(nowOnline!==willOnline && day && !!day.isOnline!==willOnline && !hasAttendedTraining(p)) clearDay = true;
+  }
+  const summary = apply.map(c=>(DATA_EDIT_FIELDS.find(x=>x.key===c.field)||{label:c.field}).label).join(', ');
+  const rejected = (req.changes||[]).filter(c=>!ticked.has(c.field));
+  const ok = await confirmDialog(`Apply ${summary} for ${p.displayName}?` + (rejected.length ? ` The other ${rejected.length} change(s) will be refused.` : '')
+    + (clearDay ? ` They change between online and physical, so their current training day (${shortDayText(dayById(ops.assignments[p.id].dateId))}) is cleared — their supervisor picks a new one.` : ''));
+  if(!ok) return;
+  apply.forEach(c=>{ p[c.field] = c.to; });
+  if(!await setShared(K_MASTER, masterData)) return;
+  if(clearDay){
+    delete ops.assignments[p.id];
+    delete ops.attendance[p.id];
+    await setShared(K_OPS, ops);
+  }
+  req.changes.forEach(c=>{ c.decision = ticked.has(c.field) ? 'Approved' : 'Rejected'; });
+  req.status = rejected.length ? 'Partially Approved' : 'Approved';
+  req.decidedAt = nowIso();
+  const note = (rejected.length ? `Applied: ${summary} · Refused: ${rejected.map(c=>(DATA_EDIT_FIELDS.find(x=>x.key===c.field)||{label:c.field}).label).join(', ')}` : `Applied: ${summary}`)
+    + (clearDay ? ' · Their training day was cleared (online ↔ physical) — please pick a new one' : '');
+  req.rejectionReason = rejected.length ? note : '';
+  req.decisionNote = note;
+  if(await setShared(K_DATA_EDIT, dataEditCache)){
+    await pushNotification(req.supervisor, `${p.displayName} — Data Edit`, req.status, note);
+    toast(`${req.status} — ${summary}`,'ok');
+  }
+  buildTrainerFilterBar(); renderTrainerTable(); renderDataEditRequests(); updatePendingDot(leaveRequestsCache);
+}
+function rejectDataEdit(id){
+  const r = dataEditCache.find(x=>x.id===id);
+  showModal(`
+    <h3>Reject Data Edit Request</h3>
+    <p class="small-note">Refusing every change requested for ${r?'<b>'+esc(r.displayName)+'</b>':'this pharmacist'}. The supervisor sees the reason in their notifications.</p>
+    <div class="field"><label class="field-label">Reason for rejection (optional)</label><textarea id="rejectDataEditReason" rows="3"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger btn-sm" onclick="confirmRejectDataEdit('${id}')">Reject</button>
+    </div>`);
+}
+async function confirmRejectDataEdit(id){
+  const reason = document.getElementById('rejectDataEditReason').value.trim();
+  closeModal();
+  dataEditCache = await getShared(K_DATA_EDIT, []);
+  const r = dataEditCache.find(x=>x.id===id);
+  if(!r || r.status!=='Pending') return;
+  r.status = 'Rejected'; r.decidedAt = nowIso(); r.rejectionReason = reason;
+  (r.changes||[]).forEach(c=>{ c.decision = 'Rejected'; });
+  if(await setShared(K_DATA_EDIT, dataEditCache)){
+    await pushNotification(r.supervisor, `${r.displayName} — Data Edit`, 'Rejected', reason);
+    toast('Rejected','ok'); renderDataEditRequests(); updatePendingDot(leaveRequestsCache);
   }
 }
 
@@ -3238,7 +3219,7 @@ async function confirmRejectLeaveRequest(lrId){
 
 async function renderApprovalsTab(){
   renderQuotaApprovals();
-  await Promise.all([renderLeaveRequests(), renderSubmissions(), renderChangeRequests()]);
+  await Promise.all([renderLeaveRequests(), renderSubmissions(), renderChangeRequests(), renderDataEditRequests()]);
   let list = pendingList.filter(p=>p.status==='Pending');
   list = genericSort(list, apprSortState, (p,k)=> k==='addedAt' ? p.addedAt : String(p[k]||'').toLowerCase());
   const tb = document.getElementById('approvalsTableBody');
@@ -3459,7 +3440,8 @@ function renderGlobalChips(){
   document.getElementById('globalChipsBig').innerHTML =
     card('attended', 'ok', `<div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div>`) +
     card('notAssigned', 'neutral', `<div class="lbl">Not Assigned</div><div class="num">${notAssigned}</div><div class="tag">${pct(notAssigned)}</div>`) +
-    card('absent', 'danger', `<div class="lbl">Assigned but Absent</div><div class="num">${absentAfterAssign}</div><div class="tag">${pct(absentAfterAssign)}</div>`);
+    card('absent', 'danger', `<div class="lbl">Assigned but Absent</div><div class="num">${absentAfterAssign}</div><div class="tag">${pct(absentAfterAssign)}</div>`) +
+    adherenceCardHtml();
 
   let smallHtml = `<div class="chip neutral"><div class="lbl">Total Pharmacists</div><div class="num">${total}</div></div>`;
   LEAVE_STATUSES.forEach(s=>{
@@ -3468,6 +3450,17 @@ function renderGlobalChips(){
   });
   smallHtml += `<div class="chip pending"><div class="lbl">Pending Approval</div><div class="num">${pendCount}</div></div>`;
   document.getElementById('globalChipsSmall').innerHTML = smallHtml;
+}
+// Adherence Rate (T-X5): attended ÷ invited, where every invitation to a training day already held counts — the
+// first booking and each re-training booking. Informational (not a filter card).
+function adherenceCardHtml(){
+  const st = adherenceStats(masterData);
+  const tip = 'Attended ÷ invited. Every booking on a training day that has already taken place counts as one invitation — the first one and each retraining. Future days and bookings awaiting quota approval are not counted yet; partial attendance is not counted as attended. Retraining history is kept from the v4 update on.';
+  return `<div class="chip chip-lg chip-status info adherence-card" title="${esc(tip)}">
+      <div class="lbl">Adherence Rate</div>
+      <div class="num">${st.rate===null ? '—' : st.rate+'%'}</div>
+      <div class="tag">${st.attended} attended ÷ ${st.invited} invited</div>
+    </div>`;
 }
 let analyticsShowPct = false;
 function toggleAnalyticsPct(){
@@ -3569,7 +3562,7 @@ function renderMasterSheetPreview(){
   let list = applyMasterFilters(masterData);
   list = applySort('master', list);
   if(!list.length){
-    tb.innerHTML = `<tr><td colspan="14" class="empty-msg">No data matches the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="16" class="empty-msg">No data matches the current filters</td></tr>`;
     updateSortIndicators('master');
     return;
   }
@@ -3592,12 +3585,14 @@ function renderMasterSheetPreview(){
       <td>${esc(r.statusText)}</td>
       <td>${dash(r.workShift)}</td>
       <td>${dash(r.note)}</td>
+      <td class="no-truncate">${dash(r.originalDate)}</td>
+      <td>${dash(r.attempt)}</td>
     </tr>`;
   }).join('');
   updateSortIndicators('master');
 }
 
-const MASTER_SHEET_HEADERS = ['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Work Shift','Notes'];
+const MASTER_SHEET_HEADERS = ['District','Area Manager','City','Supervisor Name','Date','Pharmacy No.','User/Employee ID','Username (Email)','Display Name (Pharmacist name)','Phone number (Whatsapp)','SCFHS','Attendance Status','Work Shift','Notes','Original Date (absent)','Attempt'];
 async function exportMasterSheet(){
   // Exports the rows in the order the preview shows them (filtered + sorted).
   const list = applySort('master', applyMasterFilters(masterData));
@@ -3606,7 +3601,7 @@ async function exportMasterSheet(){
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
-    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.pharmacyNo,r.employeeId,r.email,r.displayName,r.phone,r.scfhs,r.statusText,r.workShift,r.note]);
+    rows.push([r.district,r.areaManager,r.city,r.supervisor,r.dateText,r.pharmacyNo,r.employeeId,r.email,r.displayName,r.phone,r.scfhs,r.statusText,r.workShift,r.note,r.originalDate,r.attempt]);
   });
   const colWidths = computeAutoColWidths_(headers, rows);
   const statusColIndex = headers.indexOf('Attendance Status');
@@ -3618,7 +3613,7 @@ async function exportAttendanceExcel(){
   const list = applyTrainerFilters(masterData);
   if(!list.length){ toast('No data to export','err'); return; }
   // The trainer's export leaves out Core / Capsule Completion, Attendance, Late Arrival Time and Notes (the admin's keeps them).
-  const full = isAdminRole();
+  const full = isCoordinatorRole();
   const headers = full
     ? ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date','Core Completion','Capsule Completion','Attendance','Late Arrival Time','Notes']
     : ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date'];
@@ -3645,6 +3640,243 @@ async function exportAttendanceExcel(){
 }
 
 
+
+/* ═══════════════════════════════ GROUP MERGES (T-A12) ═══════════════════════════════
+   Two (or more) online groups running on the same date were run as ONE session. Both training days keep their own
+   pharmacists and attendance (so supervisors still see their own day); the merge record says who ran the combined
+   session and how many attended in total. Trainers and coordinators can merge, edit and unmerge. */
+let mergesCache = [];
+async function loadMerges(){ mergesCache = await getShared(K_MERGES, []); }
+function activeMergeOf(dayId){ return mergesCache.find(m=>m.status!=='Unmerged' && (m.dayIds||[]).includes(dayId)) || null; }
+function mergePartnersText(dayId, labels){
+  const m = activeMergeOf(dayId);
+  if(!m) return '';
+  return m.dayIds.filter(id=>id!==dayId).map(id=>{ const d = dayById(id); return d ? (labels[id] || shortDayText(d)) : '(deleted group)'; }).join(', ');
+}
+function mergeBadgeHtml(dayId, labels){
+  const m = activeMergeOf(dayId);
+  return m ? `<br><span class="merge-badge" title="Run as one session — ${m.attendees} attendee(s), trainer ${esc(m.trainer||'—')}">🔗 Merged with ${esc(mergePartnersText(dayId, labels))}</span>` : '';
+}
+// Online days grouped by date where at least two run in parallel (the dates that can be merged)
+function mergeableDates(){
+  const byDate = {};
+  trainingConfig.dates.filter(d=>d.isOnline).forEach(d=>{ (byDate[d.date] = byDate[d.date] || []).push(d); });
+  return Object.keys(byDate).filter(k=>byDate[k].length>=2).sort().map(k=>({date:k, days:byDate[k]}));
+}
+function openMergeModal(mergeId){
+  const m = mergeId ? mergesCache.find(x=>x.id===mergeId) : null;
+  const dates = mergeableDates();
+  if(!m && !dates.length){ toast('No date has two or more online groups running at the same time','info'); return; }
+  const selDate = m ? m.date : (singleSelectedDate() && dayById(singleSelectedDate())?.isOnline && dates.some(x=>x.date===dayById(singleSelectedDate()).date) ? dayById(singleSelectedDate()).date : dates[0].date);
+  const opt = (list, cur)=>`<option value="">— choose —</option>` + [...new Set([...(list||[]), ...(cur?[cur]:[])])].map(n=>`<option value="${esc(n)}" ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
+  showModal(`<h3>${m ? 'Edit merged groups' : '🔗 Merge Groups'}</h3>
+    <p class="small-note">Online groups running on the same date that were run as one session. Each group keeps its own pharmacists and attendance.</p>
+    <div class="field"><label class="field-label req">Date</label>
+      <select id="mg-date" ${m?'disabled':''} onchange="renderMergeDayChoices()">${(m && !dates.some(x=>x.date===m.date) ? [{date:m.date}] : []).concat(dates).map(x=>`<option value="${x.date}" ${x.date===selDate?'selected':''}>${esc(formatDate(x.date))}</option>`).join('')}</select></div>
+    <div class="field"><label class="field-label req">Groups to merge (2 or more)</label><div id="mg-days" class="merge-day-list"></div></div>
+    <div class="row" style="gap:12px;align-items:flex-start;">
+      <div class="field" style="flex:1;min-width:180px;"><label class="field-label req">Trainer of the session</label><select id="mg-trainer">${opt(trainingConfig.trainerNames, m && m.trainer)}</select></div>
+      <div class="field" style="flex:1;min-width:180px;"><label class="field-label">Coordinator</label><select id="mg-coord">${opt(trainingConfig.coordinatorNames, m && m.coordinator)}</select></div>
+      <div class="field" style="width:150px;"><label class="field-label req">Total attendees</label><input type="number" id="mg-att" min="0" step="1" value="${m ? m.attendees : ''}"></div>
+    </div>
+    <div class="field"><label class="field-label">Note</label><textarea id="mg-note" rows="2" placeholder="Optional">${esc(m ? m.note||'' : '')}</textarea></div>
+    <div class="modal-actions">
+      ${m && m.status!=='Unmerged' ? `<button class="btn btn-danger btn-sm" style="margin-right:auto" onclick="unmergeGroups('${m.id}')">Unmerge</button>` : ''}
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="saveMerge(${m?`'${m.id}'`:''})">${m ? 'Save' : 'Merge'}</button>
+    </div>`, 'max-width:640px;');
+  renderMergeDayChoices(m);
+}
+function renderMergeDayChoices(m){
+  const box = document.getElementById('mg-days');
+  if(!box) return;
+  const date = document.getElementById('mg-date').value;
+  const labels = computeDayLabels();
+  const days = trainingConfig.dates.filter(d=>d.isOnline && d.date===date);
+  box.innerHTML = days.map(d=>{
+    const other = mergesCache.find(x=>x.status!=='Unmerged' && (!m || x.id!==m.id) && (x.dayIds||[]).includes(d.id));
+    const checked = m ? m.dayIds.includes(d.id) : !other;
+    return `<label class="merge-day ${other?'disabled':''}"><input type="checkbox" value="${d.id}" ${checked?'checked':''} ${other||m?'disabled':''}>
+      <b>${esc(labels[d.id] || shortDayText(d))}</b> <span class="small-note">${esc(dayGroupText(d))} · ${dayCount(d.id)} pharmacist(s)${(d.trainerNames||[]).length?' · '+esc(d.trainerNames.join(', ')):''}${other?' · already in another merge':''}</span></label>`;
+  }).join('') || '<span class="small-note">No online groups on this date</span>';
+}
+async function saveMerge(mergeId){
+  const ex = mergeId ? mergesCache.find(x=>x.id===mergeId) : null;
+  const dayIds = ex ? ex.dayIds.slice() : [...document.querySelectorAll('#mg-days input:checked')].map(i=>i.value);
+  const trainer = document.getElementById('mg-trainer').value;
+  const coordinator = document.getElementById('mg-coord').value;
+  const attRaw = document.getElementById('mg-att').value.trim();
+  const note = document.getElementById('mg-note').value.trim();
+  if(dayIds.length<2){ toast('Tick at least two groups to merge','err'); return; }
+  if(!trainer){ toast('Choose the trainer who ran the session','err'); return; }
+  if(attRaw==='' || !/^\d+$/.test(attRaw)){ toast('Type the total number of attendees (a whole number)','err'); return; }
+  const labels = computeDayLabels();
+  mergesCache = await getShared(K_MERGES, []);
+  const rec = Object.assign({}, ex || {id: uid('mrg'), status:'Active', mergedAt: nowIso()}, {
+    date: dayById(dayIds[0])?.date || (ex && ex.date), dayIds, dayLabels: dayIds.map(id=>labels[id] || (dayById(id) ? shortDayText(dayById(id)) : id)),
+    trainer, coordinator, attendees: Number(attRaw), note });
+  const i = mergesCache.findIndex(x=>x.id===rec.id);
+  if(i>=0) mergesCache[i] = rec; else mergesCache.push(rec);
+  const ok = await setShared(K_MERGES, mergesCache);
+  if(!ok){ await loadMerges(); return; }
+  closeModal();
+  await loadMerges();
+  afterMergeChange();
+  toast(ex ? 'Merge updated' : `Merged ${dayIds.length} groups into one session`,'ok');
+}
+async function unmergeGroups(id){
+  if(!await confirmDialog('Unmerge these groups? They stay as separate groups; the merge record is kept as "Unmerged".')) return;
+  mergesCache = await getShared(K_MERGES, []);
+  const m = mergesCache.find(x=>x.id===id);
+  if(!m) return;
+  m.status = 'Unmerged';
+  const ok = await setShared(K_MERGES, mergesCache);
+  closeModal();
+  await loadMerges();
+  afterMergeChange();
+  if(ok) toast('Groups unmerged','ok');
+}
+function afterMergeChange(){
+  renderMergesTable();
+  renderConductedBySelect();
+  if(!document.getElementById('t-days').classList.contains('hidden')) renderDaysTable();
+  if(!document.getElementById('t-calendar').classList.contains('hidden')) renderCalendar();
+}
+function renderMergesTable(){
+  const tb = document.getElementById('mergesBody');
+  if(!tb) return;
+  const showAll = document.getElementById('mergesShowAll')?.checked;
+  const list = mergesCache.filter(m=>showAll || m.status!=='Unmerged').sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  if(!list.length){ tb.innerHTML = `<tr><td colspan="9" class="empty-msg">No merged groups${showAll?'':' (tick "Show unmerged too" to see older ones)'}</td></tr>`; return; }
+  const when = s=> s ? new Date(s).toLocaleString('en-GB',{dateStyle:'medium', timeStyle:'short'}) : '';
+  tb.innerHTML = list.map(m=>`<tr class="${m.status==='Unmerged'?'day-hidden-row':''}">
+      <td style="white-space:nowrap">${esc(formatDate(m.date))}</td>
+      <td class="no-truncate">${esc((m.dayLabels||[]).join(' + '))}</td>
+      <td>${esc(m.trainer||'—')}</td>
+      <td>${esc(m.coordinator||'—')}</td>
+      <td><b>${m.attendees}</b></td>
+      <td class="no-truncate">${esc(m.note||'—')}</td>
+      <td class="no-truncate">${esc(m.mergedBy||'—')}<br><span class="small-note">${esc(when(m.mergedAt))}</span></td>
+      <td>${m.status==='Unmerged' ? `<span class="badge badge-empty">Unmerged</span><br><span class="small-note">${esc(m.unmergedBy||'')} ${esc(when(m.unmergedAt))}</span>` : '<span class="badge badge-date">Active</span>'}</td>
+      <td class="no-truncate">${m.status==='Unmerged' ? '' : `<button class="btn btn-outline btn-sm" onclick="openMergeModal('${m.id}')">Edit</button> <button class="btn btn-danger btn-sm" onclick="unmergeGroups('${m.id}')">Unmerge</button>`}</td>
+    </tr>`).join('');
+}
+async function exportMergesExcel(){
+  const showAll = document.getElementById('mergesShowAll')?.checked;
+  const list = mergesCache.filter(m=>showAll || m.status!=='Unmerged').sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+  if(!list.length){ toast('No data to export','err'); return; }
+  const headers = ['Date','Merged groups','Trainer','Coordinator','Total attendees','Note','Merged by','Merged at','Status','Unmerged by','Unmerged at'];
+  const rows = list.map(m=>[formatDate(m.date), (m.dayLabels||[]).join(' + '), m.trainer||'', m.coordinator||'', m.attendees, m.note||'', m.mergedBy||'',
+    m.mergedAt ? new Date(m.mergedAt).toLocaleString('en-GB') : '', m.status||'Active', m.unmergedBy||'', m.unmergedAt ? new Date(m.unmergedAt).toLocaleString('en-GB') : '']);
+  const ok = await downloadStyledXlsx('merged-groups.xlsx', 'Merged Groups', headers, rows, [14,36,18,18,14,30,14,20,11,14,20], {autoFilter:true});
+  if(ok) toast('Excel downloaded','ok');
+}
+
+/* ═══════════════════════════════ ACTIVITY LOG (super admin only) ═══════════════════════════════
+   Read from the server page by page (500 rows, newest first); filters are applied on the server. */
+let activityRows = [], activityMore = false;
+const ACTIVITY_LABELS = {
+  login:'Signed in', login_failed:'Failed sign-in', date:'Date / status', attendance:'Attendance', shift:'Work shift',
+  pharmacist_add:'Pharmacist added', pharmacist_edit:'Pharmacist edited', pharmacist_delete:'Pharmacist deleted',
+  day_add:'Training day added', day_edit:'Training day edited', day_delete:'Training day deleted', setting:'Setting changed',
+  approval:'Decision', approval_add:'Approval record added', approval_delete:'Approval record deleted', request:'Request sent',
+  request_cancel:'Request cancelled', submit:'Submitted', merge:'Group merge', unmerge:'Group unmerged', merge_edit:'Group merge edited',
+  merge_delete:'Group merge deleted', course_add:'Course tracked', course_edit:'Course edited', course_delete:'Course deleted',
+  course_share_rotate:'Share link renewed', course_slots:'Core / Capsule courses set', course_publish:'Course data published',
+  lms_learner_save:'Onboarding learner saved', lms_learner_delete:'Onboarding learner removed'
+};
+const ROLE_NAMES = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'Coordinator', supervisor:'Supervisor'};
+function ksaTime(isoStr){
+  const d = new Date(new Date(isoStr).getTime() + 3*3600*1000);
+  return d.toISOString().replace('T',' ').slice(0,16);
+}
+async function loadActivity(older){
+  if(!isSuperAdmin()) return;
+  const v = id=>document.getElementById(id).value.trim();
+  const filters = {q:v('actSearch'), user:v('actUser'), act:v('actAction'), from:v('actFrom'), to:v('actTo')};
+  if(older && activityRows.length) filters.before = activityRows[activityRows.length-1].id;
+  try{
+    const out = await API.activity(filters);
+    activityRows = older ? activityRows.concat(out.rows||[]) : (out.rows||[]);
+    activityMore = !!out.more;
+    fillActivityFacet('actUser', out.users||[], 'All users', u=>u);
+    fillActivityFacet('actAction', out.actions||[], 'All actions', a=>ACTIVITY_LABELS[a]||a);
+    renderActivity();
+  }catch(e){ toast('Could not load the Activity Log — '+(e.message||'please try again'),'err'); }
+}
+function fillActivityFacet(id, values, allText, label){
+  const sel = document.getElementById(id);
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${allText}</option>` + values.map(x=>`<option value="${esc(x)}" ${x===cur?'selected':''}>${esc(label(x))}</option>`).join('');
+}
+function clearActivityFilters(){
+  ['actSearch','actUser','actAction','actFrom','actTo'].forEach(id=>{ document.getElementById(id).value=''; });
+  loadActivity();
+}
+// Readable text for an assignment / attendance / shift snapshot stored in the log
+function actDateText(a){
+  if(!a) return 'Not Assigned';
+  if(a.status) return a.status + (a.locked?' 🔒':'');
+  const d = dayById(a.dateId);
+  return (d ? dayGroupText(d) : '(deleted day)') + (a.locked?' 🔒':'');
+}
+function actAttText(t){
+  if(!t) return '—';
+  const one = x=> !x ? '—' : [x.status, x.punctuality, x.time, x.reason].filter(Boolean).join(' · ') || '—';
+  if('day1' in t || 'day2' in t) return `Day 1: ${one(t.day1)} / Day 2: ${one(t.day2)}`;
+  return one(t);
+}
+const arrow = (a,b)=>`<span class="act-from">${esc(a===''||a==null?'—':String(a))}</span> → <b>${esc(b===''||b==null?'—':String(b))}</b>`;
+function actValue(v){ return v==null ? '' : (Array.isArray(v) ? v.join(', ') : (typeof v==='object' ? JSON.stringify(v) : String(v))); }
+const ACT_FIELD_LABELS = {
+  displayName:'Name', email:'Email', supervisor:'Supervisor', district:'District', areaManager:'Area Manager', city:'City',
+  pharmacyNo:'Pharmacy No.', employeeId:'Employee ID', phone:'Phone', scfhs:'SCFHS', note:'Notes', completionPct:'Core Completion',
+  capsulePct:'Capsule Completion', active:'Visible to supervisors', visibleSupervisors:'Visible to', readOnlySupervisors:'Not editable for',
+  trainerNames:'Trainers', trainingName:'Training name', supervisorQuotas:'Quotas', onlineFormat:'Online format', zoomLink:'Zoom link',
+  coordinator:'Coordinator', capacity:'Capacity', deadline:'Deadline', date:'Date', venue:'Venue', isOnline:'Online'
+};
+function activityDetailsHtml(r){
+  const d = r.details || {};
+  if(['date','attendance','shift'].includes(r.action)){
+    const parts = [];
+    if('a' in (d.to||{}) || 'a' in (d.from||{})) parts.push('Date: '+arrow(actDateText(d.from.a), actDateText(d.to.a)));
+    if('t' in (d.to||{}) || 't' in (d.from||{})) parts.push('Attendance: '+arrow(actAttText(d.from.t), actAttText(d.to.t)));
+    if('s' in (d.to||{})) parts.push('Shift: '+arrow(d.from.s, d.to.s));
+    return parts.join('<br>');
+  }
+  if(d.changes) return Object.keys(d.changes).map(k=>`${esc(ACT_FIELD_LABELS[k]||k)}: ${arrow(actValue(d.changes[k][0]), actValue(d.changes[k][1]))}`).join('<br>');
+  if(r.action==='approval' || r.action==='request' || r.action==='approval_add')
+    return `${esc(r.target_kind)}: ${arrow(d.from||'', d.to||'')}${d.supervisor?' · '+esc(d.supervisor):''}${d.reason?' · '+esc(d.reason):''}`;
+  if(r.action==='setting') return d.from!==undefined ? arrow(actValue(d.from), actValue(d.to)) : esc(actValue(d.changed));
+  if(r.action==='submit') return `${d.newlyLocked||0} locked · ${d.dates||0} with a date · ${d.leaves||0} other status · ${d.unassigned||0} not assigned`;
+  if(r.action==='login_failed') return esc(d.reason||'');
+  const keys = Object.keys(d);
+  return keys.length ? esc(keys.map(k=>k+': '+actValue(d[k])).join(' · ')) : '';
+}
+function renderActivity(){
+  const tb = document.getElementById('activityBody');
+  if(!activityRows.length){ tb.innerHTML = `<tr><td colspan="6" class="empty-msg">No activity matches the filters</td></tr>`; }
+  else tb.innerHTML = activityRows.map(r=>`<tr class="${r.action==='login_failed'?'act-warn':''}">
+      <td style="white-space:nowrap">${esc(ksaTime(r.at))}</td>
+      <td class="name-cell">${esc(r.username||'—')}</td>
+      <td>${esc(ROLE_NAMES[r.role]||r.role||'—')}</td>
+      <td>${esc(ACTIVITY_LABELS[r.action]||r.action)}</td>
+      <td class="no-truncate">${esc(r.target_name||r.target_id||'')}${r.target_kind && !['pharmacist','account'].includes(r.target_kind) ? ` <span class="small-note">(${esc(r.target_kind)})</span>` : ''}</td>
+      <td class="no-truncate act-details">${activityDetailsHtml(r)}</td>
+    </tr>`).join('');
+  document.getElementById('activityCount').textContent = `${activityRows.length} row(s) shown${activityMore?' — older rows available':''}`;
+  document.getElementById('activityMoreBtn').classList.toggle('hidden', !activityMore);
+  const wrap = document.querySelector('#activityCard .table-wrap');
+  if(wrap && typeof updateFloatingScrollbar==='function') updateFloatingScrollbar(wrap);
+}
+async function exportActivityExcel(){
+  if(!activityRows.length){ toast('No data to export','err'); return; }
+  const plain = html=>{ const div = document.createElement('div'); div.innerHTML = html.replace(/<br>/g,' | '); return div.textContent; };
+  const headers = ['Time (KSA)','User','Role','Action','Target','Details'];
+  const rows = activityRows.map(r=>[ksaTime(r.at), r.username, ROLE_NAMES[r.role]||r.role, ACTIVITY_LABELS[r.action]||r.action, r.target_name||r.target_id||'', plain(activityDetailsHtml(r))]);
+  const ok = await downloadStyledXlsx('activity-log.xlsx', 'Activity Log', headers, rows, [17,14,12,20,28,80], {autoFilter:true});
+  if(ok) toast('Activity Log downloaded (the rows shown)','ok');
+}
 
 /* ═══════════════════════════════ TRAINER SIGN-IN + STARTUP ═══════════════════════════════ */
 function showLoginGate(message){
@@ -3698,6 +3930,8 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   API.init('trainer');
   APP_HOOKS.onAuthExpired = ()=>{ closeModal(); showLoginGate('Your session has ended — please sign in again.'); };
   APP_HOOKS.onSaveFailed = ()=>{ if(!document.getElementById('screen-trainer').classList.contains('hidden')) resyncAfterSaveFailure(); };
+  // the server stored a "Retraining #n" marker / attempt history for a re-booked pharmacist — show it right away
+  APP_HOOKS.onOpsUpdated = (pids, historyChanged)=>{ if(historyChanged && !document.getElementById('screen-trainer').classList.contains('hidden')) renderTrainerTable(); };
   initSyncStatusIndicator();
   if(await API.verifySession()) await startTrainerApp();
   else showLoginGate();

@@ -6,9 +6,11 @@
 // Sheet through a Google service account. It never returns data to the caller (only counts), and the
 // app itself never talks to the Sheet — it is a one-way backup.
 //
-// Sheet layout: one tab per table (Pharmacists, Training Days, Approvals, Notifications, Settings,
+// Sheet layout: one tab per table (Pharmacists, Training Days, Approvals, Notifications, Settings, Courses, Course Progress,
+// Course Uploads, Onboarding Learners,
 // Venues), each fully replaced on every run, plus a "Log" tab that gets one new row per run:
-// time, status, rows per table, and what changed since the previous backup.
+// time, status, rows per table, and what changed since the previous backup — and an "Activity" tab that gets
+// the new Activity Log rows appended (never rewritten), so the who-did-what history also lives outside Supabase.
 //
 // Secrets (Dashboard → Edge Functions → Secrets):
 //   BACKUP_SECRET           long random string; the scheduler must send it (x-backup-secret header)
@@ -20,6 +22,7 @@ import postgres from "https://deno.land/x/postgresjs@v3.4.5/mod.js";
 
 const DB_URL = Deno.env.get("DB_URL") || Deno.env.get("SUPABASE_DB_URL") || "";
 const sql = postgres(DB_URL, { prepare: false, max: 2, idle_timeout: 20, connect_timeout: 10 });
+if (!DB_URL) console.error("[backup] no database URL: set DB_URL (or rely on SUPABASE_DB_URL)");
 
 const STATE_KEY = "backup_state";        // kv_cache row holding a fingerprint of every backed-up row (for the Log)
 const MAX_CELL = 49000;                  // Google Sheets refuses cells over 50,000 characters
@@ -31,33 +34,45 @@ Deno.serve(async (request) => {
   const sent = request.headers.get("x-backup-secret") || "";
   if (!secret || !safeEq(sent, secret)) return json({ ok: false, error: "Not authorised." }, 401);
   const t0 = Date.now();
+  // every step is logged (Edge Functions → backup → Logs) and has a time limit, so a stall shows up as a clear error
+  const step = async <T>(label: string, ms: number, p: () => Promise<T>): Promise<T> => {
+    console.log(`[backup] ${label}… (at ${Date.now() - t0} ms)`);
+    return await withTimeout(p(), ms, label);
+  };
   let summary = "";
   try {
     const sheetId = Deno.env.get("BACKUP_SHEET_ID");
     const saJson = Deno.env.get("GOOGLE_SERVICE_ACCOUNT");
     if (!sheetId || !saJson) throw new Error("BACKUP_SHEET_ID / GOOGLE_SERVICE_ACCOUNT secrets are not set.");
-    const token = await googleToken(JSON.parse(saJson));
+    let sa: any;
+    try { sa = JSON.parse(saJson); } catch { throw new Error("GOOGLE_SERVICE_ACCOUNT is not valid JSON — paste the whole .json key file again."); }
+    const token = await step("Google sign-in", 20000, () => googleToken(sa));
 
-    const tables = await readTables();
-    const prev = await loadState();
+    const tables = await step("Reading the database", 40000, () => readTables());
+    const prev = await step("Reading the previous backup state", 15000, () => loadState());
     const { changes, state } = diff(tables, prev);
 
-    await ensureTabs(token, sheetId, [...tables.map((t) => t.tab), LOG_TAB]);
-    await writeTables(token, sheetId, tables);
+    await step("Preparing the Sheet tabs", 20000, () => ensureTabs(token, sheetId, [...tables.map((t) => t.tab), LOG_TAB]));
+    await step("Writing the tables to the Sheet", 45000, () => writeTables(token, sheetId, tables));
 
-    summary = tables.map((t) => `${t.tab}: ${t.rows.length}`).join(" · ");
-    await appendLog(token, sheetId, [stamp(), "OK", summary, changes, ((Date.now() - t0) / 1000).toFixed(1) + " s"]);
-    await saveState(state);   // only after the Sheet was written, so a failed run is compared against the last good one
+    // Activity Log: new rows only, appended (never rewritten) — an off-site copy nobody can erase from the app.
+    const activityNote = await step("Copying new Activity Log rows", 40000, () => backupActivity(token, sheetId));
+
+    summary = tables.map((t) => `${t.tab}: ${t.rows.length}`).join(" · ") + " · " + activityNote;
+    await step("Adding the Log row", 15000, () => appendLog(token, sheetId, [stamp(), "OK", summary, changes, ((Date.now() - t0) / 1000).toFixed(1) + " s"]));
+    await step("Saving the backup state", 15000, () => saveState(state));   // only after the Sheet was written, so a failed run is compared against the last good one
+    console.log(`[backup] done in ${Date.now() - t0} ms — ${summary}`);
     return json({ ok: true, rows: summary });
   } catch (err) {
     const msg = String((err && (err as Error).message) || err);
+    console.error("[backup] FAILED: " + msg);
     // best effort: record the failure in the Log too
     try {
       const sheetId = Deno.env.get("BACKUP_SHEET_ID"), saJson = Deno.env.get("GOOGLE_SERVICE_ACCOUNT");
       if (sheetId && saJson) {
-        const token = await googleToken(JSON.parse(saJson));
-        await ensureTabs(token, sheetId, [LOG_TAB]);
-        await appendLog(token, sheetId, [stamp(), "FAILED", summary, msg.slice(0, 2000), ((Date.now() - t0) / 1000).toFixed(1) + " s"]);
+        const token = await withTimeout(googleToken(JSON.parse(saJson)), 15000, "Google sign-in");
+        await withTimeout(ensureTabs(token, sheetId, [LOG_TAB]), 15000, "Preparing the Log tab");
+        await withTimeout(appendLog(token, sheetId, [stamp(), "FAILED", summary, msg.slice(0, 2000), ((Date.now() - t0) / 1000).toFixed(1) + " s"]), 15000, "Adding the Log row");
       }
     } catch (_) { /* nothing more we can do */ }
     return json({ ok: false, error: msg }, 500);
@@ -65,6 +80,11 @@ Deno.serve(async (request) => {
 });
 
 /* ─────────── helpers ─────────── */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: number | undefined;
+  const limit = new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} did not finish within ${ms / 1000} s`)), ms); });
+  return Promise.race([p, limit]).finally(() => clearTimeout(timer));
+}
 function json(obj: unknown, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -101,11 +121,11 @@ async function readTables(): Promise<Table[]> {
     tab: "Pharmacists",
     header: ["id", "district", "area_manager", "city", "supervisor", "pharmacy_no", "employee_id", "email", "display_name",
       "phone", "scfhs", "note", "completion_pct (Core)", "capsule_pct", "work_shift", "training day (readable)",
-      "assignment (json)", "attendance (json)", "created_at"],
+      "assignment (json)", "attendance (json)", "retraining history (json)", "created_at"],
     rows: ph.map((r: any) => [r.id, r.district, r.area_manager, r.city, r.supervisor, r.pharmacy_no, r.employee_id, r.email,
       r.display_name, r.phone, r.scfhs, r.note, r.completion_pct, r.capsule_pct, r.work_shift,
       r.assignment ? (r.assignment.type === "date" ? (dayText[r.assignment.dateId] || "(deleted day)") : r.assignment.status) : "",
-      r.assignment, r.attendance, r.created_at ? new Date(r.created_at).toISOString() : ""].map(cell)),
+      r.assignment, r.attendance, r.history, r.created_at ? new Date(r.created_at).toISOString() : ""].map(cell)),
     ids: ph.map((r: any) => r.id), names: ph.map((r: any) => r.display_name || r.id),
   };
   const trainingDays: Table = {
@@ -142,7 +162,49 @@ async function readTables(): Promise<Table[]> {
     rows: vn.map((r: any) => [r.id, r.city, r.venue].map(cell)), ids: vn.map((r: any) => String(r.id)), names: vn.map((r: any) => r.venue),
   };
   // kv_cache is deliberately NOT backed up: it only holds short-lived values and the login-token signing secret.
-  return [pharmacists, trainingDays, approvals, notifications, settings, venues];
+  return [pharmacists, trainingDays, approvals, notifications, settings, venues, ...(await readReportTables())];
+}
+
+/* Reports (v5): courses, their published completion rows, the publish audit, and onboarding learners.
+   Skipped (no tabs) until the v5 tables exist, so the backup keeps working before schema.sql is re-run. */
+async function readReportTables(): Promise<Table[]> {
+  let cs: any[], cp: any[], cu: any[], ll: any[];
+  try {
+    cs = await sql`select * from courses order by sort_order, name`;
+    cp = await sql`select * from course_progress order by course_id, email`;
+    cu = await sql`select * from course_uploads order by course_id, at`;
+    ll = await sql`select * from lms_learners order by email`;
+  } catch (_) {
+    console.log("[backup] reports tables not found — skipping the report tabs");
+    return [];
+  }
+  const iso = (v: any) => (v ? new Date(v).toISOString() : "");
+  const courseName: Record<string, string> = {};
+  for (const c of cs) courseName[c.id] = c.name;
+  return [
+    { tab: "Courses",
+      header: ["id", "name", "source", "active", "display name", "category", "order", "deadline", "display (json)", "engine (json)",
+        "created_at", "created_by", "last_published_at", "last_published_by", "rows"],
+      // the public share slug is left out on purpose — the backup Sheet must not hand out working public links
+      rows: cs.map((r) => [r.id, r.name, r.source, r.active ? "yes" : "no", r.display_name, r.category, r.sort_order, iso(r.deadline),
+        r.display, r.engine, iso(r.created_at), r.created_by, iso(r.last_published_at), r.last_published_by, r.row_count].map(cell)),
+      ids: cs.map((r) => r.id), names: cs.map((r) => r.name) },
+    { tab: "Course Progress",
+      header: ["course_id", "course", "email", "lms_name", "sources", "done", "total", "rate", "state", "final_done", "final_status",
+        "final_at", "final_at_raw", "latest_at", "latest_raw", "missing (json)"],
+      rows: cp.map((r) => [r.course_id, courseName[r.course_id] || "", r.email, r.lms_name, r.sources, r.done, r.total, r.rate, r.state,
+        r.final_done ? "yes" : "no", r.final_status, iso(r.final_at), r.final_at_raw, iso(r.latest_at), r.latest_raw, r.missing].map(cell)),
+      ids: cp.map((r) => r.course_id + "|" + r.email), names: cp.map((r) => (courseName[r.course_id] || r.course_id) + ": " + r.email) },
+    { tab: "Course Uploads",
+      header: ["id", "course_id", "course", "at", "by", "files (json)", "stats (json)", "settings (json)"],
+      rows: cu.map((r) => [r.id, r.course_id, courseName[r.course_id] || "", iso(r.at), r.by_user, r.files, r.stats, r.settings].map(cell)),
+      ids: cu.map((r) => String(r.id)), names: cu.map((r) => (courseName[r.course_id] || r.course_id) + " " + iso(r.at)) },
+    { tab: "Onboarding Learners",
+      header: ["email", "display_name", "district", "area_manager", "city", "supervisor", "pharmacy_no", "employee_id", "note", "created_at", "created_by"],
+      rows: ll.map((r) => [r.email, r.display_name, r.district, r.area_manager, r.city, r.supervisor, r.pharmacy_no, r.employee_id, r.note,
+        iso(r.created_at), r.created_by].map(cell)),
+      ids: ll.map((r) => r.email), names: ll.map((r) => r.display_name || r.email) },
+  ];
 }
 
 /* ─────────── what changed since the last backup ─────────── */
@@ -194,7 +256,7 @@ async function googleToken(sa: { client_email: string; private_key: string }) {
   const key = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
   const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(unsigned)));
   const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST", signal: AbortSignal.timeout(15000), headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: unsigned + "." + b64url(sig) }),
   });
   const out = await res.json();
@@ -207,7 +269,7 @@ function b64url(bytes: Uint8Array) {
 }
 async function gapi(token: string, method: string, url: string, body?: unknown) {
   const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + url, {
-    method, headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    method, signal: AbortSignal.timeout(40000), headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const out = await res.json().catch(() => ({}));
@@ -234,6 +296,35 @@ async function writeTables(token: string, sheetId: string, tables: Table[]) {
     data: tables.map((t) => ({ range: q(t.tab) + "!A1", values: [t.header, ...t.rows] })),
   });
 }
+/* ─────────── Activity Log → "Activity" tab (append-only) ─────────── */
+const ACTIVITY_TAB = "Activity";
+const ACTIVITY_KEY = "backup_activity_last";   // kv_cache: id of the last activity row already copied
+async function backupActivity(token: string, sheetId: string): Promise<string> {
+  let rows: any[];
+  try {
+    const last = await sql`select value from kv_cache where key = ${ACTIVITY_KEY}`;
+    const lastId = last.length ? Number(last[0].value) || 0 : 0;
+    rows = await sql`select id, at, username, role, action, target_kind, target_id, target_name, details
+                     from activity_log where id > ${lastId} order by id limit 5000`;
+  } catch (e) {
+    return "Activity: not set up yet";   // activity_log table not created yet (schema.sql)
+  }
+  const meta = await gapi(token, "GET", `${sheetId}?fields=sheets.properties.title`);
+  if (!(meta.sheets || []).some((s: any) => s.properties.title === ACTIVITY_TAB)) {
+    await gapi(token, "POST", `${sheetId}:batchUpdate`, { requests: [{ addSheet: { properties: { title: ACTIVITY_TAB } } }] });
+    await gapi(token, "PUT", `${sheetId}/values/${encodeURIComponent(q(ACTIVITY_TAB) + "!A1")}?valueInputOption=RAW`,
+      { values: [["id", "time (KSA)", "user", "role", "action", "target type", "target id", "target", "details (json)"]] });
+  }
+  if (!rows.length) return "Activity: +0";
+  const ksa = (d: any) => new Date(new Date(d).getTime() + 3 * 3600 * 1000).toISOString().replace("T", " ").slice(0, 19);
+  await gapi(token, "POST", `${sheetId}/values/${encodeURIComponent(q(ACTIVITY_TAB) + "!A:I")}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+    { values: rows.map((r) => [r.id, ksa(r.at), r.username, r.role, r.action, r.target_kind, r.target_id, r.target_name, r.details].map(cell)) });
+  const maxId = String(rows[rows.length - 1].id);
+  await sql`insert into kv_cache (key, value, expires_at) values (${ACTIVITY_KEY}, ${maxId}, null)
+            on conflict (key) do update set value = excluded.value, expires_at = null`;
+  return `Activity: +${rows.length}`;
+}
+
 async function appendLog(token: string, sheetId: string, row: string[]) {
   await gapi(token, "POST", `${sheetId}/values/${encodeURIComponent(q(LOG_TAB) + "!A:E")}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     { values: [row] });

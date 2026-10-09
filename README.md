@@ -6,10 +6,14 @@ Static front-end (GitHub Pages) + a **Supabase** backend (Postgres behind an Edg
 ```
 index.html            Landing page: Supervisor · Course Progress Reports · (trainer icon, bottom-right)
 supervisor.html       Supervisor page (pick your name → assign pharmacists, request additions/leave)
-trainer.html          Trainer page — behind a sign-in (attendance, setup, approvals, analytics, calendar)
-assets/js/config.js   Every URL lives here (backend, LMS reports)
+trainer.html          Admins Dashboard (trainer page) — behind a sign-in (attendance, setup, approvals, analytics, calendar,
+                      Moodle Reports / SAP Reports / Reports Configuration for the superadmin and coordinators)
+reports.html          Public course progress reports (no sign-in; ?c=<share link> opens one course)
+assets/js/config.js   Every URL lives here (backend, landing-page links)
 assets/js/api.js      Backend client — sends only the records that changed
-assets/js/common.js   Helpers shared by both pages
+assets/js/common.js   Helpers shared by the pages
+assets/js/reports-admin.js  Moodle Reports engine + Reports Configuration (staff)
+assets/js/reports.js  The public reports page
 supabase/schema.sql   The database (run once)
 supabase/functions/   The `api` Edge Function — all reads/writes and all auth go through it
 dev/serve.ps1         Local static server
@@ -18,7 +22,7 @@ dev/serve.ps1         Local static server
 ## 1. Backend setup
 
 See **[supabase/README.md](supabase/README.md)** for the full runbook: create the tables, set the
-secrets (`TRAINER_USER`, `TRAINER_PASS`, `TOKEN_SECRET`, `DB_URL`), and deploy the `api` function.
+secrets (`STAFF_ACCOUNTS` — made with `dev/password-hash.html` — and optionally `TOKEN_SECRET`), and deploy the `api` function.
 
 ## 2. Data model
 
@@ -65,8 +69,9 @@ GitHub Pages serves only the static front-end — the backend stays in Supabase.
   unavoidable for a static site. They are not what protects the data:
   - **Row-Level Security is on for every table with no policies**, so the anon key can read and write
     *nothing* directly. Only the `api` Edge Function touches the database.
-  - **Trainer actions** need a signed, expiring (10 h) token issued only after `TRAINER_USER`/`TRAINER_PASS`
-    match. 8 failed sign-ins in 10 minutes lock sign-in for everyone for 10 minutes.
+  - **Admins Dashboard actions** need a signed, expiring (10 h) token issued only after a named staff account
+    (superadmin / trainer / coordinator, stored as PBKDF2 hashes in `STAFF_ACCOUNTS`) signs in. 8 wrong passwords
+    lock that username for 10 minutes. Every change is recorded in the Activity Log (superadmin only).
   - **Supervisor requests** are limited to that supervisor's own pharmacists (no phone/licence numbers), and the
     server re-checks every change: pharmacist ownership, training-day visibility, deadline, capacity, and
     per-supervisor quota. Supervisors cannot record attendance, approve anything, or touch setup data.

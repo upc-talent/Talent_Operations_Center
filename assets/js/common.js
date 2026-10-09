@@ -11,6 +11,8 @@ const K_LEAVE_REQUESTS = 'leave-requests';
 const K_QUOTA_HISTORY = 'quota-approval-history';
 const K_CHANGE_REQ = 'change-requests';          // supervisor "Request Change" for a locked pharmacist
 const K_SUBMISSIONS = 'supervisor-submissions';   // a supervisor pressed Submit (trainer only)
+const K_MERGES = 'group-merges';               // parallel online groups run as one session (staff only)
+const K_DATA_EDIT = 'data-edit-requests';       // supervisor asks to correct a pharmacist's details
 
 function uid(p){ return p+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function nowIso(){ return new Date().toISOString(); }
@@ -83,7 +85,7 @@ function trainerBadge(name){
 }
 
 // Hidden-from-supervisors state: 👁 = visible, this eye-with-a-slash = hidden (like a password field). Dropdowns can only show
-// text, so there a hidden day ends with "(hidden)" instead.
+// text, so there a hidden day ends with 🚫 instead.
 const EYE_OFF_SVG = '<svg class="ico-eye-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 
 /* City short-code labels (for pill text) */
@@ -180,17 +182,23 @@ function promptForFilename(defaultBaseName, extension){
 let masterData = [];
 let pendingList = [];
 let trainingConfig = {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[]};
-let ops = {assignments:{}, attendance:{}, shifts:{}};
+let ops = {assignments:{}, attendance:{}, shifts:{}, history:{}};
 let leaveRequestsCache = [];
+// Core / Capsule completion (v5): the two courses chosen in Reports Configuration → Hub columns, read-only.
+// {core: {courseId, name, lastPublishedAt, byEmail:{email:{s,r,f,d}}} | null, capsule: … }. Supervisors get only r (%).
+const K_COURSE_SLOTS = 'course-slots';
+let courseSlots = {core:null, capsule:null};
 async function loadCoreData(){
-  // one request for all four (a single round-trip instead of four)
-  const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS], {
+  // one request for all of them (a single round-trip)
+  const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS, K_COURSE_SLOTS], {
     [K_MASTER]: [],
     [K_PENDING]: [],
     [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]},
-    [K_OPS]: {assignments:{}, attendance:{}, shifts:{}}
+    [K_OPS]: {assignments:{}, attendance:{}, shifts:{}, history:{}},
+    [K_COURSE_SLOTS]: {core:null, capsule:null}
   });
   masterData = r[K_MASTER]; pendingList = r[K_PENDING]; trainingConfig = r[K_CONFIG]; ops = r[K_OPS];
+  courseSlots = r[K_COURSE_SLOTS] || {core:null, capsule:null};
   if(!trainingConfig.dates) trainingConfig.dates = [];
   if(!trainingConfig.trainerNames) trainingConfig.trainerNames = [];
   if(!trainingConfig.coordinatorNames) trainingConfig.coordinatorNames = [];
@@ -198,6 +206,7 @@ async function loadCoreData(){
   if(!trainingConfig.maxCapacity) trainingConfig.maxCapacity = 30;
   if(!Array.isArray(trainingConfig.cityRoster)) trainingConfig.cityRoster = [];
   if(!ops.shifts) ops.shifts = {};
+  if(!ops.history) ops.history = {};
 }
 
 /* ═══════════════════════════════ OPTIMISTIC BACKGROUND SAVE ═══════════════════════════════
@@ -282,9 +291,9 @@ function dayById(id){
 }
 
 /* ═══════════════════════════════ MULTI-SELECT FILTER WIDGET ═══════════════════════════════ */
-let supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set() };
+let supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set(), retrain:new Set() };
 let supSearchQ = '';
-let trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
+let trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set(), retrain:new Set() };
 let trainerSearchQ = '';
 let masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
 let masterSearchQ = '';
@@ -292,14 +301,19 @@ let daysFilterState = { city:new Set(), type:new Set(), date:new Set(), trainer:
 let daysSearchQ = '';
 let msOptionsCache = {};
 
+// Other tables (Moodle Reports, the public reports page) register their own filter state + re-render here.
+const EXTRA_FILTER_SCOPES = {};
+function registerFilterScope(scope, getState, rerender){ EXTRA_FILTER_SCOPES[scope] = {getState, rerender}; }
 function filterStateFor(scope){
+  if(EXTRA_FILTER_SCOPES[scope]) return EXTRA_FILTER_SCOPES[scope].getState();
   if(scope==='sup') return supFilterState;
   if(scope==='trainer') return trainerFilterState;
   if(scope==='days') return daysFilterState;
   return masterFilterState;
 }
 function rerenderScope(scope){
-  if(scope==='sup') renderSupervisorTable();
+  if(EXTRA_FILTER_SCOPES[scope]) EXTRA_FILTER_SCOPES[scope].rerender();
+  else if(scope==='sup') renderSupervisorTable();
   else if(scope==='trainer') renderTrainerTable();
   else if(scope==='days') renderDaysTable();
   else renderMasterSheetPreview();
@@ -354,7 +368,7 @@ function bulkAssignOptions(scope){
   days.forEach(d=>{
     if(scope==='trainer'){ html += `<option value="date:${d.id}">${assignOptionLabel(d, false, true)}</option>`; return; }
     const passed = (scope==='sup' && isDeadlinePassed(d)) ? ' (Deadline passed)' : '';
-    const hidden = d.active===false ? ' (hidden)' : '';
+    const hidden = d.active===false ? ' 🚫' : '';
     html += `<option value="date:${d.id}">${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed}${hidden}</option>`;
   });
   html += `</optgroup><optgroup label="Other Status">`;
@@ -581,10 +595,10 @@ function matchesDateSet(pid, set){
   return false;
 }
 
-// `marks` (trainer-side lists): 👁 after a visible day, "(hidden)" after one hidden from supervisors.
+// `marks` (trainer-side lists): 👁 after a visible day, 🚫 after one hidden from supervisors.
 function dateFilterOptions(days, short, marks){
   if(marks===undefined) marks = !!short;
-  const mark = d=> !marks ? (d.active===false?' (hidden)':'') : (d.active===false?' (hidden)':' 👁');
+  const mark = d=> !marks ? (d.active===false?' 🚫':'') : (d.active===false?' 🚫':' 👁');
   return days.map(d=>({value:'date:'+d.id, text: (short ? shortDayText(d) : dayGroupText(d))+mark(d)}))
     .concat(LEAVE_STATUSES.map(s=>({value:'leave:'+s, text:s})))
     .concat([{value:'unassigned', text:'Not Assigned'}]);
@@ -599,6 +613,7 @@ function toggleSort(scope,key){
 }
 function getSortValue(p, key){
   if(key==='workShift') return ((ops.shifts&&ops.shifts[p.id])||'').toLowerCase();
+  if(key==='attempt') return retrainHistory(p.id).length;
   if(key==='date'){
     const a = ops.assignments[p.id];
     if(!a) return 'zzz_unassigned';
@@ -610,10 +625,7 @@ function getSortValue(p, key){
     const s = attSummary(p.id, p);
     return s.status ? s.status + '_' + (s.punctuality||'') : '';
   }
-  if(key==='completionPct' || key==='capsulePct'){
-    const n = parseFloat(p[key]);
-    return isNaN(n) ? -1 : n;
-  }
+  if(key==='core' || key==='capsule') return courseSlotSortValue(p, key);
   return (p[key]||'').toString().toLowerCase();
 }
 function applySort(scope, list){
@@ -650,9 +662,9 @@ function isDeadlinePassed(day){
 // just tells the trainer which days supervisors can't see — the day stays fully usable.
 // `short`: the trainer's Attendance tab uses the compact "Online QAS - 11,12 Oct 26" label (see shortDayText).
 function assignOptionLabel(d, enforceDeadline, short){
-  if(short) return `${esc(shortDayText(d))}${d.active===false?' (hidden)':' 👁'}`;
+  if(short) return `${esc(shortDayText(d))}${d.active===false?' 🚫':' 👁'}`;
   const passed = enforceDeadline && isDeadlinePassed(d);
-  return `${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed?' (Deadline passed)':''}${d.active===false?' (hidden)':''}`;
+  return `${d.isOnline?'🌐 ':''}${esc(dayGroupText(d))}${passed?' (Deadline passed)':''}${d.active===false?' 🚫':''}`;
 }
 function assignmentOptionsHtml(pid, days, enforceDeadline, short){
   const current = ops.assignments[pid];
@@ -733,11 +745,81 @@ function dateCellHtml(p, editable, days, changeFn){
       badge = `<span class="badge badge-date">${day.isOnline?'🌐 ':''}${esc(dayGroupText(day))}</span>`;
     }
   }
-  if(!editable) return badge;
+  const retrain = retrainNoteHtml(p, changeFn==='onTrainerAssignChange');
+  if(!editable) return badge + retrain;
   const enforceDeadline = changeFn==='onAssignChange';
   const relevantDays = days.filter(d => !!d.isOnline === isOnlinePharmacist(p));
   const collapsed = currentAssignOptionHtml(p.id, relevantDays, enforceDeadline, changeFn==='onTrainerAssignChange');
-  return `<div>${badge}<br><select class="assign-select" data-pid="${p.id}" data-fn="${changeFn}" data-online="${isOnlinePharmacist(p)?1:0}" onfocus="fillAssignSelect(this)" onmousedown="fillAssignSelect(this)" onchange="${changeFn}('${p.id}', this.value)">${collapsed}</select></div>`;
+  return `<div>${badge}<br><select class="assign-select" data-pid="${p.id}" data-fn="${changeFn}" data-online="${isOnlinePharmacist(p)?1:0}" onfocus="fillAssignSelect(this)" onmousedown="fillAssignSelect(this)" onchange="${changeFn}('${p.id}', this.value)">${collapsed}</select>${retrain}</div>`;
+}
+
+/* ═══════════════════════════════ RETRAINING (v4) ═══════════════════════════════
+   A pharmacist who missed their training (Absent, or Partial on a 2-day training) and is booked again — by the
+   training team or their supervisor — keeps the missed attempt: the server moves it into ops.history[pid]
+   ({dateId, date, label, status, reason, endedAt, endedBy}) instead of throwing it away. The next booked day is a
+   re-training ("Retraining #2", #3 …) and everyone sees the date they originally missed. */
+/* Request Data Edit (supervisor → trainer approval): the pharmacist details a supervisor may ask to correct.
+   `hidden` = not sent to supervisors (they can type a new value but don't see the current one). "City" also carries
+   Physical ↔ Online (an online pharmacist's city is "Online"). Supervisor, Area Manager and District stay trainer-only. */
+const DATA_EDIT_FIELDS = [
+  {key:'displayName', label:'Pharmacist Name'}, {key:'email', label:'Email'}, {key:'pharmacyNo', label:'Pharmacy No.'},
+  {key:'employeeId', label:'Employee ID', hidden:true}, {key:'phone', label:'Phone', hidden:true}, {key:'scfhs', label:'SCFHS', hidden:true},
+  {key:'city', label:'City / Online-Physical'}
+];
+
+function retrainHistory(pid){ return (ops.history && ops.history[pid]) || []; }
+function retrainKey(p){ return retrainHistory(p.id).length ? 'retraining' : 'first'; }
+const RETRAIN_FILTER_OPTIONS = [{value:'retraining', text:'↻ Retraining'}, {value:'first', text:'First attempt'}];
+function attemptDayText(h, short){
+  const d = dayById(h.dateId);
+  return d ? (short ? shortDayText(d) : dayGroupText(d)) : (h.label || (h.date ? formatDate(h.date) : 'a deleted day'));
+}
+function retrainNoteHtml(p, trainerSide){
+  const h = retrainHistory(p.id);
+  if(!h.length) return '';
+  const a = ops.assignments[p.id];
+  const first = h[0];
+  const missed = trainerSide
+    ? `missed ${attemptDayText(first, true)}${first.status==='Partial' ? ' (partial)' : ''}`
+    : `originally ${first.status==='Partial' ? 'partial' : 'absent'} on ${attemptDayText(first, false)}`;
+  const text = a && a.type==='date' ? `↻ Retraining #${h.length+1} — ${missed}` : `↻ Missed training ${h.length}× — ${missed}`;
+  return `<div class="retrain-badge" role="button" tabindex="0" title="Show every attempt" onclick="openRetrainHistory('${p.id}')" onkeydown="if(event.key==='Enter'){openRetrainHistory('${p.id}')}">${esc(text)}</div>`;
+}
+function openRetrainHistory(pid){
+  const p = masterData.find(m=>m.id===pid);
+  const h = retrainHistory(pid);
+  const trainerSide = typeof isCoordinatorRole==='function';
+  const when = s=> s ? new Date(s).toLocaleString('en-GB',{dateStyle:'medium', timeStyle:'short'}) : '—';
+  const a = ops.assignments[pid];
+  let current = 'Not Assigned', currentStatus = '—';
+  if(a && a.type==='leave') current = a.status;
+  if(a && a.type==='date'){ const d = dayById(a.dateId); current = d ? (trainerSide ? shortDayText(d) : dayGroupText(d)) : '—'; currentStatus = p ? (attSummary(pid,p).status || (attSummary(pid,p).inProgress ? 'In progress' : 'Not marked yet')) : '—'; }
+  showModal(`<h3>Training attempts — ${esc(p ? p.displayName : '')}</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Training day</th><th>Result</th><th>Reason</th><th>Moved on</th><th>By</th></tr></thead>
+      <tbody>${h.map((x,i)=>`<tr><td>${i+1}</td><td class="no-truncate">${esc(attemptDayText(x, trainerSide))}</td><td><span class="badge ${x.status==='Partial'?'badge-leave':'badge-danger'}">${esc(x.status||'Absent')}</span></td><td>${esc(x.reason||'—')}</td><td style="white-space:nowrap">${esc(when(x.endedAt))}</td><td>${esc(x.endedBy||'—')}</td></tr>`).join('')}
+        <tr class="retrain-current"><td>${h.length+1}</td><td class="no-truncate">${esc(current)} <span class="small-note">(now)</span></td><td>${esc(currentStatus)}</td><td>—</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table></div>
+    <div class="modal-actions"><button class="btn btn-navy btn-sm" onclick="closeModal()">Close</button></div>`, 'max-width:760px;');
+}
+
+/* Adherence Rate = attended ÷ invited, counting every invitation: each time a pharmacist was booked on a training day
+   that has already been held (first attempt or retraining) counts once. Future bookings and over-quota bookings
+   still awaiting approval don't count yet. Partial attendance is not "attended". */
+function adherenceStats(list){
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  let invited = 0, attended = 0;
+  list.forEach(p=>{
+    retrainHistory(p.id).forEach(x=>{ if(!x.date || x.date<=today) invited++; });
+    const a = ops.assignments[p.id];
+    if(a && a.type==='date' && !(a.overQuota && !a.quotaApproved)){
+      const d = dayById(a.dateId);
+      if(d && d.date && d.date<=today){ invited++; if(hasAttendedTraining(p)) attended++; }
+    }
+  });
+  return {invited, attended, rate: invited ? Math.round(attended/invited*1000)/10 : null};
 }
 
 function hasValidDateAssignment(p){
@@ -755,7 +837,9 @@ function isSplitPerson(p){
   return !!(day && day.isOnline && day.onlineFormat==='split');
 }
 // Normalizes attendance for both regular (single-status) and split (day1/day2) assignments.
-// Returns {status: 'Attended'|'Absent'|'Partial'|undefined, punctuality, missingDay, day1, day2}
+// Returns {status: 'Attended'|'Absent'|'Partial'|undefined, punctuality, missingDay, inProgress, day1, day2}
+// Split trainings (same rule as the server's isFailed): one day attended + the other marked Absent = Partial;
+// any day Absent and none attended = Absent; Day 1 attended with Day 2 not marked yet = still in progress (not failed).
 function attSummary(pid, p){
   const att = ops.attendance[pid];
   if(!att) return {status: undefined};
@@ -768,9 +852,11 @@ function attSummary(pid, p){
     }
     const r1 = s1==='Absent' ? (att.day1.reason||'') : '', r2 = s2==='Absent' ? (att.day2.reason||'') : '';
     const reason = [...new Set([r1,r2].filter(Boolean))].join(' / ');
-    if(s1==='Absent' && s2==='Absent') return {status:'Absent', reason, day1:s1, day2:s2};
-    if(!s1 && !s2) return {status: undefined};
-    return {status:'Partial', missingDay: s1==='Attended'?2:1, reason, day1:s1, day2:s2};
+    const attendedOne = s1==='Attended' || s2==='Attended', absentOne = s1==='Absent' || s2==='Absent';
+    if(attendedOne && absentOne) return {status:'Partial', missingDay: s1==='Absent'?1:2, reason, day1:s1, day2:s2};
+    if(absentOne) return {status:'Absent', reason, day1:s1, day2:s2};
+    if(attendedOne) return {status: undefined, inProgress:true, day1:s1, day2:s2};
+    return {status: undefined};
   }
   return {status: att.status, punctuality: att.punctuality, reason: att.status==='Absent' ? (att.reason||'') : ''};
 }
@@ -805,6 +891,7 @@ function attendanceBadgeHtml(p){
   if(s.status==='Attended') return `<span class="badge badge-att-ok">✔ Attended — ${esc(s.punctuality||'On Time')}</span>`;
   if(s.status==='Absent') return `<span class="badge badge-danger">✕ Absent${s.reason?' — '+esc(s.reason):''}</span>`;
   if(s.status==='Partial') return `<span class="badge badge-leave">Partial — Day ${s.missingDay} missing${s.reason?' ('+esc(s.reason)+')':''}</span>`;
+  if(s.inProgress) return `<span class="badge badge-empty">Day 1 attended — Day 2 not marked yet</span>`;
   return `<span class="badge badge-empty">Not marked yet</span>`;
 }
 function isOnlinePharmacist(p){
@@ -816,12 +903,31 @@ function cityCellHtml(p){
   }
   return p.city ? `<span class="city-badge">${esc(p.city)}</span>` : '—';
 }
-// `key`: 'completionPct' (Core Completion) or 'capsulePct' (Capsule Completion)
-function completionCellHtml(p, key){
-  key = key || 'completionPct';
-  if(p[key]===undefined || p[key]===null || p[key]===''){ return '<span class="small-note">—</span>'; }
-  const n = parseFloat(p[key]);
-  if(isNaN(n)) return esc(p[key]);
+/* ── Core / Capsule completion cells (v5) — read from the published course data (courseSlots), matched by email ──
+   Finished (Completed, or final video done) → "✔ 5 Oct 26", red when it was after the pharmacist's training day;
+   "✔ Completed (no date)" when the time is unknown · in progress → bar + % · no data → "—". */
+function courseSlotEntry(p, slot){
+  const s = courseSlots && courseSlots[slot];
+  if(!s || !s.byEmail) return null;
+  return s.byEmail[String(p.email||'').trim().toLowerCase()] || null;
+}
+// KSA calendar date (YYYY-MM-DD) of an ISO time, and its "5 Oct 26" form
+function ksaDateIso(iso){ const d = new Date(Date.parse(iso) + 3*3600*1000); return isNaN(d) ? '' : d.toISOString().slice(0,10); }
+function ksaDateText(iso){
+  const d = new Date(Date.parse(iso) + 3*3600*1000);
+  return isNaN(d) ? '' : `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()].slice(0,3)} ${String(d.getUTCFullYear()).slice(-2)}`;
+}
+// Finished after the training day they were booked on (day 1 of a 2-day training). Unassigned / on leave → never.
+function finishedAfterTrainingDay(p, e){
+  if(!e || !e.f) return false;
+  const a = ops.assignments[p.id];
+  if(!a || a.type!=='date') return false;
+  const day = dayById(a.dateId);
+  return !!(day && day.date && ksaDateIso(e.f) > day.date);
+}
+function completionBarHtml(r){
+  const n = Math.round(Number(r)*10)/10;
+  if(!isFinite(n)) return '<span class="small-note">—</span>';
   const clamped = Math.max(0, Math.min(100, n));
   const color = n>=100 ? 'var(--navy)' : 'var(--blue)';
   return `<div class="compl-cell">
@@ -829,8 +935,44 @@ function completionCellHtml(p, key){
       <span class="compl-pct-text" style="color:${color};">${n}%</span>
     </div>`;
 }
+function courseSlotCellHtml(p, slot){
+  const e = courseSlotEntry(p, slot);
+  if(!e) return '<span class="small-note">—</span>';
+  if(e.d){
+    if(!e.f) return '<span class="slot-done">✔ Completed (no date)</span>';
+    const late = finishedAfterTrainingDay(p, e);
+    return `<span class="slot-done${late?' late':''}"${late?' title="Finished after the training day"':''}>✔ ${esc(ksaDateText(e.f))}</span>`;
+  }
+  return completionBarHtml(e.r);
+}
+// Supervisor page: the percentage only (that is all the server sends a supervisor)
+function courseSlotPctHtml(p, slot){
+  const e = courseSlotEntry(p, slot);
+  return e ? completionBarHtml(e.r) : '<span class="small-note">—</span>';
+}
+// Export text: "Completed 5 Oct 26" / "Completed (no date)" / "45%" / blank
+function courseSlotText(p, slot){
+  const e = courseSlotEntry(p, slot);
+  if(!e) return '';
+  if(e.d) return e.f ? 'Completed '+ksaDateText(e.f) : 'Completed (no date)';
+  return (Math.round(Number(e.r)*10)/10)+'%';
+}
+// Sort (ascending): finished with a date (earliest first) → finished without a date → in progress (highest % first) → no data
+function courseSlotSortValue(p, slot){
+  const e = courseSlotEntry(p, slot);
+  if(!e) return 3e15;
+  if(e.d) return e.f ? Date.parse(e.f) : 1e15;
+  return 2e15 + (100 - (Number(e.r)||0)) * 1e10;
+}
+function courseSlotHeaderTitle(slot){
+  const s = courseSlots && courseSlots[slot];
+  const label = slot==='core' ? 'Core' : 'Capsule';
+  if(!s) return `${label}: no course chosen yet (Reports Configuration → Hub columns)`;
+  return `${label} = ${s.name}` + (s.lastPublishedAt ? ` · published ${ksaDateText(s.lastPublishedAt)}` : ' · not published yet');
+}
 function attendanceStatusText(p){
   const s = attSummary(p.id, p);
+  if(s.inProgress) return 'Day 1 attended - Day 2 not marked yet';
   if(!s.status) return 'Not Assigned';
   if(s.status==='Attended'){
     if(isSplitPerson(p)) return 'Attended (both days) - ' + s.punctuality;
@@ -941,10 +1083,14 @@ function buildMasterRow(p){
     dateText, conductedBy,
     pharmacyNo:p.pharmacyNo||'', employeeId:p.employeeId||'', email:p.email||'', displayName:p.displayName||'',
     phone:p.phone||'', scfhs:p.scfhs||'',
-    completionPct: p.completionPct!==undefined && p.completionPct!=='' ? p.completionPct+'%' : '',
-    capsulePct: p.capsulePct!==undefined && p.capsulePct!==null && p.capsulePct!=='' ? p.capsulePct+'%' : '',
+    // Core / Capsule completion as export text (v5, from the published course data)
+    completionPct: courseSlotText(p, 'core'),
+    capsulePct: courseSlotText(p, 'capsule'),
     statusText,
     workShift: (ops.shifts && ops.shifts[p.id]) || '',
+    // Retraining: the training day originally missed, and which attempt the current booking is (blank = first attempt)
+    originalDate: retrainHistory(p.id).length ? attemptDayText(retrainHistory(p.id)[0]) : '',
+    attempt: retrainHistory(p.id).length ? String(retrainHistory(p.id).length + (a && a.type==='date' ? 1 : 0)) : '',
     note: p.note || (validDateAssignment && att && att.note ? att.note : ''),
     markedBy: validDateAssignment && att ? (att.markedBy || (att.day1&&att.day1.markedBy) || (att.day2&&att.day2.markedBy) || '') : ''
   };
@@ -971,7 +1117,7 @@ function buildStylesXml_(){
 <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
 <font><sz val="11"/><color rgb="FF1A2B45"/><name val="Calibri"/></font>
 </fonts>
-<fills count="8">
+<fills count="10">
 <fill><patternFill patternType="none"/></fill>
 <fill><patternFill patternType="gray125"/></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FF003261"/><bgColor indexed="64"/></patternFill></fill>
@@ -980,13 +1126,15 @@ function buildStylesXml_(){
 <fill><patternFill patternType="solid"><fgColor rgb="FFC6E0B4"/><bgColor indexed="64"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/><bgColor indexed="64"/></patternFill></fill>
 <fill><patternFill patternType="solid"><fgColor rgb="FFF4CCCC"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFEDE7F6"/><bgColor indexed="64"/></patternFill></fill>
 </fills>
 <borders count="2">
 <border><left/><right/><top/><bottom/><diagonal/></border>
 <border><left style="thin"><color rgb="FFDCE4EF"/></left><right style="thin"><color rgb="FFDCE4EF"/></right><top style="thin"><color rgb="FFDCE4EF"/></top><bottom style="thin"><color rgb="FFDCE4EF"/></bottom><diagonal/></border>
 </borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="7">
+<cellXfs count="9">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
@@ -994,6 +1142,8 @@ function buildStylesXml_(){
 <xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="2" fillId="6" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="2" fillId="7" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="2" fillId="8" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="2" fillId="9" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>`;
@@ -1005,6 +1155,12 @@ function statusCellStyle_(value){
   if(v==='Sick Leave') return 5;
   if(v==='Resignation') return 6;
   if(v==='Absent') return 6;
+  // course completion (Reports): finished green · in progress yellow · not started red · not in roster grey · no data lavender
+  if(v==='Completed' || v==='Final video done, others missing') return 4;
+  if(v==='In progress') return 5;
+  if(v==='Not started') return 6;
+  if(v==='Not in roster') return 7;
+  if(v==='No completion data') return 8;
   return null;
 }
 function computeAutoColWidths_(headers, rows){
@@ -1017,9 +1173,10 @@ function computeAutoColWidths_(headers, rows){
     return Math.min(Math.max(max+3, 9), 45);
   });
 }
-function buildSheetXml_(headers, rows, colWidths, opts){
+function buildSheetXml_(headers, rows, colWidths, opts, sheetIndex){
   opts = opts || {};
-  const statusColIndex = opts.statusColIndex!==undefined ? opts.statusColIndex : -1;
+  // status colouring: one column (statusColIndex) or several (statusCols)
+  const statusCols = new Set(opts.statusCols || (opts.statusColIndex!==undefined ? [opts.statusColIndex] : []));
   const autoFilter = !!opts.autoFilter;
   const numCols = headers.length;
   const numRows = rows.length + 1;
@@ -1027,7 +1184,7 @@ function buildSheetXml_(headers, rows, colWidths, opts){
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <dimension ref="A1:${lastCol}${numRows}"/>
-<sheetViews><sheetView tabSelected="1" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+<sheetViews><sheetView ${sheetIndex ? '' : 'tabSelected="1" '}workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
 <sheetFormatPr defaultRowHeight="20"/>
 <cols>${colWidths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')}</cols>
 <sheetData>`;
@@ -1038,10 +1195,12 @@ function buildSheetXml_(headers, rows, colWidths, opts){
     const r = ri + 2;
     xml += `<row r="${r}" ht="20" customHeight="1">` + row.map((val,ci)=>{
       let styleIdx = zebraStyle;
-      if(ci===statusColIndex){
+      if(statusCols.has(ci)){
         const override = statusCellStyle_(val);
         if(override!==null) styleIdx = override;
       }
+      // real numbers are written as numbers (sortable / summable in Excel); everything else as text
+      if(typeof val==='number' && isFinite(val)) return `<c r="${xlsxColLetter_(ci)}${r}" s="${styleIdx}"><v>${val}</v></c>`;
       return `<c r="${xlsxColLetter_(ci)}${r}" s="${styleIdx}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc_(val)}</t></is></c>`;
     }).join('') + `</row>`;
   });
@@ -1050,27 +1209,45 @@ function buildSheetXml_(headers, rows, colWidths, opts){
   xml += `</worksheet>`;
   return xml;
 }
+/* opts.autoName: use `filename` as given (no "save as" prompt).
+   opts.sheets: several sheets — [{name, headers, rows, colWidths, opts}] — instead of the single sheet in the arguments. */
 async function downloadStyledXlsx(filename, sheetName, headers, rows, colWidths, opts){
+  opts = opts || {};
   if(typeof JSZip === 'undefined'){
     toast('Excel export library failed to load — check your connection and try again','err');
     return false;
   }
-  const baseName = filename.replace(/\.xlsx$/i, '');
-  const chosenName = await promptForFilename(baseName, 'xlsx');
-  if(!chosenName) return false;
-  filename = chosenName;
+  if(!opts.autoName){
+    const baseName = filename.replace(/\.xlsx$/i, '');
+    const chosenName = await promptForFilename(baseName, 'xlsx');
+    if(!chosenName) return false;
+    filename = chosenName;
+  }
+  const sheets = (opts.sheets && opts.sheets.length) ? opts.sheets
+    : [{name: sheetName, headers, rows, colWidths, opts}];
+  // Excel sheet names: max 31 characters, none of : \ / ? * [ ], and unique
+  const used = new Set();
+  const sheetNames = sheets.map((s,i)=>{
+    let n = String(s.name||('Sheet'+(i+1))).replace(/[:\\\/?*\[\]]/g,' ').trim().slice(0,31) || ('Sheet'+(i+1));
+    while(used.has(n.toLowerCase())) n = n.slice(0,28)+' '+(i+1);
+    used.add(n.toLowerCase());
+    return n;
+  });
   try{
     const zip = new JSZip();
     zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`);
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheets.map((s,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`);
     zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
     zip.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEsc_(sheetName).slice(0,31)}" sheetId="1" r:id="rId1"/></sheets></workbook>`);
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheetNames.map((n,i)=>`<sheet name="${xmlEsc_(n)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>`);
     zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((s,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
     zip.file('xl/styles.xml', buildStylesXml_());
-    zip.file('xl/worksheets/sheet1.xml', buildSheetXml_(headers, rows, colWidths, opts));
+    sheets.forEach((s,i)=>{
+      const sw = s.colWidths || computeAutoColWidths_(s.headers, s.rows);
+      zip.file(`xl/worksheets/sheet${i+1}.xml`, buildSheetXml_(s.headers, s.rows, sw, s.opts||{}, i));
+    });
     const blob = await zip.generateAsync({type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -1086,6 +1263,21 @@ async function downloadStyledXlsx(filename, sheetName, headers, rows, colWidths,
     toast('Excel export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err');
     return false;
   }
+}
+
+// Course-completion exports: "10 Oct 26 - 1 PM - <Course Name> - Moodle.xlsx" — local time, Windows-safe.
+function reportFileName(courseName, source, ext, d){
+  d = d || new Date(); ext = ext || 'xlsx';
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let h = d.getHours(); const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  const stamp = `${d.getDate()} ${M[d.getMonth()]} ${String(d.getFullYear()).slice(-2)} - ${h} ${ap}`;
+  const src = String(source).toLowerCase() === 'sap' ? 'SAP' : 'Moodle';
+  const clean = s => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001F]/g, ' ')
+                                    .replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '');
+  let base = `${stamp} - ${clean(courseName) || 'Course'} - ${src}`;
+  if (base.length > 150) base = base.slice(0, 150).replace(/[. ]+$/, '');
+  if (/^(CON|PRN|AUX|NUL|COM\d|LPT\d)$/i.test(base)) base = '_' + base;
+  return `${base}.${ext}`;
 }
 
 /* ═══════════════════════════════ MODAL ═══════════════════════════════ */
@@ -1152,11 +1344,12 @@ async function captureFull(el){
   try{ return await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false}); }
   finally{ el.classList.remove('exporting'); }
 }
-async function exportTableImage(containerId, filename){
+// opts.autoName: `filename` is the final name (with .png / .pdf) — no "save as" prompt (course reports, reportFileName)
+async function exportTableImage(containerId, filename, opts){
   const el = document.getElementById(containerId);
   if(!el){ toast('Nothing to export','err'); return; }
   if(typeof html2canvas === 'undefined'){ toast('Image export library failed to load — check your connection and try again','err'); return; }
-  const chosenName = await promptForFilename(filename, 'png');
+  const chosenName = (opts && opts.autoName) ? filename : await promptForFilename(filename, 'png');
   if(!chosenName) return;
   try{
     const canvas = await captureFull(el);
@@ -1174,11 +1367,11 @@ async function exportTableImage(containerId, filename){
     }, 'image/png');
   }catch(e){ console.error('Image export error:', e); toast('Image export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err'); }
 }
-async function exportTablePDF(containerId, filename){
+async function exportTablePDF(containerId, filename, opts){
   const el = document.getElementById(containerId);
   if(!el){ toast('Nothing to export','err'); return; }
   if(typeof html2canvas === 'undefined' || !window.jspdf){ toast('PDF export library failed to load — check your connection and try again','err'); return; }
-  const chosenName = await promptForFilename(filename, 'pdf');
+  const chosenName = (opts && opts.autoName) ? filename : await promptForFilename(filename, 'pdf');
   if(!chosenName) return;
   try{
     const canvas = await captureFull(el);

@@ -11,7 +11,7 @@
   const CFG = window.APP_CONFIG || {};
   const TOKEN_KEY = 'upc_trainer_token';
 
-  const APP_HOOKS = { onAuthExpired: null, onSaveFailed: null };
+  const APP_HOOKS = { onAuthExpired: null, onSaveFailed: null, onOpsUpdated: null };
   window.APP_HOOKS = APP_HOOKS;
 
   /* ───────────── transport ───────────── */
@@ -130,7 +130,7 @@
       const out = await transport(body, quiet);
       if (!out || out.ok === false) {
         const err = new Error((out && out.error) || 'Request failed');
-        if (/sign in again|Trainer login required|Not authorised/i.test(err.message) && API.mode === 'trainer') {
+        if (/sign in again|Not authorised/i.test(err.message) && API.mode === 'trainer') {
           err.authExpired = true;
           API.clearToken();
           if (APP_HOOKS.onAuthExpired) APP_HOOKS.onAuthExpired();
@@ -145,15 +145,20 @@
       if (!out || out.ok === false) throw new Error((out && out.error) || 'Sign-in failed');
       try { sessionStorage.setItem(TOKEN_KEY, out.token); } catch (e) { throw new Error('Your browser is blocking session storage.'); }
       API.role = out.role || 'trainer';
+      API.user = out.user || username;
       return true;
     },
-    logout() { API.clearToken(); API.role = null; },
-    // 'trainer' (full access) or 'admin' (Attendance tab only) — known after sign-in / verifySession.
+    logout() { API.clearToken(); API.role = null; API.user = null; },
+    // 'superadmin' (everything + Activity Log), 'trainer' (everything else) or 'coordinator' (Attendance tab, Calendar
+    // view, Master Sheet Preview, Import Completion) — known after sign-in / verifySession. `user` is the account name.
     role: null,
+    user: null,
     async verifySession() {
       if (!API.hasToken()) return false;
-      try { const out = await API.call('me'); API.role = out.role || 'trainer'; return true; } catch (e) { return false; }
+      try { const out = await API.call('me'); API.role = out.role || 'trainer'; API.user = out.user || null; return true; } catch (e) { return false; }
     },
+    // Super admin only: one page (500 rows, newest first) of the Activity Log. filters = {from, to, user, act, q, before}
+    async activity(filters) { return await API.call('activity', filters || {}); },
 
     async supervisorNames() { return (await API.call('supervisors')).names || []; },
     async venues() { return (await API.call('venues')).venues || []; },
@@ -166,7 +171,7 @@
   window.API = API;
 
   /* ───────────── canonical form + diff ───────────── */
-  const ARRAY_KEYS = ['master-pharmacists', 'pending-pharmacists', 'leave-requests', 'quota-approval-history', 'pharmacist-notifications', 'change-requests', 'supervisor-submissions'];
+  const ARRAY_KEYS = ['master-pharmacists', 'pending-pharmacists', 'leave-requests', 'quota-approval-history', 'pharmacist-notifications', 'change-requests', 'supervisor-submissions', 'group-merges', 'data-edit-requests'];
   const clone = v => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 
   function stable(v) {
@@ -194,12 +199,14 @@
   function valueFromCanon(key, c) {
     if (ARRAY_KEYS.includes(key)) return c.order.map(id => clone(c.records[id]));
     if (key === 'operations') {
-      const out = { assignments: {}, attendance: {}, shifts: {} };
+      // history (h) = the pharmacist's missed earlier attempts — written only by the server, never sent back
+      const out = { assignments: {}, attendance: {}, shifts: {}, history: {} };
       c.order.forEach(pid => {
         const r = c.records[pid] || {};
         if (r.a) out.assignments[pid] = clone(r.a);
         if (r.t) out.attendance[pid] = clone(r.t);
         if (r.s) out.shifts[pid] = r.s;
+        if (r.h && r.h.length) out.history[pid] = clone(r.h);
       });
       return out;
     }
@@ -209,6 +216,7 @@
       return cfg;
     }
     if (key === 'company-logo') return c.settings.logo === undefined ? null : c.settings.logo;
+    if (key === 'course-slots') return { core: c.settings.core || null, capsule: c.settings.capsule || null };   // read-only (v5)
     return null;
   }
 
@@ -218,11 +226,13 @@
       (value || []).forEach(item => { c.records[item.id] = clone(item); c.order.push(item.id); });
     } else if (key === 'operations') {
       const asg = (value && value.assignments) || {}, att = (value && value.attendance) || {}, sh = (value && value.shifts) || {};
-      new Set([...Object.keys(asg), ...Object.keys(att), ...Object.keys(sh)]).forEach(pid => {
+      const hi = (value && value.history) || {};
+      new Set([...Object.keys(asg), ...Object.keys(att), ...Object.keys(sh), ...Object.keys(hi)]).forEach(pid => {
         const r = {};
         if (asg[pid]) r.a = clone(asg[pid]);
         if (att[pid]) r.t = clone(att[pid]);
         if (sh[pid]) r.s = sh[pid];
+        if (hi[pid] && hi[pid].length) r.h = clone(hi[pid]);
         if (Object.keys(r).length) { c.records[pid] = r; c.order.push(pid); }
       });
     } else if (key === 'training-config') {
@@ -317,8 +327,9 @@
       // Without a prior read we cannot tell what was deleted, so we only ever add/update in that case.
       const patch = diffCanon(key, oldC, newC, hadSnapshot);
       if (!Object.keys(patch.records).length && !Object.keys(patch.settings).length) return true;
-      await API.call('patch', { key, records: patch.records, settings: patch.settings });
+      const out = await API.call('patch', { key, records: patch.records, settings: patch.settings });
       snapshots[key] = newC;
+      if (key === 'operations' && out && out.ops) applyServerOps(value, out.ops, newC);
       flashSaved();
       return true;
     } catch (e) {
@@ -328,6 +339,34 @@
       return false;
     }
   };
+
+  /* After a date change the server returns what it actually stored for those pharmacists — the assignment (with its
+     "Retraining #n" marker and the signed-in "assigned by") and the attempt history — so the page shows it straight
+     away without a reload. The page re-renders through APP_HOOKS.onOpsUpdated. */
+  function applyServerOps(value, rows, sent) {
+    const snap = snapshots.operations;
+    let historyChanged = false;
+    Object.keys(rows).forEach(pid => {
+      const r = rows[pid] || {};
+      if (!value.history) value.history = {};
+      const before = stable(value.history[pid] || []);
+      // Only replace the assignment on the page if nobody changed it again while this save was on its way —
+      // otherwise the newer choice stays and the next save sends it (the snapshot below holds the server's version).
+      const sentA = sent.records[pid] && sent.records[pid].a;
+      if (stable(value.assignments[pid] || null) === stable(sentA || null)) {
+        if (r.a) value.assignments[pid] = clone(r.a); else delete value.assignments[pid];
+      }
+      if (r.h && r.h.length) value.history[pid] = clone(r.h); else delete value.history[pid];
+      if (before !== stable(value.history[pid] || [])) historyChanged = true;
+      if (snap) {
+        if (!snap.records[pid]) { snap.records[pid] = {}; snap.order.push(pid); }
+        const s = snap.records[pid];
+        if (r.a) s.a = clone(r.a); else delete s.a;
+        if (r.h && r.h.length) s.h = clone(r.h); else delete s.h;
+      }
+    });
+    if (APP_HOOKS.onOpsUpdated) { try { APP_HOOKS.onOpsUpdated(Object.keys(rows), historyChanged); } catch (e) { console.error(e); } }
+  }
 
   /** Value as of the last read of this key (used for undo history without refreshing the snapshot). */
   window.peekSnapshot = function (key) {

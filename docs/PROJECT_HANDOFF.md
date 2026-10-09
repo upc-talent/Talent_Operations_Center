@@ -36,7 +36,7 @@ assets/
   css/app.css         All styles
   img/logo.png        Default header logo (a logo uploaded in Trainer>Setup overrides it)
   vendor/             xlsx.full.min.js, jszip.min.js, html2canvas.min.js, jspdf.umd.min.js
-  js/config.js        ONLY place for URLs: Supabase URL + anon key, COMPLETION_REPORTS_URL, LINKS
+  js/config.js        ONLY place for URLs: Supabase URL + anon key, LINKS
   js/api.js           Backend client + storage adapter (getShared/setShared) — see §4
   js/common.js        Shared helpers (formatting, colours, filters, sort, modals, exports, capacity,
                       loadCoreData, bulk-selection framework, optimistic saveShared)
@@ -105,7 +105,7 @@ trainingNames, completionCourse, completionLastSynced}`; `company-logo` = data-U
 Every response includes `_ms`, the server's own execution time.
 
 ### Auth & authorization (server-side; the URL and anon key are public by nature of a static site)
-- **Trainer:** username/password compared to the `TRAINER_USER` / `TRAINER_PASS` secrets; returns an HMAC-signed
+- **Trainer** *(v4: named accounts — see "v4" at the end)*: username/password compared to the `TRAINER_USER` / `TRAINER_PASS` secrets; returns an HMAC-signed
   token (`TOKEN_SECRET`), TTL 10 h, kept in `sessionStorage`. 8 failed logins in 10 min lock login for 10 min.
 - **Admin** (lower access): same sign-in page, credentials in the `ADMIN_USER` / `ADMIN_PASS` secrets; the token
   carries `r:'admin'`. Tabs: Attendance · Calendar (view only) · Analytics & Export
@@ -223,9 +223,8 @@ Calendar** (parsed in the browser by `parseCalendarAoa`, then saved like any oth
   (except Notes, which a blank never wipes). Completion % isn't in the file and is kept as is.
 - `patchMaster` writes in one transaction with set-based statements, so an upload is all-or-nothing.
 - Days for cities with no pharmacists have no supervisor until pharmacists exist (or "Visible to" is set by hand).
-- Supervisors have no password (name picker only). Optional next step: per-supervisor access codes. The trainer
-  login is one shared credential ⇒ no per-trainer audit (`markedBy` is empty).
-- Login lockout is global (an attacker can lock the trainers out for 10 min).
+- Supervisors have no password (name picker only). Optional next step: per-supervisor access codes.
+  (Staff have named accounts and an Activity Log since v4; lockout is per username.)
 - Notes are visible to supervisors — by design, but sensitive notes are exposed to them.
 - Deadline comparison uses the browser's clock against the stored ISO timestamp.
 - A free Supabase project pauses after 7 days of inactivity (one-click resume).
@@ -272,6 +271,101 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
 - **Trainer's Attendance exports** (Excel / Image / PDF) leave out Core + Capsule Completion, Attendance, Late
   Arrival Time and Notes; the admin's keep them (`col-export-skip` cells, hidden while `.exporting`).
 - **Hidden days** use 👁 (visible) / an eye-with-a-slash icon (hidden, `EYE_OFF_SVG`); dropdowns end hidden days
-  with "(hidden)". Attendance-tab day dropdowns are in date order.
+  with 🚫 (v4; was "(hidden)"). Attendance-tab day dropdowns are in date order.
 - **Hourly Google Sheet backup**: `supabase/functions/backup` + `supabase/backup.sql` (pg_cron); setup steps in
   `supabase/README.md`.
+
+## v4 (update v4.md)
+
+- **Named staff accounts** (`STAFF_ACCOUNTS` secret, PBKDF2 hashes made offline with `dev/password-hash.html`):
+  `UPC_TMD` superadmin · `UPC_T1`–`T4` trainer · `UPC_Co`, `UPC_Co1`, `UPC_Co2` coordinator (the old "admin" role —
+  same limited tabs; CSS hooks keep the `admin-view` / `admin-hidden` names). Tokens carry `v:2` (older tokens are
+  refused). Lockout is per username (8 tries → 10 min) plus an overall cap. The old `TRAINER_*` / `ADMIN_*` secrets are
+  only a fallback while `STAFF_ACCOUNTS` is unset. The server stamps `assignedBy`, `markedBy`, `decidedBy`, `mergedBy`
+  with the signed-in username. The Admins Dashboard (trainer.html) badge shows "Role · username".
+- **Activity Log** (superadmin tab): table `activity_log` (append-only, written best-effort by the Edge Function for
+  every sign-in/failed sign-in, date/attendance/shift change, roster add/edit/delete, day add/edit/delete, setting,
+  approval decision, supervisor request/submit, group merge). Read through the `activity` action (superadmin only,
+  500 rows a page). The hourly backup appends new rows to an **Activity** tab.
+- **Retraining history**: column `pharmacists.history` (jsonb array). When a pharmacist whose attendance failed
+  (Absent, or Partial = one day attended + the other marked Absent) gets a different day / a leave / no day, the
+  server archives the missed attempt (not when moved to another group on the SAME date — that's a Mix-up fix) and
+  marks the new booking `a.retraining = {attempt, originalDateId, originalDate}`. `patch operations` returns
+  `{ops:{pid:{a,h}}}` so the page shows it at once (`APP_HOOKS.onOpsUpdated`). Supervisors only get their own
+  pharmacists' history. Shown as a "↻ Retraining #n" badge (click → all attempts), a Retraining filter (T-A, S-6) and
+  Master Sheet columns "Original Date (absent)" / "Attempt" (ignored by the roster upload).
+  Split attendance: Day 1 attended + Day 2 not marked = in progress (not failed) — client and server agree now.
+- **Adherence Rate** card (Analytics overview, `adherenceStats`): attended ÷ invited, one invitation per booking on a
+  day already held (first attempt + each retraining); future days and unapproved over-quota bookings don't count.
+- **Group merges** (approvals type "Group Merge", key `group-merges`, staff incl. coordinators): ≥2 online groups on
+  the same date run as one session; both keep their pharmacists/attendance. Record: trainer, coordinator, typed total
+  attendees, note, merged/unmerged by+at. 🔗 badges on the session card, days table and calendar; "Merged Groups" card
+  at the bottom of the Attendance tab.
+- **S-13**: Request Change only for submitted (locked) or training-team-managed pharmacists — UI and server
+  (`changeRequestAllowed`); target days follow each pharmacist's own online/offline type.
+- **S-11**: Submit locks what is filled; empty rows stay open. Only pharmacists on a training day need a Work Shift.
+  Submissions with empty rows show a "Partial" tag in Approvals.
+- **Request Data Edit** (approvals type "Data Edit", key `data-edit-requests`): supervisor asks to change name, email,
+  pharmacy no., employee ID, phone, SCFHS, city / online-physical; the server whitelists fields
+  (`cleanDataEditChanges`). Trainer ticks which changes to apply → Approved / Partially Approved / Rejected; a type
+  change clears a booked day of the other kind. `patchMaster` now keeps Core Completion when the field isn't sent.
+- **Deploy order matters**: run the `schema.sql` upgrade lines (history column + activity_log) BEFORE deploying the new
+  `api` function — it reads/writes `pharmacists.history`.
+
+## v5 — Reports (in progress — see docs/Hub_Reports_Integration_Plan.md)
+
+- **Done: Phases 1–5** (database, Edge Function, staff tabs, Hub columns, public page). Phase 6 is manual (below). Tables `courses`, `course_progress` (one row per learner per
+  course; a publish replaces the course's rows), `course_uploads` (publish audit; never the exclusion list),
+  `lms_learners` (onboarding people for completion reporting only — never part of the roster). Settings keys
+  `coreCourseId` / `capsuleCourseId`.
+- Roles: `requireReportsAdmin` = superadmin + coordinator (trainers refused); `courseDelete` superadmin only.
+- `coursePublish` validates every row on the server (email, state, done ≤ total, rate 0–100, final_done ⇒ finished
+  state, dates ISO or null, text ≤ 200). A finished learner whose timestamp couldn't be read is stored with
+  `final_at = null` and is always "Completed (date unknown)" — never On time / Late (`scheduleOf`, computed at read time).
+  Roster / onboarding / not-in-roster counts are recounted on the server.
+- One merge (`mergedCourseRows`) feeds the staff export and the public page: roster by email wins, else onboarding, else
+  "Not in roster"; optional "No completion data" rows for roster people missing from the upload.
+- Public actions run before `authenticate()`, are rate-limited per IP in `kv_cache` (`rl:<ip>:<minute>`, daily
+  `rlhits:<date>` counter), cached 60 s per isolate, mask emails (`ab•••@domain`) and send only enabled columns.
+- `pharmacists.completion_pct` / `capsule_pct` are kept but no longer read or written. Until Phase 4, the Attendance
+  tab's Core / Capsule columns show "—" and the old Import Completion card no longer saves anything.
+- Fixed with this change: `patchMaster` declared `const s` twice (a v4 syntax error that would stop `api` deploying).
+- **Phase 3 (staff tabs)** — `assets/js/reports-admin.js` (all globals `rp*`), tabs `t-moodle`, `t-sap`, `t-repconf` (class
+  `reports-only`: superadmin + coordinator; `isReportsAdmin()`); coordinators no longer see General Configurations.
+  Moodle Reports ports the old tool: sheets read with `raw:true` (no locale date guessing); `rpParseTs` accepts
+  `YYYY-MM-DD HH:MM[:SS]`, `D/M/YYYY[ H:MM[ AM|PM]]` (day first), `[Weekday, ]D Month YYYY[, H:MM AM|PM]` and Excel serials,
+  all as KSA (UTC+3); anything else is "unreadable" → counted, shown with examples in the preview, and Publish needs an
+  explicit tick. Deadline = date + time + :59 s KSA. Engine settings (final videos, counted statuses, excluded videos) and
+  the deadline are saved on the course at publish; the exclusion list is never saved. `rpSelfTest()` runs with `?debug=1`.
+- `common.js`: `downloadStyledXlsx` takes `opts.autoName` and `opts.sheets` (multi-sheet), writes real numbers as numbers,
+  colours course states / roster match (`statusCols`); `reportFileName()`; `registerFilterScope()` lets new tables use
+  the cascading multi-select filters. SheetJS upgraded to 0.20.3 (re-test Master upload, Calendar import, Bulk Add).
+- **Phase 4 (Hub columns)** — `loadCoreData` also reads `course-slots` into the global `courseSlots`. Attendance tab
+  Core / Capsule use `courseSlotCellHtml` (✔ date, red when finished after the booked training day; ✔ Completed (no
+  date); bar + %; —), sort `core` / `capsule` = finished by date → finished without date → in progress by % → none,
+  coordinator export text via `courseSlotText` ("Completed 5 Oct 26" / "Completed (no date)" / "45%" / blank). The
+  supervisor page has Core % / Capsule % columns (percentage only) and exports them. The Import Completion card, its
+  Excel import and the Apps Script Sync Now code are gone (General Configurations shows a read-only "Course Completion"
+  line); Edit Selected no longer edits Completion %. `pharmacists.completion_pct` / `capsule_pct` remain in the table as
+  old data only — nothing reads, writes or exports them.
+- **Phase 5 (public page)** — `reports.html` + `assets/js/reports.js` (globals `pub*`), `API.init('public')` (no token,
+  no supervisor). Overview (totals only) → course table with the columns switched on in Reports Configuration; cascading
+  filters (scope `pub`), name search (200 ms debounce), chronological date sort, Days Left (KSA calendar days: Done /
+  Today! / ≤3 critical / ≤7 warning / Overdue), Excel (JSZip writer, rate as a number) / Image / PDF named with
+  `reportFileName`, share link `reports.html?c=<slug>` (locked view), offline fallback from
+  `localStorage['upc:reports-cache']` (last 8 courses), print styles, `noindex`. UI round (owner request): layout follows the
+  old dashboard (Live status bar + Refresh, View picker with count badge, one toolbar, status legend, course cards with
+  Done / In progress / Not started / Total, completion bar, "N modules" = `agg.modules`). **Emails are shown in full**
+  on the public page and its Excel (owner decision — the plan had them masked); switch the Email column off per course
+  in Reports Configuration to send no emails for that course. A "Report
+  unavailable" answer (inactive course / renewed link) is never replaced by the saved copy. `config.js` no longer has
+  any Apps Script link; the landing card opens `reports.html`.
+- **Phase 6 (manual, owner) — migration and retirement of the old dashboard:**
+  1. For each course tab of the old Google Sheet: File → Download → .xlsx.
+  2. Reports Configuration → track a course with the same name (Moodle) → Moodle Reports → choose it → upload that
+     file → check the preview (final video, counted statuses, unreadable timestamps) → Publish.
+  3. Compare per course with the old dashboard (totals, finished, in progress) — differences usually come from the
+     final-video or counted-status choice, or people missing from the roster (see "Not in roster").
+  4. Switch the courses to **Active**; pick Core / Capsule in Reports Configuration → Hub columns.
+  5. In the old `LMS-reporting` repo, replace its page with a one-line "Moved → <Hub>/reports.html".
+  6. Archive the Apps Script deployment and set the old Sheet to **Restricted** (its URL was public and exposed the roster).
