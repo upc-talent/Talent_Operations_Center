@@ -9,7 +9,7 @@
    ════════════════════════════════════════════════════════════════════ */
 const PUB_CACHE_KEY = 'upc:reports-cache';
 const PUB_STATES = ['Completed','Final video done, others missing','In progress','Not started','No completion data'];
-const PUB_MATCH = {roster:'In roster', onboarding:'Onboarding', not_in_roster:'Not in roster'};
+const PUB_MATCH = {roster:'In roster', not_in_roster:'Not in roster', not_found:'Headcount — not in course data'};
 const PUB_COLS = {   // display.columns key → table column
   num:{label:'#'}, district:{label:'District', f:'di'}, areaManager:{label:'Area Manager', f:'am'}, city:{label:'City', f:'ci'},
   supervisor:{label:'Supervisor', f:'su'}, name:{label:'Name', f:'n'}, email:{label:'Email', f:'e'}, rate:{label:'Completion rate', f:'r'},
@@ -18,7 +18,8 @@ const PUB_COLS = {   // display.columns key → table column
 const PUB_COL_ORDER = ['num','district','areaManager','city','supervisor','name','email','rate','state','completionDate','daysLeft'];
 const PUB_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-const pubState = { overview:null, course:null, slug:'', locked:false, offline:false, offlineAt:null, q:'', sortKey:'', sortDir:-1, rows:[], syncedAt:null };
+const pubState = { overview:null, course:null, slug:'', locked:false, offline:false, offlineAt:null, q:'', sortKey:'', sortDir:-1, rows:[], syncedAt:null,
+  hc:null, hcMode:'hc' };   // hc = the uploaded headcount sheet (kept in this tab only, never sent anywhere)
 let pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set() };
 let pubSearchTimer = null;
 
@@ -122,7 +123,7 @@ async function pubRefresh(){
 document.addEventListener('DOMContentLoaded', async ()=>{
   API.init('public');
   registerFilterScope('pub', ()=>pubFilterState, pubRenderTable);
-  registerFilterFacets('pub', { items: ()=>pubState.rows, values: {
+  registerFilterFacets('pub', { items: ()=>pubBaseRows(), values: {
     district:x=>[x.di||''], areaManager:x=>[x.am||''], city:x=>[x.ci||''], supervisor:x=>[x.su||''],
     state:x=>[x.s], match:x=>[x.fl], date:x=>[x.f ? pubDateText(x.f) : '']
   }});
@@ -216,6 +217,7 @@ function pubShowOverview(){
   document.getElementById('pubSelect').value = '';
   document.getElementById('pubCourse').classList.add('hidden');
   document.getElementById('pubToolbar').classList.add('hidden');
+  document.getElementById('pubHcBar').classList.add('hidden');
   const grid = document.getElementById('pubOverview');
   grid.classList.remove('hidden');
   const courses = pubSorted((pubState.overview && pubState.overview.courses) || []);
@@ -245,6 +247,7 @@ async function pubOpenCourse(slug){
     if(pubState.locked){
       document.getElementById('pubOverview').classList.add('hidden');
       document.getElementById('pubCourse').classList.add('hidden');
+      document.getElementById('pubHcBar').classList.add('hidden');
       document.getElementById('pubToolbar').classList.add('hidden');
     }
     return;
@@ -267,30 +270,156 @@ async function pubOpenCourse(slug){
   document.getElementById('pubOverview').classList.add('hidden');
   document.getElementById('pubCourse').classList.remove('hidden');
   const c = out.course;
-  const a = pubAggOfRows(pubState.rows, c.agg);
-  pubSetViewCount(a.total, true);
   pubRenderStatus();
   const lock = document.getElementById('pubLocked');
   lock.classList.toggle('hidden', !pubState.locked);
   if(pubState.locked) lock.innerHTML = `🔒 Shared report · ${esc(c.title)} · ${c.lastPublishedAt ? 'updated '+esc(pubAgo(c.lastPublishedAt)) : 'no data published yet'}`;
   document.getElementById('pubPrintTitle').textContent = c.title + (c.lastPublishedAt ? ' — updated '+pubDateTimeText(c.lastPublishedAt)+' KSA' : '');
-  const meta = [];
-  if(c.category) meta.push(esc(c.category));
-  if(c.display.showDeadline && c.deadline) meta.push('Deadline: '+esc(pubDateTimeText(c.deadline))+' KSA');
   const hasData = !!c.lastPublishedAt;
-  document.getElementById('pubSummary').innerHTML = `
-    <div class="pub-card-head"><div><h2>${esc(c.title)}</h2>${meta.length ? `<div class="small-note">${meta.join(' · ')}</div>` : ''}</div>${pubModulesBadge(c.agg)}</div>
-    ${hasData ? pubStatBoxesHtml(a) + pubProgressHtml(a.avgRate) + pubNotesHtml(a) : ''}
-    <div class="pub-updated">${hasData ? `<i class="dot"></i>Updated ${esc(pubAgo(c.lastPublishedAt))}` : ''}</div>`;
+  pubRenderSummary();
   const empty = document.getElementById('pubEmpty');
   empty.classList.toggle('hidden', hasData);
   empty.textContent = hasData ? '' : 'No data published yet.';
   document.getElementById('pubTableCard').classList.toggle('hidden', !hasData);
   document.getElementById('pubToolbar').classList.toggle('hidden', !hasData);
   if(!hasData) return;
+  pubRenderHcBar();
   pubBuildFilterBar();
   pubRenderTable();
 }
+// The course summary card (title, the four numbers, completion bar). With a headcount sheet in "Headcount only"
+// mode the numbers count the headcount people only.
+function pubRenderSummary(){
+  const c = pubState.course;
+  if(!c) return;
+  const a = pubAggOfRows(pubBaseRows(), c.agg);
+  pubSetViewCount(a.total, true);
+  const meta = [];
+  if(c.category) meta.push(esc(c.category));
+  if(c.display.showDeadline && c.deadline) meta.push('Deadline: '+esc(pubDateTimeText(c.deadline))+' KSA');
+  if(pubHcActive()) meta.push('📋 Headcount: '+esc(pubState.hc.fileName));
+  const hasData = !!c.lastPublishedAt;
+  document.getElementById('pubSummary').innerHTML = `
+    <div class="pub-card-head"><div><h2>${esc(c.title)}</h2>${meta.length ? `<div class="small-note">${meta.join(' · ')}</div>` : ''}</div>${pubModulesBadge(c.agg)}</div>
+    ${hasData ? pubStatBoxesHtml(a) + pubProgressHtml(a.avgRate) + pubNotesHtml(a) : ''}
+    <div class="pub-updated">${hasData ? `<i class="dot"></i>Updated ${esc(pubAgo(c.lastPublishedAt))}` : ''}</div>`;
+}
+
+/* ---------- headcount sheet (the old dashboard's "Upload Headcount Sheet") ----------
+   A local Excel / CSV with an Email (or Username) column. It is read in this browser only — never uploaded. In
+   "Headcount only" mode the course table, filters, numbers and exports show just the people in the sheet; people in
+   the sheet but not in the course data are listed as "No completion data" (with the details from the sheet).
+   "Everyone" shows the published data as usual. Needs the course's Email column (Reports Configuration). */
+function pubHcActive(){ return !!(pubState.hc && pubState.hcMode==='hc' && pubHasEmails()); }
+function pubHasEmails(){ const c = pubState.course; return !!(c && c.display && (c.display.columns||[]).includes('email')); }
+let pubBaseCache = {src:null, hc:null, mode:null, rows:[]};
+function pubBaseRows(){
+  if(!pubHcActive()) return pubState.rows;
+  const k = pubBaseCache;
+  if(k.src===pubState.rows && k.hc===pubState.hc && k.mode===pubState.hcMode) return k.rows;
+  const hc = pubState.hc.people, seen = new Set(), out = [];
+  const cols = new Set(pubState.course.display.columns||[]);
+  // details the course data doesn't have (people not in the roster) are filled in from the sheet
+  const fill = (x, p)=>{
+    const y = {...x};
+    [['name','n'],['district','di'],['areaManager','am'],['city','ci'],['supervisor','su']].forEach(([c,f])=>{ if(cols.has(c) && !y[f] && p[f]) y[f] = p[f]; });
+    return y;
+  };
+  pubState.rows.forEach(x=>{ const e = String(x.e||'').trim().toLowerCase(); if(hc.has(e)){ seen.add(e); out.push(fill(x, hc.get(e))); } });
+  hc.forEach((p, e)=>{
+    if(seen.has(e)) return;
+    const o = {s:'No completion data', fd:false, fl:'not_found', e};
+    if(cols.has('name')) o.n = p.n || e;
+    if(cols.has('district')) o.di = p.di;
+    if(cols.has('areaManager')) o.am = p.am;
+    if(cols.has('city')) o.ci = p.ci;
+    if(cols.has('supervisor')) o.su = p.su;
+    if(cols.has('rate')) o.r = null;
+    out.push(o);
+  });
+  pubBaseCache = {src:pubState.rows, hc:pubState.hc, mode:pubState.hcMode, rows:out};
+  return out;
+}
+function pubRenderHcBar(){
+  const bar = document.getElementById('pubHcBar');
+  if(!bar) return;
+  const c = pubState.course;
+  bar.classList.toggle('hidden', !(c && c.lastPublishedAt));
+  const hc = pubState.hc;
+  if(!pubHasEmails()){
+    bar.innerHTML = `<span class="small-note">📋 Headcount filtering needs the Email column, which this course doesn't show.</span>`;
+    return;
+  }
+  if(!hc){
+    bar.innerHTML = `<label class="pub-hc-card" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+      <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="pubOnHcFile(this)">
+      <span class="ic">📋</span><span><b>Upload Headcount Sheet</b><span class="sub">Show only the people in your own list (read in this browser only)</span>
+      <span class="fname">Click to upload (.xlsx / .xls / .csv)</span></span></label>`;
+    return;
+  }
+  const emails = new Set(pubState.rows.map(x=>String(x.e||'').trim().toLowerCase()));
+  let found = 0; hc.people.forEach((p,e)=>{ if(emails.has(e)) found++; });
+  bar.innerHTML = `<div class="pub-hc-card loaded"><span class="ic">✅</span><span><b>${esc(hc.fileName)}</b>
+      <span class="sub">${hc.people.size} people · ${found} found in this course · ${hc.people.size-found} not in the course data</span></span></div>
+    <div class="pub-hc-toggle" role="group" aria-label="Headcount source">
+      <button type="button" class="${pubState.hcMode==='hc'?'active':''}" onclick="pubSetHcMode('hc')">📁 Headcount only</button>
+      <button type="button" class="${pubState.hcMode==='all'?'active':''}" onclick="pubSetHcMode('all')">🌐 Everyone</button>
+    </div>
+    <label class="btn btn-outline btn-sm"><input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="pubOnHcFile(this)">↺ Replace</label>
+    <button type="button" class="btn btn-outline btn-sm" onclick="pubClearHc()">✕ Remove file</button>`;
+}
+function pubAfterHcChange(){
+  pubRenderHcBar();
+  pubRenderSummary();
+  pubBuildFilterBar();
+  pubRenderTable();
+}
+function pubSetHcMode(m){ pubState.hcMode = m; pubAfterHcChange(); }
+function pubClearHc(){ pubState.hc = null; pubState.hcMode = 'hc'; pubAfterHcChange(); toast('Headcount removed — showing everyone','info'); }
+async function pubOnHcFile(input){
+  const f = input.files && input.files[0];
+  input.value = '';
+  if(!f) return;
+  try{
+    if(typeof XLSX==='undefined') throw new Error('the spreadsheet reader did not load — refresh the page');
+    const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), {type:'array'});
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false, defval:'', blankrows:false});
+    const people = pubParseHeadcount(aoa);
+    if(!people.size) throw new Error('no Email or Username (Email) column with email addresses was found');
+    pubState.hc = {fileName:f.name, people};
+    pubState.hcMode = 'hc';
+    pubAfterHcChange();
+    toast(`Headcount loaded — ${people.size} people`,'ok');
+  }catch(e){ toast(`Could not read "${f.name}": ${e.message||'unknown error'}`,'err'); }
+}
+// email (lowercase) → {n, di, am, ci, su} from the sheet. The header row is found in the first 10 rows.
+function pubParseHeadcount(aoa){
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  let hr = -1, idx = null;
+  for(let r=0; r<Math.min(10, aoa.length) && hr<0; r++){
+    const h = (aoa[r]||[]).map(x=>String(x||'').trim());
+    const col = res=>{ for(const re of res){ const i = h.findIndex(x=>re.test(x)); if(i>-1) return i; } return -1; };
+    const e = col([/e-?mail/i, /^username/i]);
+    if(e>-1){ hr = r; idx = {e, n:col([/display.*name/i, /pharmacist.*name/i, /^(full\s*)?name$/i]), di:col([/district/i]),
+      am:col([/area\s*manager/i]), ci:col([/^city$/i, /\bcity\b/i]), su:col([/supervisor/i])}; }
+  }
+  if(hr<0){   // no header: use the column where most cells are emails
+    const counts = {};
+    aoa.slice(0, 200).forEach(row=>(row||[]).forEach((v,i)=>{ if(emailRe.test(String(v||'').trim())) counts[i] = (counts[i]||0)+1; }));
+    const best = Object.keys(counts).sort((a,b)=>counts[b]-counts[a])[0];
+    if(best===undefined) return new Map();
+    hr = -1; idx = {e:Number(best), n:-1, di:-1, am:-1, ci:-1, su:-1};
+  }
+  const v = (row, i)=> i>-1 ? String(row[i]||'').trim().slice(0, 200) : '';
+  const people = new Map();
+  aoa.slice(hr+1, hr+1+20000).forEach(row=>{
+    const e = v(row||[], idx.e).toLowerCase();
+    if(!emailRe.test(e) || people.has(e)) return;
+    people.set(e, {n:v(row, idx.n), di:v(row, idx.di), am:v(row, idx.am), ci:v(row, idx.ci), su:v(row, idx.su)});
+  });
+  return people;
+}
+
 function pubVisibleCols(){
   const c = pubState.course;
   if(!c) return [];
@@ -298,7 +427,7 @@ function pubVisibleCols(){
   return PUB_COL_ORDER.filter(k=>on.has(k) && (k!=='daysLeft' || (c.display.showDaysLeft && c.deadline)));
 }
 function pubBuildFilterBar(){
-  const rows = pubState.rows, cols = new Set(pubVisibleCols());
+  const rows = pubBaseRows(), cols = new Set(pubVisibleCols());
   const values = f=>[...new Set(rows.map(x=>x[f]).filter(v=>v))].sort((a,b)=>String(a).localeCompare(String(b))).map(v=>({value:v, text:v}));
   let html = '';
   if(cols.has('name') || cols.has('email')){
@@ -327,7 +456,7 @@ function pubClearFilters(){
 }
 function pubView(){
   const fs = pubFilterState, q = pubState.q.trim().toLowerCase();
-  const out = pubState.rows.filter(x=>
+  const out = pubBaseRows().filter(x=>
     (!q || String(x.n||'').toLowerCase().includes(q) || String(x.e||'').toLowerCase().includes(q))
     && inSet(x.di||'', fs.district) && inSet(x.am||'', fs.areaManager) && inSet(x.ci||'', fs.city) && inSet(x.su||'', fs.supervisor)
     && inSet(x.s, fs.state) && inSet(x.fl, fs.match) && inSet(x.f ? pubDateText(x.f) : '', fs.date));
@@ -356,7 +485,7 @@ function pubSortBy(k){
   pubRenderTable();
 }
 function pubFlagBadge(x){
-  if(x.fl==='onboarding') return ' <span class="rp-tag mid">Onboarding</span>';
+  if(x.fl==='not_found') return ' <span class="rp-tag no" title="In your headcount sheet but not in the data of this course">Not in course data</span>';
   if(x.fl==='not_in_roster') return ' <span class="rp-tag grey">Not in roster</span>';
   if(x.s==='No completion data') return ' <span class="rp-tag grey">No completion data</span>';
   return '';
@@ -393,7 +522,7 @@ function pubRenderTable(){
     };
     return `<tr class="${rowCls}">${cols.map(cell).join('')}</tr>`;
   }).join('') : `<tr><td colspan="${cols.length||1}" class="empty-msg">No people match the filters</td></tr>`;
-  document.getElementById('pubCount').textContent = `${rows.length} of ${pubState.rows.length} shown`;
+  document.getElementById('pubCount').textContent = `${rows.length} of ${pubBaseRows().length} shown`;
   const wrap = document.querySelector('#pubTableCard .table-wrap');
   if(wrap){ attachFloatingScrollbar(wrap); updateFloatingScrollbar(wrap); }
 }
@@ -418,7 +547,7 @@ async function pubExportExcel(){
       case 'daysLeft': return pubDaysLeft(x, dl).text;
       default: { const f = PUB_COLS[k].f; return (f && x[f]) || ''; }
     }
-  }).concat([x.s==='No completion data' ? 'No completion data' : (PUB_MATCH[x.fl]||'')]));
+  }).concat([x.fl==='not_found' ? PUB_MATCH.not_found : (x.s==='No completion data' ? 'No completion data' : (PUB_MATCH[x.fl]||''))]));
   const name = pubFileName('xlsx');
   const ok = await downloadStyledXlsx(name, 'Completion', headers, data, null,
     {autoName:true, sheets:[{name:'Completion', headers, rows:data, opts:{autoFilter:true, statusCols:[headers.indexOf('State'), headers.length-1].filter(i=>i>-1)}}]});

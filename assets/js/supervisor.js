@@ -39,12 +39,11 @@ function buildSupervisorFilterBar(){
     renderMsFilter('sup','areaManager','Area Manager', distinctValues(scope,'areaManager').map(v=>({value:v,text:v}))) +
     renderMsFilter('sup','city','City', distinctValues(scope,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('sup','date','Date', dateFilterOptions(days)) +
-    renderMsFilter('sup','retrain','Retraining', RETRAIN_FILTER_OPTIONS) +
     `<button class="btn btn-outline btn-sm" onclick="clearSupFilters()">Clear Filters</button>`;
 }
 function onSupSearch(v){ supSearchQ=v; renderSupervisorTable(); }
 function clearSupFilters(){
-  supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set(), retrain:new Set() };
+  supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set() };
   supSearchQ='';
   supStatusFilter = null;
   supMissingFilter = false;
@@ -80,8 +79,7 @@ async function loadSupervisorView(silent){
   supDataEdits = req[K_DATA_EDIT] || [];
   registerFilterFacets('sup', { items: currentSupervisorScope, values: {
     district: p=>[p.district], areaManager: p=>[p.areaManager], city: p=>[p.city],
-    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; },
-    retrain: p=>[retrainKey(p)]
+    date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; }
   }});
 
   document.getElementById('supMain').classList.remove('hidden');
@@ -241,7 +239,6 @@ function applySupFilters(list){
     if(!inSet(p.areaManager, supFilterState.areaManager)) return false;
     if(!inSet(p.city, supFilterState.city)) return false;
     if(!matchesDateSet(p.id, supFilterState.date)) return false;
-    if(!inSet(retrainKey(p), supFilterState.retrain)) return false;
     if(supSearchQ){
       const q = supSearchQ.toLowerCase();
       if(!p.displayName.toLowerCase().includes(q) && !(p.email||'').toLowerCase().includes(q)) return false;
@@ -264,14 +261,13 @@ function renderSupervisorTable(){
   const days = visibleDaysFor(currentSupervisor);
   const tb = document.getElementById('supTableBody');
   if(!own.length && !pending.length){
-    tb.innerHTML = `<tr><td colspan="10" class="empty-msg">No pharmacists match the current filters</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8" class="empty-msg">No pharmacists match the current filters</td></tr>`;
     updateSortIndicators('sup');
     bulkSyncAfterRender('sup', []);
     return;
   }
   let i = 0;
-  // Column order: Pharmacist Name (with its row number), Pharmacy No., Email, Date, Attendance Status, Work Shift, Core %, Capsule %, Notes
-  ['core','capsule'].forEach(slot=>{ const th = document.getElementById('th-sup-'+slot); if(th) th.title = courseSlotHeaderTitle(slot); });
+  // Column order: Pharmacist Name (with its row number), Pharmacy No., Email, Date, Attendance Status, Work Shift, Notes
   const nameCell = (n, p) => `<td class="name-cell"><span class="rownum">${n}</span>${esc(p.displayName)}</td>`;
   let rows = own.map(p=>{
     i++;
@@ -279,7 +275,7 @@ function renderSupervisorTable(){
     let dateHtml = lock
       ? `${dateCellHtml(p, false, days, 'onAssignChange')}<div class="locked-note" title="${esc(SUP_LOCK_TEXT[lock].title)}">${SUP_LOCK_TEXT[lock].note}</div>`
       : dateCellHtml(p, true, days, 'onAssignChange');
-    if(!lock && ops.assignments[p.id]?.locked && isFailedAttendance(p)) dateHtml += `<div class="retrain-note">↻ Missed the training — pick a new day</div>`;
+    if(lock && lock!=="attended" && isFailedAttendance(p)) dateHtml += `<div class="retrain-note">↻ Missed the training — use Request Change to book a new day</div>`;
     if(pendingChangeFor(p.id)) dateHtml += `<div class="small-note" style="color:var(--pending);font-weight:700;">⏳ Change requested</div>`;
     const editReq = pendingDataEditFor(p.id);
     const editNote = editReq ? `<div class="small-note edit-pending">✎ Edit requested <button type="button" class="link-btn" onclick="cancelDataEdit('${editReq.id}')">cancel</button></div>` : '';
@@ -291,8 +287,6 @@ function renderSupervisorTable(){
       <td class="no-truncate">${dateHtml}</td>
       <td class="no-truncate">${attendanceBadgeHtml(p)}</td>
       <td class="${supMissingFilter && isMissingSubmitData(p) ? 'cell-missing' : ''}">${workShiftSelectHtml(p)}</td>
-      <td>${courseSlotPctHtml(p, 'core')}</td>
-      <td>${courseSlotPctHtml(p, 'capsule')}</td>
       <td class="no-truncate">${p.note ? `<span class="sup-note">${esc(p.note)}</span>` : '<span class="small-note">—</span>'}</td>
     </tr>`;
   }).join('');
@@ -310,8 +304,6 @@ function renderSupervisorTable(){
       <td></td>
       <td></td>
       <td></td>
-      <td></td>
-      <td></td>
     </tr>`;
   }).join('');
   tb.innerHTML = rows;
@@ -322,8 +314,8 @@ function renderSupervisorTable(){
 
 /* ═══════════════════════════════ LOCKS: SUBMIT, TRAINER-MANAGED DAYS, RETRAINING ═══════════════════════════════
    A choice is free until the supervisor presses Submit; then it is locked (the server enforces all of this too).
-   A pharmacist who missed their training (Absent, or one day of a 2-day online training) can be booked onto a
-   new day the training team opens for this supervisor. A day that is visible but not editable for this supervisor
+   A pharmacist who missed their training (Absent, or one day of a 2-day online training) and isn't locked can be
+   booked onto a new day; a locked one goes through Request Change like everyone else (the lock always wins). A day that is visible but not editable for this supervisor
    ("readOnlySupervisors") can't be picked, and nobody on it can be moved — except through Request Change. */
 function isFailedAttendance(p){ const s = attSummary(p.id, p).status; return s==='Absent' || s==='Partial'; }
 function isDayEditableForSup(d){ return !(d && (d.readOnlySupervisors||[]).includes(currentSupervisor)); }
@@ -338,7 +330,8 @@ function supAssignableDays(pid){
 // Why the supervisor can't change this pharmacist themselves — or null when they can.
 function supLockReason(p){
   if(hasAttendedTraining(p)) return 'attended';
-  if(isFailedAttendance(p)) return null;
+  // The lock always wins — a pharmacist who missed their training on a submitted / managed day is rebooked
+  // through Request Change, not from the dropdown.
   const a = ops.assignments[p.id];
   if(a && a.locked) return 'submitted';
   if(a && a.type==='date' && !isDayEditableForSup(dayById(a.dateId))) return 'managed';
@@ -953,7 +946,7 @@ async function confirmAnnualLeaveUpload(){
 async function exportSupervisorExcel(){
   const list = applySupFilters(currentSupervisorScope());
   if(!list.length){ toast('No data to export','err'); return; }
-  const headers = ['Pharmacist Name','Pharmacy No.','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Work Shift','Core %','Capsule %','Notes'];
+  const headers = ['Pharmacist Name','Pharmacy No.','Email','Supervisor','District','Area Manager','City','Date','Attendance','Late Arrival Time','Work Shift','Notes'];
   const rows = [];
   list.forEach(p=>{
     const r = buildMasterRow(p);
@@ -968,10 +961,9 @@ async function exportSupervisorExcel(){
       const att = ops.attendance[p.id];
       lateTime = (att&&att.status==='Attended'&&att.punctuality==='Late')?(att.time||''):'';
     }
-    rows.push([r.displayName,r.pharmacyNo,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.workShift,
-      courseSlotText(p,'core'),courseSlotText(p,'capsule'),r.note]);
+    rows.push([r.displayName,r.pharmacyNo,r.email,r.supervisor,r.district,r.areaManager,r.city,r.dateText,r.statusText,lateTime,r.workShift,r.note]);
   });
-  const colWidths = [28,14,28,20,14,18,12,24,16,14,14,10,10,26];
+  const colWidths = [28,14,28,20,14,18,12,24,16,14,14,26];
   const ok = await downloadStyledXlsx('my-pharmacists.xlsx', 'My Pharmacists', headers, rows, colWidths);
   if(ok) toast('Excel downloaded','ok');
 }

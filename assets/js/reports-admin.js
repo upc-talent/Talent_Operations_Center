@@ -17,7 +17,7 @@
 const RP_STATES = ['Completed','Final video done, others missing','In progress','Not started'];
 const RP_SCHED = ['On time','Late','Overdue','Still within deadline','Completed (date unknown)'];
 const RP_CUTS = ['Yes','No, completed later','No, not completed','Completed (date unknown)'];
-const RP_MATCH_LABEL = {roster:'In roster', onboarding:'Onboarding', not_in_roster:'Not in roster', no_email:'No valid email'};
+const RP_MATCH_LABEL = {roster:'In roster', not_in_roster:'Not in roster', no_email:'No valid email'};
 const RP_KSA_MS = 3*3600*1000;                       // KSA = UTC+3, no daylight saving
 const RP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;   // same rule as the server
 const RP_MAX_ROWS_SHOWN = 2000;
@@ -34,7 +34,7 @@ const rpState = {
   files:[], fileSeq:0, model:null, done:{}, include:{}, finals:{}, res:[],
   deadline:null, cutoff:null, cutoffMode:'before', cutoffBasis:'final',
   exEmails:new Set(), exDomains:[], exItems:[],
-  learners:[], learnersLoaded:false, sortKey:'rate', sortDir:-1, q:'', editingId:null
+  nir:[], nirLoaded:false, nirFilter:'all', nirQ:'', nirSel:new Set(), sortKey:'rate', sortDir:-1, q:'', editingId:null
 };
 let rpFilterState = { state:new Set(), source:new Set(), sched:new Set(), cutoff:new Set(), match:new Set() };
 
@@ -310,7 +310,6 @@ function rpInitMoodle(){
 async function rpOpenMoodleTab(){
   rpInitMoodle();
   await rpLoadCourses();
-  if(!rpState.learnersLoaded) rpLoadLearners(true);
 }
 function rpRenderCourseSelect(){
   const sel = document.getElementById('rpCourse');
@@ -583,18 +582,16 @@ async function rpOnExclusionFile(input){
   }catch(e){ msg.textContent = `Could not read "${f.name}": ${e.message||'unknown error'}`; msg.classList.remove('hidden'); msg.classList.add('warn'); }
 }
 
-/* ---------- roster match (pharmacists roster wins, then onboarding learners) ---------- */
+/* ---------- roster match (the pharmacists roster by email, else "Not in roster") ---------- */
 function rpMatchMaps(){
-  const roster = new Map(), learners = new Map();
+  const roster = new Map();
   (masterData||[]).forEach(p=>{ const e = String(p.email||'').trim().toLowerCase(); if(e && !roster.has(e)) roster.set(e, p); });
-  (rpState.learners||[]).forEach(l=>learners.set(l.email, l));
-  return {roster, learners};
+  return {roster};
 }
 function rpMatchOf(maps, email){
   const e = String(email||'').trim().toLowerCase();
   if(!RP_EMAIL_RE.test(e)) return 'no_email';
   if(maps.roster.has(e)) return 'roster';
-  if(maps.learners.has(e)) return 'onboarding';
   return 'not_in_roster';
 }
 
@@ -651,7 +648,7 @@ function rpRenderStats(){
   }
   if(rpState.cutoff) items.push([pct(rows.filter(x=>x.cb==='Yes').length), 'Completed '+rpCutoffLabel()]);
   const m = k=>rows.filter(x=>x.match===k).length;
-  items.push([m('roster'),'Matched to roster'], [m('onboarding'),'Onboarding learners'], [m('not_in_roster'),'Not in roster']);
+  items.push([m('roster'),'Matched to roster'], [m('not_in_roster'),'Not in roster']);
   if(m('no_email')) items.push([m('no_email'),'No valid email (not published)']);
   const excl = rpState.res.length - n;
   if(excl) items.push([excl, 'Excluded from publish']);
@@ -723,7 +720,7 @@ function rpRenderBody(){
   const rows = rpView();
   const shown = rows.slice(0, RP_MAX_ROWS_SHOWN);
   const cls = s=> s==='Completed' ? 'ok' : (s==='Not started' ? 'no' : 'mid');
-  const mcls = {roster:'ok', onboarding:'mid', not_in_roster:'grey', no_email:'no'};
+  const mcls = {roster:'ok', not_in_roster:'grey', no_email:'no'};
   document.getElementById('rpTbody').innerHTML = shown.length ? shown.map(x=>{
     const tip = x.missing.length ? ` title="Missing: ${esc(x.missing.join(' | '))}"` : '';
     return `<tr class="${x.excluded?'rp-excl':''}">
@@ -809,7 +806,7 @@ function rpPublishPayload(c){
     engine:{finalVideos:finalsUniq, acceptedStatuses:Object.keys(s.done).filter(k=>s.done[k]),
       excludedVideos:s.model.acts.filter(a=>!s.include[a.key]).map(a=>a.name)},
     deadline: s.deadline!==null ? new Date(s.deadline).toISOString() : null,
-    _unread: unread, _notInRoster: pub.filter(x=>x.match==='not_in_roster').length, _onboarding: pub.filter(x=>x.match==='onboarding').length
+    _unread: unread, _notInRoster: pub.filter(x=>x.match==='not_in_roster').length
   };
 }
 function rpPublish(){
@@ -826,7 +823,7 @@ function rpPublish(){
       <li><b>${p.rows.length}</b> row(s) will be stored</li>
       <li>${p.stats.excluded} excluded (not published)</li>
       <li>${p.stats.noEmail} without a valid email (dropped)</li>
-      <li>${p._notInRoster} not in the roster · ${p._onboarding} onboarding learner(s)</li>
+      <li>${p._notInRoster} not in the roster</li>
       <li>Deadline: ${p.deadline ? esc(rpFmtIso(p.deadline, true))+' KSA' : 'none'}</li>
     </ul>
     ${u.count ? `<div class="rp-note warn">⚠️ <b>${u.count} timestamp(s) couldn't be read</b> (e.g. ${u.examples.map(v=>'<code>'+esc(v)+'</code>').join(', ')}). These completions will be stored as <b>"Completed (date unknown)"</b> — never On time or Late.
@@ -843,7 +840,7 @@ async function rpConfirmPublish(){
   if(p._unread.count && !(document.getElementById('rpUnreadOk')||{}).checked) return;
   const btn = document.getElementById('rpPubGo');
   if(btn){ btn.disabled = true; btn.textContent = 'Publishing…'; }
-  const body = {...p}; delete body._unread; delete body._notInRoster; delete body._onboarding;
+  const body = {...p}; delete body._unread; delete body._notInRoster;
   try{
     const out = await API.call('coursePublish', body);
     closeModal();
@@ -857,84 +854,86 @@ async function rpConfirmPublish(){
   }
 }
 
-/* ---------- 8. onboarding learners ---------- */
-async function rpLoadLearners(quiet){
+/* ---------- 8. people not in the roster (v6) ----------
+   Everyone in any published course whose email isn't in the roster, collected by the server. Hide removes them from
+   the public reports (tables and counts, every course); Unhide shows them again. If the same email later joins the
+   roster, the roster record is used and the hide no longer applies. */
+async function rpLoadNir(quiet){
   try{
-    const out = await API.call('lmsLearnersList', null, !!quiet);
-    rpState.learners = out.learners || [];
-    rpState.learnersLoaded = true;
-  }catch(e){ if(!quiet) toast('Could not load onboarding learners — '+(e.message||''),'err'); return; }
-  rpRenderLearners();
-  if(rpState.model) rpRecompute();
+    const out = await API.call('notInRosterList', null, !!quiet);
+    rpState.nir = out.people || [];
+    rpState.nirLoaded = true;
+  }catch(e){ if(!quiet) toast('Could not load the list — '+(e.message||''),'err'); return; }
+  const have = new Set(rpState.nir.map(p=>p.email));
+  [...rpState.nirSel].forEach(e=>{ if(!have.has(e)) rpState.nirSel.delete(e); });
+  rpRenderNir();
 }
-function rpRenderLearners(){
-  const tb = document.getElementById('rpOnbBody');
-  if(!tb) return;
-  tb.innerHTML = rpState.learners.length ? rpState.learners.map(l=>`<tr>
-      <td class="name-cell">${esc(l.displayName||'—')}${l.inRoster?' <span class="rp-tag ok" title="This email is now in the roster — the roster record is used">in roster</span>':''}</td>
-      <td class="email-cell">${esc(l.email)}</td><td>${esc(l.district||'—')}</td><td>${esc(l.areaManager||'—')}</td><td>${esc(l.city||'—')}</td>
-      <td>${esc(l.supervisor||'—')}</td><td>${esc(l.pharmacyNo||'—')}</td><td>${esc(l.employeeId||'—')}</td>
-      <td style="white-space:nowrap">${esc(rpFmtIso(l.createdAt))}${l.createdBy?' · '+esc(l.createdBy):''}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="rpDeleteLearner('${esc(l.email)}')">Delete</button></td>
-    </tr>`).join('') : `<tr><td colspan="10" class="empty-msg">No onboarding learners</td></tr>`;
-}
-function rpLearnerMsg(out){
-  const el = document.getElementById('rpOnbMsg');
-  let msg = `Saved ${out.saved} learner(s).`;
-  if(out.alreadyInRoster && out.alreadyInRoster.length) msg += ` Already in the roster (not added): ${out.alreadyInRoster.slice(0,10).join(', ')}${out.alreadyInRoster.length>10?' …':''}.`;
-  if(out.invalid && out.invalid.length) msg += ` ${out.invalid.length} row(s) had no valid email.`;
-  el.textContent = msg;
-  el.classList.remove('hidden');
-  el.classList.toggle('warn', !!((out.alreadyInRoster||[]).length || (out.invalid||[]).length));
-}
-async function rpSaveLearners(rows){
-  try{
-    const out = await API.call('lmsLearnersUpsert', {rows});
-    rpLearnerMsg(out);
-    await rpLoadLearners();
+function rpNirView(){
+  const q = rpState.nirQ.trim().toLowerCase();
+  return rpState.nir.filter(p=>{
+    if(rpState.nirFilter==='visible' && p.hidden) return false;
+    if(rpState.nirFilter==='hidden' && !p.hidden) return false;
+    if(q && !(p.name.toLowerCase().includes(q) || p.email.includes(q) || p.courses.some(c=>c.toLowerCase().includes(q)))) return false;
     return true;
-  }catch(e){ toast('Could not save — '+(e.message||'please try again'),'err'); return false; }
+  });
 }
-const RP_LEARNER_FIELDS = [['email','Email (Username)',true],['displayName','Display name',true],['district','District'],['areaManager','Area Manager'],
-  ['city','City'],['supervisor','Supervisor Name'],['pharmacyNo','Pharmacy No.'],['employeeId','User / Employee ID']];
-function rpOpenAddLearner(){
-  showModal(`<h3>Add an onboarding learner</h3>
-    <p class="small-note">For completion reports only — they never join the roster. An email already in the roster is refused.</p>
-    <div class="de-grid">${RP_LEARNER_FIELDS.map(f=>`<label><span class="field-label${f[2]?' req':''}">${esc(f[1])}</span><input id="rpL_${f[0]}" ${f[0]==='email'?'type="email"':''}></label>`).join('')}</div>
-    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button><button class="btn btn-navy btn-sm" onclick="rpSaveOneLearner()">Save</button></div>`, 'max-width:640px;');
+function rpNirCanHide(){ return typeof can!=='function' || can('moodle.hide'); }
+function rpRenderNir(){
+  const tb = document.getElementById('rpNirBody');
+  if(!tb) return;
+  const list = rpNirView();
+  const hiddenN = rpState.nir.filter(p=>p.hidden).length;
+  const sum = document.getElementById('rpNirSummary');
+  if(sum) sum.textContent = rpState.nirLoaded ? `${rpState.nir.length} people not in the roster · ${rpState.nir.length-hiddenN} shown in reports · ${hiddenN} hidden` : '';
+  const canHide = rpNirCanHide();
+  tb.innerHTML = list.length ? list.map(p=>`<tr class="${p.hidden?'rp-excl':''}">
+      ${canHide ? `<td class="sel-cell"><input type="checkbox" ${rpState.nirSel.has(p.email)?'checked':''} onchange="rpNirToggle('${esc(p.email)}', this.checked)"></td>` : ''}
+      <td class="name-cell">${esc(p.name||'—')}</td>
+      <td class="email-cell">${esc(p.email)}</td>
+      <td class="no-truncate" style="white-space:normal;min-width:220px;">${p.courses.map(c=>`<span class="rp-tag grey">${esc(c)}</span>`).join(' ')}</td>
+      <td>${p.hidden ? `<span class="rp-tag no" title="Hidden by ${esc(p.hiddenBy||'')} · ${esc(rpFmtIso(p.hiddenAt, true))}">Hidden</span>` : '<span class="rp-tag ok">Shown</span>'}</td>
+      <td style="white-space:nowrap" class="small-note">${p.hidden ? esc(rpFmtIso(p.hiddenAt, true))+(p.hiddenBy?' · '+esc(p.hiddenBy):'') : ''}</td>
+    </tr>`).join('') : `<tr><td colspan="6" class="empty-msg">${rpState.nirLoaded ? (rpState.nir.length ? 'Nobody matches the filter' : 'Everyone in the published courses is in the roster') : 'Loading…'}</td></tr>`;
+  const th = document.getElementById('rpNirSelHead');
+  if(th) th.classList.toggle('hidden', !canHide);
+  const all = document.getElementById('rpNirAll');
+  if(all){
+    const n = list.filter(p=>rpState.nirSel.has(p.email)).length;
+    all.checked = list.length>0 && n===list.length; all.indeterminate = n>0 && n<list.length;
+  }
+  rpNirSyncBar();
 }
-async function rpSaveOneLearner(){
-  const row = {};
-  RP_LEARNER_FIELDS.forEach(f=>{ row[f[0]] = document.getElementById('rpL_'+f[0]).value.trim(); });
-  if(!RP_EMAIL_RE.test(row.email)){ toast('Enter a valid email','err'); return; }
-  if(!row.displayName){ toast('Enter the display name','err'); return; }
-  if(await rpSaveLearners([row])) closeModal();
+function rpNirToggle(email, on){ if(on) rpState.nirSel.add(email); else rpState.nirSel.delete(email); rpRenderNir(); }
+function rpNirToggleAll(on){ rpNirView().forEach(p=>{ if(on) rpState.nirSel.add(p.email); else rpState.nirSel.delete(p.email); }); rpRenderNir(); }
+function rpNirSyncBar(){
+  const n = rpState.nirSel.size;
+  const c = document.getElementById('rpNirSelCount');
+  if(c) c.textContent = n ? n+' selected' : '';
+  ['rpNirHideBtn','rpNirUnhideBtn','rpNirClearBtn'].forEach(id=>{ const b = document.getElementById(id); if(b){ b.disabled = !n; b.classList.toggle('hidden', !rpNirCanHide()); } });
 }
-async function rpOnLearnersFile(input){
-  const f = input.files[0];
-  input.value = '';
-  if(!f) return;
+async function rpNirSetHidden(hidden){
+  const emails = [...rpState.nirSel];
+  if(!emails.length){ toast('Tick people in the list first','info'); return; }
+  const go = await confirmDialog(hidden
+    ? `Hide ${emails.length} person(s) from the reports? They disappear from the public reports page (tables and counts) in every course. Their completion data is kept and you can unhide them any time.`
+    : `Show ${emails.length} person(s) in the reports again?`);
+  if(!go) return;
   try{
-    const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), {type:'array', raw:true});
-    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false, defval:'', blankrows:false});
-    if(!aoa.length) throw new Error('the file is empty');
-    const h = aoa[0].map(x=>String(x||'').trim());
-    const col = res=>{ for(const re of res){ const i = h.findIndex(x=>re.test(x)); if(i>-1) return i; } return -1; };
-    const idx = { email:col([/e-?mail/i, /^username/i]), displayName:col([/display.*name/i, /pharmacist.*name/i, /^name$/i]),
-      district:col([/district/i]), areaManager:col([/area\s*manager/i]), city:col([/^city$/i, /\bcity\b/i]), supervisor:col([/supervisor/i]),
-      pharmacyNo:col([/pharmacy\s*no/i, /pharmacy/i]), employeeId:col([/employee\s*id/i, /user.*id/i, /employee/i]) };
-    if(idx.email<0) throw new Error('no "Username (Email)" column found');
-    const rows = aoa.slice(1).map(r=>{ const o = {}; Object.keys(idx).forEach(k=>{ o[k] = idx[k]>-1 ? String(r[idx[k]]||'').trim() : ''; }); return o; })
-      .filter(o=>o.email);
-    if(!rows.length) throw new Error('no rows with an email');
-    if(rows.length>5000) throw new Error('more than 5000 rows — split the file');
-    await rpSaveLearners(rows);
-  }catch(e){ toast(`Could not read "${f.name}": ${e.message||'unknown error'}`,'err'); }
+    const out = await API.call('reportHideSet', {emails, hidden});
+    rpState.nirSel.clear();
+    toast(`${out.changed} person(s) ${hidden?'hidden from':'shown in'} the reports — the public page updates within a minute`,'ok');
+    await rpLoadNir(true);
+  }catch(e){ toast('Could not save — '+(e.message||'please try again'),'err'); }
 }
-async function rpDeleteLearner(email){
-  if(!await confirmDialog(`Remove onboarding learner ${email}? Their published completion rows stay, but will show as "Not in roster".`)) return;
-  try{ await API.call('lmsLearnersDelete', {emails:[email]}); toast('Removed','ok'); await rpLoadLearners(); }
-  catch(e){ toast('Could not remove — '+(e.message||''),'err'); }
+async function rpNirDownload(){
+  const list = rpNirView();
+  if(!list.length){ toast('Nothing to download','err'); return; }
+  const headers = ['Name','Email','Courses','In reports','Hidden by','Hidden at (KSA)'];
+  const rows = list.map(p=>[p.name, p.email, p.courses.join(' | '), p.hidden?'Hidden':'Shown', p.hiddenBy||'', p.hidden ? rpFmtIso(p.hiddenAt, true) : '']);
+  const d = new Date(), M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const ok = await downloadStyledXlsx(`${d.getDate()} ${M[d.getMonth()]} ${String(d.getFullYear()).slice(-2)} - People not in roster.xlsx`,
+    'Not in roster', headers, rows, [30,34,60,12,14,20], {autoFilter:true});
+  if(ok) toast('List downloaded','ok');
 }
 
 /* ═══════════════════════════════ SAP REPORTS TAB ═══════════════════════════════ */
@@ -1045,7 +1044,7 @@ function rpOpenInMoodle(id){
 function rpRenderCoursesTable(){
   const tb = document.getElementById('rpCoursesBody');
   if(!tb) return;
-  const sa = typeof isSuperAdmin==='function' && isSuperAdmin();
+  const sa = typeof can==='function' && can('repconf.delete');
   tb.innerHTML = rpState.courses.length ? rpState.courses.map(c=>`<tr>
       <td class="name-cell"><b>${esc(rpCourseTitle(c))}</b>${c.displayName && c.displayName!==c.name ? '<br><span class="small-note">'+esc(c.name)+'</span>' : ''}
         ${c.active && !c.lastPublishedAt ? ' <span class="rp-tag mid" title="The public page shows it as \'No data published yet\'">No data yet</span>' : ''}</td>
@@ -1064,7 +1063,7 @@ function rpRenderCoursesTable(){
         ${sa ? `<button class="btn btn-danger btn-sm" onclick="rpDeleteCourse('${c.id}')">Delete</button>` : ''}</td>
     </tr>`).join('') : `<tr><td colspan="10" class="empty-msg">No course is tracked yet — add one above</td></tr>`;
 }
-const RP_EXPORT_MATCH = {roster:'Roster', onboarding:'Onboarding', not_in_roster:'Not in roster', no_data:'No completion data'};
+const RP_EXPORT_MATCH = {roster:'Roster', not_in_roster:'Not in roster', no_data:'No completion data'};
 async function rpDownloadCourseData(id){
   let out;
   try{ out = await API.call('courseExport', {id}); }
@@ -1073,7 +1072,7 @@ async function rpDownloadCourseData(id){
   const headers = ['Name','Email','District','Area Manager','City','Supervisor','Roster match','Videos completed','Total videos','Completion rate %',
     'State','Final video completed at','Latest completion (any video)','Deadline','Schedule','Days late / overdue'];
   const dl = c.deadline ? rpFmtIso(c.deadline, true)+' KSA' : '';
-  const rows = out.rows.map(r=>[r.name, r.email, r.district, r.areaManager, r.city, r.supervisor, RP_EXPORT_MATCH[r.match]||r.match,
+  const rows = out.rows.map(r=>[r.name, r.email, r.district, r.areaManager, r.city, r.supervisor, (RP_EXPORT_MATCH[r.match]||r.match) + (r.hidden ? " (hidden from reports)" : ""),
     r.done===null?'':r.done, r.total===null?'':r.total, r.rate===null?'':r.rate, r.state,
     r.finalDone ? (r.finalAt ? rpFmtIso(r.finalAt, true) : 'Completed (no date)') : '',
     r.latestAt ? rpFmtIso(r.latestAt, true) : (r.latestRaw||''), dl, r.schedule, r.scheduleDays||'']);
@@ -1088,7 +1087,7 @@ async function rpDownloadCourseData(id){
     ['Deadline', dl || 'none'],
     ['Rows in files / students / stored', [st.rowsIn, st.students, st.stored].map(v=>v===undefined?'—':v).join(' / ')],
     ['Excluded at publish (count only) / no email', [st.excluded, st.noEmail].map(v=>v===undefined?'—':v).join(' / ')],
-    ['Matched to roster / onboarding / not in roster', [st.matchedRoster, st.matchedOnboarding, st.notInRoster].map(v=>v===undefined?'—':v).join(' / ')],
+    ['Matched to roster / not in roster', [st.matchedRoster, st.notInRoster].map(v=>v===undefined?'—':v).join(' / ')],
     ['Unreadable timestamps at publish', st.unreadableTimestamps===undefined ? '—' : st.unreadableTimestamps],
     ['Roster people with no completion data', out.includeNoData ? 'included' : 'not included'],
     ['Times', 'KSA (UTC+3). A finished learner whose time couldn\'t be read is "Completed (date unknown)" — never On time / Late.']];

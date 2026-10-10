@@ -69,7 +69,7 @@ GitHub Pages serves only the static front-end — the backend stays in Supabase.
   unavoidable for a static site. They are not what protects the data:
   - **Row-Level Security is on for every table with no policies**, so the anon key can read and write
     *nothing* directly. Only the `api` Edge Function touches the database.
-  - **Admins Dashboard actions** need a signed, expiring (10 h) token issued only after a named staff account
+  - **Admins Dashboard actions** need a signed, expiring token (10 h, or 6 days with "Keep me signed in") issued only after a named staff account
     (superadmin / trainer / coordinator, stored as PBKDF2 hashes in `STAFF_ACCOUNTS`) signs in. 8 wrong passwords
     lock that username for 10 minutes. Every change is recorded in the Activity Log (superadmin only).
   - **Supervisor requests** are limited to that supervisor's own pharmacists (no phone/licence numbers), and the
@@ -77,7 +77,7 @@ GitHub Pages serves only the static front-end — the backend stays in Supabase.
     per-supervisor quota. Supervisors cannot record attendance, approve anything, or touch setup data.
   - Supervisors still pick their name from a list (no password) — anyone who knows the URL can act as any
     supervisor *within those limits*. If that is not acceptable, add a per-supervisor access code next.
-- The trainer credential is shared by the whole training team, so attendance "marked by" is not recorded per person.
+- Every admin has their own account (and can change their own password); what each one may see and do is set per account in **Admins Permissions**.
 
 ## 6. Known limitations
 

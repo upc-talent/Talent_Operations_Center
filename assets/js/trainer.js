@@ -46,7 +46,7 @@ async function redoCalendarChange(){
 }
 
 async function handleCalendarDrop(e, iso){
-  if(isCoordinatorRole()) return;   // the admin's calendar is view-only
+  if(!can('calendar.edit')) return;   // view-only calendar without "calendar.edit"
   e.preventDefault();
   e.stopPropagation();
   if(!dragDayId) return;
@@ -201,7 +201,7 @@ function renderCalendarMonth(year, month, sectionIdx, dayLabels){
       const label = dayLabels[d.id] || c.code;
       const trainerLine = (d.trainerNames && d.trainerNames.length) ? `<br><span style="font-weight:400;">${esc(d.trainerNames.join(', '))}</span>` : '';
       const dayTag = isContinuation ? '<br><span style="font-weight:400;font-size:8.5px;opacity:.8;">· Day 2</span>' : '';
-      const dragAttrs = (isContinuation || isCoordinatorRole()) ? '' : `draggable="true" ondragstart="event.stopPropagation(); dragDayId='${d.id}'; event.dataTransfer.effectAllowed='move'; this.classList.add('cal-event-dragging');" ondragend="dragDayId=null; this.classList.remove('cal-event-dragging'); document.querySelectorAll('.cal-cell-dragover').forEach(el=>el.classList.remove('cal-cell-dragover'));"`;
+      const dragAttrs = (isContinuation || !can('calendar.edit')) ? '' : `draggable="true" ondragstart="event.stopPropagation(); dragDayId='${d.id}'; event.dataTransfer.effectAllowed='move'; this.classList.add('cal-event-dragging');" ondragend="dragDayId=null; this.classList.remove('cal-event-dragging'); document.querySelectorAll('.cal-cell-dragover').forEach(el=>el.classList.remove('cal-cell-dragover'));"`;
       return `<span class="cal-event" ${dragAttrs} style="background:${c.bg};color:${c.text};border:1px ${isActive?'solid':'dashed'} ${c.border};${isContinuation?'opacity:.85;':''}" onclick="event.stopPropagation(); openEditDayModal('${d.id}')" title="${esc(d.city)}${d.trainingName?' — '+esc(d.trainingName):''} — ${count}/${dayCapacity(d)}${isActive?'':' — Hidden from supervisors'}${isContinuation?' — Day 2 of split online training':''}${activeMergeOf(d.id)?' — Merged with '+esc(mergePartnersText(d.id, dayLabels)):''}">${activeMergeOf(d.id)?'🔗 ':''}${esc(label)}${!isActive?' '+EYE_OFF_SVG:''}${trainerLine}${dayTag}</span>`;
     }).join('');
     html += `<div class="cal-cell" onclick="openAddDayModal('${iso}')" ondragover="event.preventDefault();" ondragenter="event.preventDefault(); this.classList.add('cal-cell-dragover');" ondragleave="this.classList.remove('cal-cell-dragover');" ondrop="this.classList.remove('cal-cell-dragover'); handleCalendarDrop(event, '${iso}')"><div class="cal-daynum">${cell.day}</div>${eventsHtml}</div>`;
@@ -574,6 +574,7 @@ function switchTrainerTab(id){
   if(id==='t-analytics') refreshAnalytics();
   if(id==='t-calendar') renderCalendar();
   if(id==='t-activity') loadActivity();
+  if(id==='t-perms') loadPermAccounts();
   // reports tabs (assets/js/reports-admin.js)
   if(id==='t-moodle' && typeof rpOpenMoodleTab==='function') rpOpenMoodleTab();
   if(id==='t-sap' && typeof rpOpenSapTab==='function') rpOpenSapTab();
@@ -585,42 +586,58 @@ function switchTrainerTab(id){
    coordinator (UPC_Co, UPC_Co1, UPC_Co2) — lower access; the server refuses everything else for it too. */
 function isCoordinatorRole(){ return API.role==='coordinator'; }
 function isSuperAdmin(){ return API.role==='superadmin'; }
-// Moodle Reports / SAP Reports / Reports Configuration (class "reports-only"): superadmin + coordinators, never trainers.
-function isReportsAdmin(){ return API.role==='superadmin' || API.role==='coordinator'; }
+/* Permissions (v6): what this account may see and do — its role's defaults plus the superadmin's switches (Admins
+   Permissions tab). Elements tagged data-perm="key" (or "a|b" = any of them; "superadmin") are hidden without it;
+   rendered rows ask can(). The server refuses the same things, so hiding is only for a clean screen. */
+function can(key){ return API.can(key); }
+function canAny(spec){ return String(spec||'').split('|').some(k=>k==='superadmin' ? isSuperAdmin() : can(k)); }
+function canEditDays(){ return can('days.edit') || can('calendar.edit'); }
+function applyPermissions(root){
+  (root||document).querySelectorAll('[data-perm]').forEach(el=>el.classList.toggle('perm-hidden', !canAny(el.dataset.perm)));
+  const b = document.body.classList;
+  b.toggle('no-cal-edit', !can('calendar.edit'));
+  b.toggle('ro-days', !can('days.edit'));
+  b.toggle('ro-approvals', !can('approvals.decide'));
+  b.toggle('perm-export-full', can('attend.exportFull'));
+  b.toggle('no-core-capsule', !can('attend.coreCapsule'));
+}
 const ROLE_LABELS = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'Coordinator'};
-// Coordinator tabs, in this order: Attendance (opens first) · Calendar (view only) · Analytics & Export (Master Sheet Preview only)
-// · Moodle Reports · SAP Reports · Reports Configuration. Trainers keep every tab in the usual order (without the reports
-// tabs); the Activity Log tab is the superadmin's.
+// Coordinators see their tabs in this order: Attendance (opens first) · Calendar · Analytics & Export · Moodle Reports ·
+// SAP Reports · Reports Configuration, then anything else the superadmin switched on. Which tabs, sections and buttons
+// show at all comes from the account's permissions (applyPermissions).
 const COORD_TABS = ['t-attend','t-calendar','t-analytics','t-moodle','t-sap','t-repconf'];
 function applyRoleToPage(){
   const coord = isCoordinatorRole();
-  // the CSS hooks keep their old "admin" names (admin-view / admin-hidden)
-  document.body.classList.toggle('admin-view', coord);
   const bar = document.querySelector('#screen-trainer .tabs');
   if(!bar._trainerOrder) bar._trainerOrder = [...bar.querySelectorAll('.tab')].map(t=>t.dataset.tab);
   const order = coord ? COORD_TABS.concat(bar._trainerOrder.filter(id=>!COORD_TABS.includes(id))) : bar._trainerOrder;
   order.forEach(id=>bar.appendChild(bar.querySelector(`.tab[data-tab="${id}"]`)));
-  bar.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden',
-    (coord && !COORD_TABS.includes(t.dataset.tab)) || (t.dataset.tab==='t-activity' && !isSuperAdmin())
-    || (t.classList.contains('reports-only') && !isReportsAdmin())));
-  document.querySelectorAll('#t-analytics > *').forEach(el=>el.classList.toggle('admin-hidden', coord && el.id!=='masterSheetPreviewCard'));
-  document.querySelectorAll('#t-setup > *').forEach(el=>el.classList.toggle('admin-hidden', coord));   // the coordinator has no General Configurations tab (v5)
+  applyPermissions();
   const badge = document.getElementById('roleBadge');
   if(badge){
     badge.textContent = (ROLE_LABELS[API.role] || 'Trainer') + (API.user ? ' · '+API.user : '');
     badge.title = 'Signed in as '+(API.user||'')+' — everything you change is recorded under this account';
   }
-  if(coord) switchTrainerTab('t-attend');
+  // open the first tab this account can see (Attendance for most)
+  const visible = [...bar.querySelectorAll('.tab')].filter(t=>!t.classList.contains('perm-hidden'));
+  const active = bar.querySelector('.tab.active');
+  if(coord || !active || active.classList.contains('perm-hidden')){
+    const first = visible.find(t=>t.dataset.tab==='t-attend') || visible[0];
+    if(first) switchTrainerTab(first.dataset.tab);
+    else document.querySelectorAll('.trainer-tab').forEach(t=>t.classList.add('hidden'));
+  }
+  const none = document.getElementById('noTabsNote');
+  if(none) none.classList.toggle('hidden', visible.length>0);
 }
 
 async function initTrainer(){
   currentTrainerIdentity = API.user || '';
   applyRoleToPage();
   groupFixIgnored = await getPersonal('group-fix-ignored', []);
-  if(isCoordinatorRole()) await Promise.all([loadCoreData(), loadMerges()]);
-  else await Promise.all([loadCoreData(), loadVenues(), loadMerges()]);
+  await Promise.all([loadCoreData(), loadMerges()].concat(canEditDays() ? [loadVenues()] : []));
   registerTrainerFilterFacets();
-  if(!isCoordinatorRole()){ renderSetupTab(); buildDaysFilterBar(); renderDaysTable(); }
+  if(can('setup.view')) renderSetupTab();
+  if(can('days.view')){ buildDaysFilterBar(); renderDaysTable(); }
   buildTrainerFilterBar();
   renderTrainerTable();
   renderMergesTable();
@@ -644,7 +661,7 @@ async function refreshPresence(){
 }
 function startPresencePolling(){
   const pill = document.getElementById('presencePill');
-  if(isCoordinatorRole()){ if(pill) pill.classList.add('hidden'); return; }
+  if(!can('presence.view')){ if(pill) pill.classList.add('hidden'); return; }
   if(presenceTimer) return;
   refreshPresence();
   presenceTimer = setInterval(()=>{ if(!document.hidden) refreshPresence(); }, 60000);
@@ -1335,7 +1352,7 @@ function renderDaysTable(){
 }
 
 function openEditDayModal(dayId){
-  if(isCoordinatorRole()) return;   // view-only calendar for the admin
+  if(!canEditDays()) return;   // view only without "days.edit" / "calendar.edit"
   const day = trainingConfig.dates.find(d=>d.id===dayId);
   if(!day) return;
   const supNames = allSupervisorNames();
@@ -1598,7 +1615,7 @@ function venueDatalistHtml(){
 }
 
 function openAddDayModal(presetDate){
-  if(isCoordinatorRole()) return;
+  if(!canEditDays()) return;
   const supNames = sortSupervisorNames([...new Set(masterData.map(p=>p.supervisor).filter(isValidSupervisorName))]);
   const checkboxes = supNames.map(n=>`<label><input type="checkbox" class="day-sup-cb" value="${esc(n)}" onchange="syncQuotaVisibility('new')"> ${esc(n)}</label>`).join('') || '<span class="small-note">No supervisors found in the master data yet.</span>';
   const trainerCheckboxes = trainingConfig.trainerNames.map(n=>`<label><input type="checkbox" class="day-trainer-cb-new" value="${esc(n)}"> ${esc(n)}</label>`).join('') || '<span class="small-note">No trainers in the roster yet — add some in General Configurations.</span>';
@@ -1935,6 +1952,88 @@ function bulkApplyTrainerAssign(){
   toast(`Updated ${done} pharmacist(s)` + (skipped?`, skipped ${skipped} (online/offline mismatch)`:''), skipped?'info':'ok');
 }
 
+/* Bulk attendance: the ticked pharmacists get the same mark. For a one-day training "Day 1" is the day itself and the
+   Day 2 choices skip them; for a 2-day online training the usual rules hold (Day 2 can only be Attended once Day 1 is,
+   and Day 1 Absent makes Day 2 Absent too). Pharmacists without a training day are skipped. */
+const BULK_ATT_CHOICES = [
+  {id:'d1a',  text:'Mark Day 1 as Attended'},
+  {id:'d2a',  text:'Mark Day 2 as Attended'},
+  {id:'d12a', text:'Mark Day 1 & 2 as Attended'},
+  {id:'d1x',  text:'Mark Day 1 as Absent'},
+  {id:'d2x',  text:'Mark Day 2 as Absent'},
+  {id:'d12x', text:'Mark both Days as Absent'}
+];
+function openBulkAttendanceModal(){
+  const ids = [...bulkSel.trainer];
+  if(!ids.length){ toast('Tick pharmacists in the table first','info'); return; }
+  showModal(`<h3>Mark attendance — ${ids.length} pharmacist(s)</h3>
+    <p class="small-note" style="margin-top:-6px;">One-day trainings use the Day 1 choices (Day 2 choices skip them). Pharmacists without a training day are skipped.</p>
+    <div class="bulk-att-choices">
+      ${BULK_ATT_CHOICES.map((c,i)=>`<label class="bulk-att-choice ${c.id.endsWith('x')?'is-absent':'is-attended'}"><input type="radio" name="bulkAtt" value="${c.id}" ${i===0?'checked':''} onchange="document.getElementById('bulkAttReasonRow').classList.toggle('hidden', !this.value.endsWith('x'))"> ${c.id.endsWith('x')?'✖':'✔'} ${esc(c.text)}</label>`).join('')}
+    </div>
+    <div id="bulkAttReasonRow" class="hidden" style="margin-top:10px;">
+      <label class="small-note" for="bulkAttReason">Absence reason (optional)</label>
+      <select id="bulkAttReason"><option value="">— No reason —</option>${ABSENT_REASONS.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="applyBulkAttendance()">Apply</button>
+    </div>`, 'max-width:460px;');
+}
+function applyBulkAttendance(){
+  const choice = (document.querySelector('input[name="bulkAtt"]:checked')||{}).value;
+  const reason = (document.getElementById('bulkAttReason')||{}).value || '';
+  if(!choice) return;
+  const now = nowIso();
+  const mark = (prev, status)=>{
+    const out = {...(prev||{}), status, markedBy: currentTrainerIdentity, markedAt: now};
+    if(status==='Attended'){
+      if(!out.punctuality) out.punctuality = 'On Time';
+      if(out.punctuality==='On Time') out.time = '';
+      delete out.reason;
+    } else {
+      delete out.punctuality; out.time = '';
+      if(reason) out.reason = reason;
+    }
+    return out;
+  };
+  let done = 0, noDay = 0, oneDay = 0, needDay1 = 0;
+  [...bulkSel.trainer].forEach(pid=>{
+    const p = masterData.find(m=>m.id===pid);
+    if(!p) return;
+    if(!hasValidDateAssignment(p)){ noDay++; return; }
+    const prev = ops.attendance[pid] || {};
+    if(!isSplitPerson(p)){
+      if(choice==='d2a' || choice==='d2x'){ oneDay++; return; }
+      const status = choice.endsWith('a') ? 'Attended' : 'Absent';
+      ops.attendance[pid] = mark(prev, status);
+      done++; return;
+    }
+    const next = {...prev};
+    if(choice==='d1a'){ next.day1 = mark(prev.day1, 'Attended'); }
+    else if(choice==='d2a'){
+      if(!prev.day1 || prev.day1.status!=='Attended'){ needDay1++; return; }
+      next.day2 = mark(prev.day2, 'Attended');
+    }
+    else if(choice==='d12a'){ next.day1 = mark(prev.day1, 'Attended'); next.day2 = mark(prev.day2, 'Attended'); }
+    else if(choice==='d1x' || choice==='d12x'){ next.day1 = mark(prev.day1, 'Absent'); next.day2 = mark(prev.day2, 'Absent'); }
+    else if(choice==='d2x'){ next.day2 = mark(prev.day2, 'Absent'); }
+    ops.attendance[pid] = next;
+    done++;
+  });
+  closeModal();
+  if(!done){ toast('Nothing changed — ' + bulkAttSkipText(noDay, oneDay, needDay1), 'err'); return; }
+  bulkSel.trainer.clear();
+  renderTrainerTable();
+  saveShared(K_OPS, ()=>ops);
+  const skipped = noDay + oneDay + needDay1;
+  toast(`Attendance recorded for ${done} pharmacist(s)` + (skipped ? ' — skipped: ' + bulkAttSkipText(noDay, oneDay, needDay1) : ''), skipped ? 'info' : 'ok');
+}
+function bulkAttSkipText(noDay, oneDay, needDay1){
+  return [noDay ? `${noDay} without a training day` : '', oneDay ? `${oneDay} on a one-day training` : '',
+          needDay1 ? `${needDay1} whose Day 1 isn't Attended yet` : ''].filter(Boolean).join(', ');
+}
+
 async function bulkDeletePharmacists(){
   const ids = [...bulkSel.trainer];
   if(!ids.length) return;
@@ -2152,6 +2251,7 @@ function pharmacistFacetValues(){
   return {
     district: p=>[p.district], areaManager: p=>[p.areaManager], city: p=>[p.city], supervisor: p=>[p.supervisor],
     date: p=>{ const a = ops.assignments[p.id]; return [!a ? 'unassigned' : (a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status)]; },
+    att: p=>[attStatusKey(p)], type: p=>[pharmacistTypeKey(p)], shift: p=>[shiftKey(p)],
     retrain: p=>[retrainKey(p)]
   };
 }
@@ -2171,13 +2271,14 @@ function buildTrainerFilterBar(){
     renderMsFilter('trainer','city','City', distinctValues(masterData,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('trainer','supervisor','Supervisor', distinctValues(masterData,'supervisor').map(v=>({value:v,text:v}))) +
     renderMsFilter('trainer','date','Date', dateFilterOptions(trainingConfig.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)), true)) +
+    renderMsFilter('trainer','att','Attendance', ATT_FILTER_OPTIONS) +
     renderMsFilter('trainer','retrain','Retraining', RETRAIN_FILTER_OPTIONS) +
     `<button class="btn btn-outline btn-sm" onclick="clearTrainerFilters()">Clear Filters</button>`;
   renderConductedBySelect();
 }
 function onTrainerSearch(v){ trainerSearchQ=v; renderTrainerTable(); }
 function clearTrainerFilters(){
-  trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set(), retrain:new Set() };
+  trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set(), att:new Set(), retrain:new Set() };
   trainerSearchQ='';
   buildTrainerFilterBar();
   renderTrainerTable();
@@ -2239,6 +2340,7 @@ function applyTrainerFilters(list){
     if(!inSet(p.city, trainerFilterState.city)) return false;
     if(!inSet(p.supervisor, trainerFilterState.supervisor)) return false;
     if(!matchesDateSet(p.id, trainerFilterState.date)) return false;
+    if(!inSet(attStatusKey(p), trainerFilterState.att)) return false;
     if(!inSet(retrainKey(p), trainerFilterState.retrain)) return false;
     if(trainerSearchQ){
       const q = trainerSearchQ.toLowerCase();
@@ -2418,6 +2520,7 @@ async function setSplitPunctuality(pid, dayNum, punct){
 function noteCellHtml(p){
   const att = ops.attendance[p.id];
   const note = (p.note!==undefined && p.note!=='') ? p.note : (att && att.note ? att.note : '');
+  if(!can('attend.notes')) return note ? `<span class="sup-note">${esc(note)}</span>` : '<span class="small-note">—</span>';
   return `<input type="text" class="note-input" placeholder="Notes" value="${esc(note)}" onchange="onPharmacistNoteChange('${p.id}', this.value)">`;
 }
 
@@ -2430,12 +2533,12 @@ function trainerRowCells(p, rownum){
       ${bulkCheckboxCell('trainer', p.id)}
       <td><span class="rownum">${rownum}</span>${cityCellHtml(p)}</td>
       <td>${esc(p.supervisor)}</td>
-      <td class="no-truncate">${dateCellHtml(p, true, days, 'onTrainerAssignChange')}</td>
+      <td class="no-truncate">${dateCellHtml(p, can('attend.assign'), days, 'onTrainerAssignChange')}</td>
       <td class="email-cell">${esc(p.email||'—')}</td>
       <td class="name-cell">${esc(p.displayName)}</td>
-      <td class="col-export-skip">${courseSlotCellHtml(p, 'core')}</td>
-      <td class="col-export-skip">${courseSlotCellHtml(p, 'capsule')}</td>
-      <td class="no-truncate col-export-skip">${attendanceCellHtml(p)}</td>
+      <td class="col-export-skip col-core">${courseSlotCellHtml(p, 'core')}</td>
+      <td class="col-export-skip col-core">${courseSlotCellHtml(p, 'capsule')}</td>
+      <td class="no-truncate col-export-skip">${can('attend.mark') ? attendanceCellHtml(p) : attendanceBadgeHtml(p)}</td>
       <td class="col-export-skip">${noteCellHtml(p)}</td>`;
 }
 
@@ -2823,7 +2926,7 @@ async function refreshTrainer(){
 // `leaveRequests`, when passed, is a freshly-loaded list the caller already has — avoids fetching it again just for the dot count.
 let changeRequestsCache = [], submissionsCache = [];
 async function updatePendingDot(leaveRequests){
-  if(isCoordinatorRole()) return;
+  if(!can('approvals.view')) return;
   const n = pendingList.filter(p=>p.status==='Pending').length;
   const quotaCount = Object.values(ops.assignments||{}).filter(a=>a.type==='date' && a.overQuota && !a.quotaApproved).length;
   // one request for whatever isn't already in hand
@@ -3421,18 +3524,17 @@ function setAnalyticsDim(dim){
 }
 async function refreshAnalytics(){
   await loadCoreData();
-  renderGlobalChips();
-  renderAnalyticsTable();
   buildMasterFilterBar();
-  renderMasterSheetPreview();
+  renderAnalyticsView();
 }
 function renderGlobalChips(){
-  const total = masterData.length;
-  const onTime = masterData.filter(p=>attSummary(p.id,p).status==='Attended' && (attSummary(p.id,p).punctuality||'On Time')==='On Time').length;
-  const late = masterData.filter(p=>attSummary(p.id,p).status==='Attended' && attSummary(p.id,p).punctuality==='Late').length;
+  const scope = analyticsScope();
+  const total = scope.length;
+  const onTime = scope.filter(p=>attSummary(p.id,p).status==='Attended' && (attSummary(p.id,p).punctuality||'On Time')==='On Time').length;
+  const late = scope.filter(p=>attSummary(p.id,p).status==='Attended' && attSummary(p.id,p).punctuality==='Late').length;
   const attended = onTime + late;
-  const notAssigned = masterData.filter(p=>!ops.assignments[p.id]).length;
-  const absentAfterAssign = masterData.filter(p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent').length;
+  const notAssigned = scope.filter(p=>!ops.assignments[p.id]).length;
+  const absentAfterAssign = scope.filter(p=>ops.assignments[p.id]?.type==='date' && attSummary(p.id,p).status==='Absent').length;
   const pendCount = pendingList.filter(p=>p.status==='Pending').length;
   const pct = n => total ? Math.round((n/total)*100)+'% of total' : '—';
 
@@ -3441,11 +3543,11 @@ function renderGlobalChips(){
     card('attended', 'ok', `<div class="lbl">Attended</div><div class="num">${attended}</div><div class="tag">${onTime} On Time · ${late} Late</div>`) +
     card('notAssigned', 'neutral', `<div class="lbl">Not Assigned</div><div class="num">${notAssigned}</div><div class="tag">${pct(notAssigned)}</div>`) +
     card('absent', 'danger', `<div class="lbl">Assigned but Absent</div><div class="num">${absentAfterAssign}</div><div class="tag">${pct(absentAfterAssign)}</div>`) +
-    adherenceCardHtml();
+    adherenceCardHtml(scope);
 
   let smallHtml = `<div class="chip neutral"><div class="lbl">Total Pharmacists</div><div class="num">${total}</div></div>`;
   LEAVE_STATUSES.forEach(s=>{
-    const count = masterData.filter(p=>ops.assignments[p.id]?.type==='leave' && ops.assignments[p.id]?.status===s).length;
+    const count = scope.filter(p=>ops.assignments[p.id]?.type==='leave' && ops.assignments[p.id]?.status===s).length;
     smallHtml += `<div class="chip neutral"><div class="lbl">${s}</div><div class="num">${count}</div></div>`;
   });
   smallHtml += `<div class="chip pending"><div class="lbl">Pending Approval</div><div class="num">${pendCount}</div></div>`;
@@ -3453,8 +3555,8 @@ function renderGlobalChips(){
 }
 // Adherence Rate (T-X5): attended ÷ invited, where every invitation to a training day already held counts — the
 // first booking and each re-training booking. Informational (not a filter card).
-function adherenceCardHtml(){
-  const st = adherenceStats(masterData);
+function adherenceCardHtml(scope){
+  const st = adherenceStats(scope);
   const tip = 'Attended ÷ invited. Every booking on a training day that has already taken place counts as one invitation — the first one and each retraining. Future days and bookings awaiting quota approval are not counted yet; partial attendance is not counted as attended. Retraining history is kept from the v4 update on.';
   return `<div class="chip chip-lg chip-status info adherence-card" title="${esc(tip)}">
       <div class="lbl">Adherence Rate</div>
@@ -3471,7 +3573,7 @@ function toggleAnalyticsPct(){
 }
 function renderAnalyticsTable(){
   const groups = {};
-  masterData.forEach(p=>{
+  analyticsScope().forEach(p=>{
     const key = p[analyticsDim] || '—';
     if(!groups[key]) groups[key] = [];
     groups[key].push(p);
@@ -3514,18 +3616,28 @@ function buildMasterFilterBar(){
     renderMsFilter('master','areaManager','Area Manager', distinctValues(masterData,'areaManager').map(v=>({value:v,text:v}))) +
     renderMsFilter('master','city','City', distinctValues(masterData,'city').map(v=>({value:v,text:v}))) +
     renderMsFilter('master','supervisor','Supervisor', distinctValues(masterData,'supervisor').map(v=>({value:v,text:v}))) +
+    renderMsFilter('master','type','Type', TYPE_FILTER_OPTIONS) +
     renderMsFilter('master','date','Date', dateFilterOptions(trainingConfig.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)), false, true)) +
+    renderMsFilter('master','att','Attendance', ATT_FILTER_OPTIONS) +
+    renderMsFilter('master','shift','Work Shift', SHIFT_FILTER_OPTIONS) +
+    renderMsFilter('master','retrain','Retraining', RETRAIN_FILTER_OPTIONS) +
     `<button class="btn btn-outline btn-sm" onclick="clearMasterFilters()">Clear Filters</button>`;
 }
-function onMasterSearch(v){ masterSearchQ=v; renderMasterSheetPreview(); }
+function onMasterSearch(v){ masterSearchQ=v; renderAnalyticsView(); }
 function clearMasterFilters(){
-  masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
+  masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), type:new Set(), date:new Set(), att:new Set(), shift:new Set(), retrain:new Set() };
   masterSearchQ='';
   masterStatusFilter = null;
   buildMasterFilterBar();
+  renderAnalyticsView();
+}
+// The Analytics filters (top of the tab) apply to the overview cards, the Breakdown and the Master Sheet Preview.
+function renderAnalyticsView(){
   renderGlobalChips();
+  renderAnalyticsTable();
   renderMasterSheetPreview();
 }
+function analyticsScope(){ return applyMasterFilters(masterData, false); }
 // Overview card chosen as a filter for the Master Sheet Preview ('attended' | 'notAssigned' | 'absent'), or null.
 let masterStatusFilter = null;
 function setMasterStatusFilter(kind){
@@ -3537,8 +3649,9 @@ function setMasterStatusFilter(kind){
     if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
   }
 }
-function applyMasterFilters(list){
-  const status = masterStatusFilter ? STATUS_GROUPS[masterStatusFilter].test : null;
+function applyMasterFilters(list, withStatusCard){
+  const status = (withStatusCard!==false && masterStatusFilter) ? STATUS_GROUPS[masterStatusFilter].test : null;
+  const st = masterFilterState;
   return list.filter(p=>{
     if(status && !status(p)) return false;
     if(!inSet(p.district, masterFilterState.district)) return false;
@@ -3546,6 +3659,10 @@ function applyMasterFilters(list){
     if(!inSet(p.city, masterFilterState.city)) return false;
     if(!inSet(p.supervisor, masterFilterState.supervisor)) return false;
     if(!matchesDateSet(p.id, masterFilterState.date)) return false;
+    if(!inSet(pharmacistTypeKey(p), st.type)) return false;
+    if(!inSet(attStatusKey(p), st.att)) return false;
+    if(!inSet(shiftKey(p), st.shift)) return false;
+    if(!inSet(retrainKey(p), st.retrain)) return false;
     if(masterSearchQ){
       const q = masterSearchQ.toLowerCase();
       if(!p.displayName.toLowerCase().includes(q) && !(p.email||'').toLowerCase().includes(q)) return false;
@@ -3613,7 +3730,7 @@ async function exportAttendanceExcel(){
   const list = applyTrainerFilters(masterData);
   if(!list.length){ toast('No data to export','err'); return; }
   // The trainer's export leaves out Core / Capsule Completion, Attendance, Late Arrival Time and Notes (the admin's keeps them).
-  const full = isCoordinatorRole();
+  const full = can('attend.exportFull');
   const headers = full
     ? ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date','Core Completion','Capsule Completion','Attendance','Late Arrival Time','Notes']
     : ['Pharmacist Name','Email','Supervisor','District','Area Manager','City','Date'];
@@ -3758,7 +3875,7 @@ function renderMergesTable(){
       <td class="no-truncate">${esc(m.note||'—')}</td>
       <td class="no-truncate">${esc(m.mergedBy||'—')}<br><span class="small-note">${esc(when(m.mergedAt))}</span></td>
       <td>${m.status==='Unmerged' ? `<span class="badge badge-empty">Unmerged</span><br><span class="small-note">${esc(m.unmergedBy||'')} ${esc(when(m.unmergedAt))}</span>` : '<span class="badge badge-date">Active</span>'}</td>
-      <td class="no-truncate">${m.status==='Unmerged' ? '' : `<button class="btn btn-outline btn-sm" onclick="openMergeModal('${m.id}')">Edit</button> <button class="btn btn-danger btn-sm" onclick="unmergeGroups('${m.id}')">Unmerge</button>`}</td>
+      <td class="no-truncate">${m.status==='Unmerged' || !can('attend.merge') ? '' : `<button class="btn btn-outline btn-sm" onclick="openMergeModal('${m.id}')">Edit</button> <button class="btn btn-danger btn-sm" onclick="unmergeGroups('${m.id}')">Unmerge</button>`}</td>
     </tr>`).join('');
 }
 async function exportMergesExcel(){
@@ -3783,7 +3900,10 @@ const ACTIVITY_LABELS = {
   request_cancel:'Request cancelled', submit:'Submitted', merge:'Group merge', unmerge:'Group unmerged', merge_edit:'Group merge edited',
   merge_delete:'Group merge deleted', course_add:'Course tracked', course_edit:'Course edited', course_delete:'Course deleted',
   course_share_rotate:'Share link renewed', course_slots:'Core / Capsule courses set', course_publish:'Course data published',
-  lms_learner_save:'Onboarding learner saved', lms_learner_delete:'Onboarding learner removed'
+  lms_learner_save:'Onboarding learner saved', lms_learner_delete:'Onboarding learner removed',
+  report_hide:'Hidden from reports', report_unhide:'Shown in reports again', password_change:'Password changed',
+  password_change_failed:'Password change refused', password_reset:'Password reset (temporary)', sign_out_all:'Signed out everywhere',
+  permissions:'Permissions changed'
 };
 const ROLE_NAMES = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'Coordinator', supervisor:'Supervisor'};
 function ksaTime(isoStr){
@@ -3895,6 +4015,18 @@ async function startTrainerApp(){
   loadLogo();
   await initTrainer();
 }
+function toggleLoginPassword(){
+  const i = document.getElementById('loginPass'), b = document.getElementById('loginEye');
+  const show = i.type==='password';
+  i.type = show ? 'text' : 'password';
+  b.textContent = show ? '🙈' : '👁';
+  b.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); b.title = b.getAttribute('aria-label');
+  i.focus();
+}
+function loginCapsHint(e){
+  const el = document.getElementById('loginCaps');
+  if(el && e.getModifierState) el.classList.toggle('hidden', !e.getModifierState('CapsLock'));
+}
 async function submitLogin(ev){
   ev.preventDefault();
   const btn = document.getElementById('loginBtn');
@@ -3904,8 +4036,9 @@ async function submitLogin(ev){
   err.classList.add('hidden');
   btn.disabled = true; btn.textContent = 'Signing in…';
   try{
-    await API.login(user, pass);
+    await API.login(user, pass, document.getElementById('loginRemember').checked);
     document.getElementById('loginPass').value = '';
+    if(API.mustChange){ btn.disabled = false; btn.textContent = 'Sign in'; openChangePassword(true); return; }
     await startTrainerApp();
   }catch(e){
     err.textContent = e.message || 'Sign-in failed';
@@ -3913,6 +4046,53 @@ async function submitLogin(ev){
     document.getElementById('loginPass').value = '';
   }
   btn.disabled = false; btn.textContent = 'Sign in';
+}
+/* Change password (v6) — every admin, from the 🔑 button. After a superadmin reset it opens by itself at sign-in and
+   can't be skipped. The server checks the current password and signs out the account's other sessions. */
+function openChangePassword(forced){
+  showModal(`<h3>${forced ? 'Choose a new password' : 'Change your password'}</h3>
+    ${forced ? '<p class="small-note" style="margin-top:-6px;">Your password was reset by the super admin. Choose your own before you continue.</p>' : ''}
+    <form onsubmit="submitChangePassword(event, ${forced?'true':'false'})" class="pw-form" autocomplete="on">
+      <input type="text" name="username" autocomplete="username" value="${esc(API.user||'')}" class="hidden" readonly>
+      <label class="field-label" for="pwCur">${forced ? 'Temporary password' : 'Current password'}</label>
+      <input type="password" id="pwCur" autocomplete="current-password" required>
+      <label class="field-label" for="pwNew">New password</label>
+      <input type="password" id="pwNew" autocomplete="new-password" required minlength="10" oninput="pwStrengthHint()">
+      <label class="field-label" for="pwNew2">Type the new password again</label>
+      <input type="password" id="pwNew2" autocomplete="new-password" required>
+      <p class="small-note" id="pwHint">At least 10 characters, with a letter and a number, and not containing your username. A longer passphrase is stronger.</p>
+      <p class="login-error hidden" id="pwErr" role="alert"></p>
+      <p class="small-note">Changing it signs you out on your other devices and browsers.</p>
+      <div class="modal-actions">
+        ${forced ? `<button type="button" class="btn btn-outline btn-sm" onclick="trainerSignOut()">Sign out</button>` : `<button type="button" class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>`}
+        <button type="submit" class="btn btn-navy btn-sm" id="pwGo">Save new password</button>
+      </div>
+    </form>`, 'max-width:420px;');
+  setTimeout(()=>{ const el = document.getElementById('pwCur'); if(el) el.focus(); }, 0);
+}
+function pwStrengthHint(){
+  const v = document.getElementById('pwNew').value, el = document.getElementById('pwHint');
+  const ok = v.length>=10 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !(API.user && v.toLowerCase().includes(API.user.toLowerCase()));
+  el.style.color = !v ? '' : (ok ? 'var(--ok)' : 'var(--warn)');
+}
+async function submitChangePassword(ev, forced){
+  ev.preventDefault();
+  const cur = document.getElementById('pwCur').value, a = document.getElementById('pwNew').value, b = document.getElementById('pwNew2').value;
+  const err = document.getElementById('pwErr'), btn = document.getElementById('pwGo');
+  const fail = m=>{ err.textContent = m; err.classList.remove('hidden'); };
+  err.classList.add('hidden');
+  if(a!==b) return fail('The two new passwords are not the same.');
+  if(a.length<10 || !/[A-Za-z]/.test(a) || !/[0-9]/.test(a)) return fail('Use at least 10 characters, with a letter and a number.');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try{
+    await API.changePassword(cur, a);
+    closeModal();
+    toast('Password changed — your other sessions were signed out','ok');
+    if(forced) await startTrainerApp();
+  }catch(e){
+    fail(e.message || 'Could not change the password');
+    btn.disabled = false; btn.textContent = 'Save new password';
+  }
 }
 function trainerSignOut(){
   API.logout();
@@ -3933,6 +4113,140 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   // the server stored a "Retraining #n" marker / attempt history for a re-booked pharmacist — show it right away
   APP_HOOKS.onOpsUpdated = (pids, historyChanged)=>{ if(historyChanged && !document.getElementById('screen-trainer').classList.contains('hidden')) renderTrainerTable(); };
   initSyncStatusIndicator();
-  if(await API.verifySession()) await startTrainerApp();
+  if(await API.verifySession()){ if(API.mustChange){ showLoginGate(); openChangePassword(true); } else await startTrainerApp(); }
   else showLoginGate();
 });
+
+/* ═══════════════════════════════ ADMINS PERMISSIONS (super admin, v6) ═══════════════════════════════
+   One switch per tab (can the account open it at all) and one per section / action inside it. The server keeps the
+   role defaults; only the switches that differ are stored for the account. The super admin always has everything. */
+const PERM_TREE = [
+  {tab:'Attendance', view:'attend.view', items:[
+    ['attend.assign','Change dates','Book pharmacists on training days / leave statuses (Date column and bulk assign)'],
+    ['attend.mark','Mark attendance','Attended / Absent / Late — one by one and the bulk "Mark attendance"'],
+    ['attend.edit','Edit Selected','Change pharmacists\' details'],
+    ['attend.delete','Delete from roster','Bulk "Delete from roster"'],
+    ['attend.merge','Merge groups','Merge Groups button, edit and unmerge'],
+    ['attend.notes','Notes','Type notes on pharmacists'],
+    ['attend.coreCapsule','Core / Capsule columns','Course completion columns in the table'],
+    ['attend.export','Exports','Excel / Image / PDF of the table and merged groups'],
+    ['attend.exportFull','Full export','Exports include completion, attendance, late time and notes']]},
+  {tab:'Training Days Setup', view:'days.view', items:[['days.edit','Edit training days','Add, edit, hide, delete, bulk actions']]},
+  {tab:'Calendar', view:'calendar.view', items:[['calendar.edit','Edit the calendar','Add, import, drag to reschedule, undo / redo']]},
+  {tab:'Approvals', view:'approvals.view', items:[['approvals.decide','Decide requests','Approve / reject submissions, changes, data edits, quota, leave, new pharmacists']]},
+  {tab:'Analytics & Export', view:'analytics.view', items:[
+    ['analytics.cards','Overview cards & Breakdown',''], ['analytics.master','Master Sheet Preview',''], ['analytics.export','Master Sheet exports','Excel / Image / PDF']]},
+  {tab:'General Configurations', view:'setup.view', items:[
+    ['setup.master','Master Pharmacist Data','Upload / clear the roster'], ['setup.settings','Settings','Capacity, trainers / coordinators rosters, training names, city roster']]},
+  {tab:'Moodle Reports', view:'moodle.view', items:[
+    ['moodle.publish','Publish','Publish a course\'s completion data'], ['moodle.hide','Hide people','Hide / unhide people not in the roster from the reports']]},
+  {tab:'SAP Reports', view:'sap.view', items:[]},
+  {tab:'Reports Configuration', view:'repconf.view', items:[
+    ['repconf.edit','Courses & display','Track / edit courses, public display options, share links'],
+    ['repconf.slots','Core / Capsule courses','Which courses feed the Hub columns'], ['repconf.delete','Delete a course','']]},
+  {tab:'Top bar', view:null, items:[['presence.view','Supervisors online','The "supervisors online" counter']]}
+];
+let permAccounts = [], permSel = null, permDraft = null;
+async function loadPermAccounts(){
+  if(!isSuperAdmin()) return;
+  try{
+    const out = await API.call('adminAccounts');
+    permAccounts = out.accounts || [];
+  }catch(e){ document.getElementById('permAccounts').innerHTML = `<div class="rp-note warn">${esc(e.message||'Could not load the accounts')}</div>`; return; }
+  if(permSel && !permAccounts.some(a=>a.username===permSel)) permSel = null;
+  renderPermAccounts();
+  if(permSel) selectPermAccount(permSel); else document.getElementById('permEditor').innerHTML = '<div class="empty-msg">Choose an account on the left</div>';
+}
+function permChangedCount(a){ return Object.keys(a.overrides||{}).length; }
+function renderPermAccounts(){
+  document.getElementById('permAccounts').innerHTML = permAccounts.map(a=>`
+    <button type="button" class="perm-acc${permSel===a.username?' active':''}" onclick="selectPermAccount('${esc(a.username)}')">
+      <b>${esc(a.username)}</b><span class="small-note">${esc(ROLE_LABELS[a.role]||a.role)}</span>
+      <span class="perm-acc-tags">${a.role==='superadmin' ? '<span class="rp-tag ok">everything</span>' : (permChangedCount(a) ? `<span class="rp-tag mid">${permChangedCount(a)} changed</span>` : '<span class="rp-tag grey">role defaults</span>')}
+        ${a.mustChange ? '<span class="rp-tag no">must change password</span>' : ''}</span>
+    </button>`).join('') || '<div class="small-note">No accounts</div>';
+}
+function selectPermAccount(user){
+  permSel = user;
+  const a = permAccounts.find(x=>x.username===user);
+  if(!a) return;
+  permDraft = {...a.perms};
+  renderPermAccounts();
+  renderPermEditor();
+}
+function renderPermEditor(){
+  const a = permAccounts.find(x=>x.username===permSel);
+  const el = document.getElementById('permEditor');
+  if(!a){ el.innerHTML = '<div class="empty-msg">Choose an account on the left</div>'; return; }
+  const sa = a.role==='superadmin', self = a.username===API.user;
+  const sw = (key, label, note, disabled)=>{
+    const on = sa || !!permDraft[key], changed = !sa && on!==!!a.defaults[key];
+    return `<label class="perm-sw${disabled?' off':''}"><input type="checkbox" ${on?'checked':''} ${sa||disabled?'disabled':''} onchange="permDraft['${key}']=this.checked; renderPermEditor()">
+      <span class="perm-sw-ui"></span><span><b>${esc(label)}</b>${changed?' <span class="perm-changed" title="Different from the role default">changed</span>':''}${note?`<span class="small-note">${esc(note)}</span>`:''}</span></label>`;
+  };
+  el.innerHTML = `
+    <div class="perm-head">
+      <div><h3 style="margin:0">${esc(a.username)} <span class="small-note">· ${esc(ROLE_LABELS[a.role]||a.role)}</span></h3>
+        <div class="small-note">${a.ownPassword ? 'Uses a password they chose' : 'Uses the password from the server settings'}${a.updatedAt ? ' · last changed '+esc(ksaTime(a.updatedAt))+' KSA'+(a.updatedBy?' by '+esc(a.updatedBy):'') : ''}</div></div>
+      <div class="row">
+        ${self ? '<button class="btn btn-outline btn-sm" onclick="openChangePassword()">🔑 Change my password</button>' : `
+        <button class="btn btn-outline btn-sm" onclick="openResetPassword('${esc(a.username)}')">🔑 Reset password</button>
+        <button class="btn btn-outline btn-sm" onclick="permSignOutEverywhere('${esc(a.username)}')">⎋ Sign out everywhere</button>`}
+      </div>
+    </div>
+    ${sa ? '<p class="rp-note">The super admin always has every tab and action, plus the Activity Log and this page.</p>' : ''}
+    <div class="perm-grid">${PERM_TREE.map(g=>{
+      const tabOn = sa || !g.view || !!permDraft[g.view];
+      return `<div class="perm-group${tabOn?'':' is-off'}">
+        <div class="perm-group-head">${g.view ? sw(g.view, g.tab, 'Show this tab', false) : `<b>${esc(g.tab)}</b>`}</div>
+        ${g.items.map(i=>sw(i[0], i[1], i[2], !tabOn)).join('') || '<div class="small-note">No separate actions</div>'}
+      </div>`;
+    }).join('')}</div>
+    ${sa ? '' : `<div class="modal-actions" style="justify-content:flex-start;">
+      <button class="btn btn-navy btn-sm" onclick="savePermDraft()">Save permissions</button>
+      <button class="btn btn-outline btn-sm" onclick="permResetDefaults()">Reset to ${esc(ROLE_LABELS[a.role]||a.role)} defaults</button>
+      <button class="btn btn-outline btn-sm" onclick="selectPermAccount(permSel)">Undo unsaved changes</button>
+    </div>`}`;
+}
+function permResetDefaults(){ const a = permAccounts.find(x=>x.username===permSel); if(a){ permDraft = {...a.defaults}; renderPermEditor(); } }
+async function savePermDraft(){
+  const a = permAccounts.find(x=>x.username===permSel);
+  if(!a) return;
+  try{
+    const out = await API.call('adminSetPerms', {username:a.username, perms:permDraft});
+    a.perms = out.perms; a.overrides = out.overrides;
+    permDraft = {...out.perms};
+    renderPermAccounts(); renderPermEditor();
+    toast(`Saved — ${a.username} sees the change on their next page load`,'ok');
+  }catch(e){ toast('Could not save — '+(e.message||''),'err'); }
+}
+// A temporary password made in this browser (shown once); the person must choose their own at the next sign-in.
+function makeTempPassword(){
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz', digits = '23456789';
+  const buf = new Uint32Array(15); crypto.getRandomValues(buf);
+  let s = '';
+  for(let i=0; i<12; i++) s += (i%4===3 ? digits[buf[i] % digits.length] : letters[buf[i] % letters.length]);
+  return s.slice(0,4)+'-'+s.slice(4,8)+'-'+s.slice(8);
+}
+async function openResetPassword(user){
+  const go = await confirmDialog(`Reset ${user}'s password? They are signed out everywhere and must choose a new password the next time they sign in with the temporary one.`);
+  if(!go) return;
+  const temp = makeTempPassword();
+  try{ await API.call('adminResetPassword', {username:user, temp}); }
+  catch(e){ toast('Could not reset — '+(e.message||''),'err'); return; }
+  showModal(`<h3>Temporary password for ${esc(user)}</h3>
+    <p class="small-note">Give it to them privately. It is shown only now; they must change it when they sign in.</p>
+    <input type="text" id="tempPwOut" readonly value="${esc(temp)}" style="width:100%;font-size:16px;font-weight:700;letter-spacing:.5px;" onfocus="this.select()">
+    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="copyTempPassword()">Copy</button>
+      <button class="btn btn-navy btn-sm" onclick="closeModal()">Done</button></div>`, 'max-width:420px;');
+  loadPermAccounts();
+}
+async function copyTempPassword(){
+  const el = document.getElementById('tempPwOut');
+  try{ await navigator.clipboard.writeText(el.value); toast('Copied','ok'); }catch(e){ el.focus(); el.select(); }
+}
+async function permSignOutEverywhere(user){
+  if(!await confirmDialog(`Sign ${user} out on every device and browser now?`)) return;
+  try{ await API.call('adminSignOut', {username:user}); toast(`${user} was signed out everywhere`,'ok'); loadPermAccounts(); }
+  catch(e){ toast('Could not sign out — '+(e.message||''),'err'); }
+}

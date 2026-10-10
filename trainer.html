@@ -23,6 +23,7 @@
     <span class="presence-pill hidden" id="presencePill" title="Supervisors with the supervisor page open right now (updated every minute)"><span class="dot"></span><b id="presenceCount">0</b> <span id="presenceWord">supervisors</span> online</span>
     <span class="badge" id="roleBadge">Trainer</span>
     <a class="home-link" href="index.html">← Home</a>
+    <button type="button" onclick="openChangePassword()" title="Change your password">🔑 Password</button>
     <button type="button" onclick="trainerSignOut()">Sign out</button>
   </div>
 </div>
@@ -31,31 +32,57 @@
 
   <!-- ══════════ SIGN-IN ══════════ -->
   <section id="loginGate" class="hidden">
-    <form class="login-card" onsubmit="submitLogin(event)" autocomplete="on">
-      <div class="login-ic">🎓</div>
-      <h2>Admins Dashboard sign-in</h2>
-      <p class="login-sub">This area is for the Talent Management training team.</p>
-      <label class="field-label" for="loginUser">User name</label>
-      <input type="text" id="loginUser" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required>
-      <label class="field-label" for="loginPass" style="margin-top:12px;">Password</label>
-      <input type="password" id="loginPass" name="password" autocomplete="current-password" required>
-      <p class="login-error hidden" id="loginError" role="alert"></p>
-      <button type="submit" class="btn btn-navy login-btn" id="loginBtn">Sign in</button>
-      <a class="login-back" href="index.html">← Back to home</a>
-    </form>
+    <div class="login-shell">
+      <aside class="login-brand" aria-hidden="true">
+        <div class="login-brand-ic">🎓</div>
+        <h2>Admins Dashboard</h2>
+        <p>Talent Operations Center — for the Talent Management training team.</p>
+        <ul>
+          <li>Attendance &amp; training days</li>
+          <li>Approvals &amp; analytics</li>
+          <li>Course progress reports</li>
+        </ul>
+      </aside>
+      <form class="login-card" onsubmit="submitLogin(event)" autocomplete="on">
+        <h2>Sign in</h2>
+        <p class="login-sub">Use your own admin account.</p>
+        <label class="login-label" for="loginUser">User name</label>
+        <div class="login-field">
+          <span class="login-field-ic" aria-hidden="true">👤</span>
+          <input type="text" id="loginUser" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="e.g. UPC_T1" required>
+        </div>
+        <label class="login-label" for="loginPass">Password</label>
+        <div class="login-field">
+          <span class="login-field-ic" aria-hidden="true">🔒</span>
+          <input type="password" id="loginPass" name="password" autocomplete="current-password" placeholder="Your password" required
+                 onkeyup="loginCapsHint(event)" onkeydown="loginCapsHint(event)">
+          <button type="button" class="login-eye" id="loginEye" onclick="toggleLoginPassword()" aria-label="Show password" title="Show password">👁</button>
+        </div>
+        <p class="login-caps hidden" id="loginCaps">⇪ Caps Lock is on</p>
+        <label class="login-remember" for="loginRemember">
+          <input type="checkbox" id="loginRemember">
+          <span class="login-remember-ui" aria-hidden="true"></span>
+          <span><b>Keep me signed in for 6 days</b><span class="small-note">Only on your own device</span></span>
+        </label>
+        <p class="login-error hidden" id="loginError" role="alert"></p>
+        <button type="submit" class="btn btn-navy login-btn" id="loginBtn">Sign in</button>
+        <a class="login-back" href="index.html">← Back to home</a>
+      </form>
+    </div>
   </section>
   <section id="screen-trainer" class="hidden">
     <div class="tabs">
-      <button class="tab trainer-only" data-tab="t-days" onclick="switchTrainerTab('t-days')">Training Days Setup</button>
-      <button class="tab trainer-only" data-tab="t-calendar" onclick="switchTrainerTab('t-calendar')">Calendar</button>
-      <button class="tab active" data-tab="t-attend" onclick="switchTrainerTab('t-attend')">Attendance</button>
-      <button class="tab trainer-only" data-tab="t-approvals" onclick="switchTrainerTab('t-approvals')">Approvals <span id="pendingDot"></span></button>
-      <button class="tab trainer-only" data-tab="t-analytics" onclick="switchTrainerTab('t-analytics')">Analytics &amp; Export</button>
-      <button class="tab trainer-only" data-tab="t-setup" onclick="switchTrainerTab('t-setup')">General Configurations</button>
-      <button class="tab reports-only hidden" data-tab="t-moodle" onclick="switchTrainerTab('t-moodle')">Moodle Reports</button>
-      <button class="tab reports-only hidden" data-tab="t-sap" onclick="switchTrainerTab('t-sap')">SAP Reports</button>
-      <button class="tab reports-only hidden" data-tab="t-repconf" onclick="switchTrainerTab('t-repconf')">Reports Configuration</button>
-      <button class="tab trainer-only hidden" data-tab="t-activity" onclick="switchTrainerTab('t-activity')">Activity Log</button>
+      <button class="tab" data-perm="days.view" data-tab="t-days" onclick="switchTrainerTab('t-days')">Training Days Setup</button>
+      <button class="tab" data-perm="calendar.view" data-tab="t-calendar" onclick="switchTrainerTab('t-calendar')">Calendar</button>
+      <button class="tab active" data-perm="attend.view" data-tab="t-attend" onclick="switchTrainerTab('t-attend')">Attendance</button>
+      <button class="tab" data-perm="approvals.view" data-tab="t-approvals" onclick="switchTrainerTab('t-approvals')">Approvals <span id="pendingDot"></span></button>
+      <button class="tab" data-perm="analytics.view" data-tab="t-analytics" onclick="switchTrainerTab('t-analytics')">Analytics &amp; Export</button>
+      <button class="tab" data-perm="setup.view" data-tab="t-setup" onclick="switchTrainerTab('t-setup')">General Configurations</button>
+      <button class="tab" data-perm="moodle.view" data-tab="t-moodle" onclick="switchTrainerTab('t-moodle')">Moodle Reports</button>
+      <button class="tab" data-perm="sap.view" data-tab="t-sap" onclick="switchTrainerTab('t-sap')">SAP Reports</button>
+      <button class="tab" data-perm="repconf.view" data-tab="t-repconf" onclick="switchTrainerTab('t-repconf')">Reports Configuration</button>
+      <button class="tab" data-perm="superadmin" data-tab="t-activity" onclick="switchTrainerTab('t-activity')">Activity Log</button>
+      <button class="tab" data-perm="superadmin" data-tab="t-perms" onclick="switchTrainerTab('t-perms')">Admins Permissions</button>
     </div>
 
     <!-- ATTENDANCE TAB -->
@@ -75,12 +102,12 @@
       <div class="section-head">
         <h2 id="trainerTableTitle">All Records</h2>
         <div class="row">
-          <button class="btn btn-outline btn-sm" onclick="openMergeModal()" title="Two online groups running at the same time were run as one session — record it">🔗 Merge Groups</button>
-          <button class="btn btn-outline btn-sm" onclick="openEditSelectedPharmacists()" title="Tick pharmacists in the table, then edit their details">✏️ Edit Selected</button>
+          <button class="btn btn-outline btn-sm" data-perm="attend.merge" onclick="openMergeModal()" title="Two online groups running at the same time were run as one session — record it">🔗 Merge Groups</button>
+          <button class="btn btn-outline btn-sm" data-perm="attend.edit" onclick="openEditSelectedPharmacists()" title="Tick pharmacists in the table, then edit their details">✏️ Edit Selected</button>
           <button class="btn btn-outline btn-sm" onclick="refreshTrainer()">↻ Refresh</button>
-          <button class="btn btn-navy btn-sm" onclick="exportAttendanceExcel()">⬇ Excel</button>
-          <button class="btn btn-navy btn-sm" onclick="exportTableImage('trainerCard','training-attendance')">📷 Image</button>
-          <button class="btn btn-navy btn-sm" onclick="exportTablePDF('trainerCard','training-attendance')">🖨 PDF</button>
+          <button class="btn btn-navy btn-sm" data-perm="attend.export" onclick="exportAttendanceExcel()">⬇ Excel</button>
+          <button class="btn btn-navy btn-sm" data-perm="attend.export" onclick="exportTableImage('trainerCard','training-attendance')">📷 Image</button>
+          <button class="btn btn-navy btn-sm" data-perm="attend.export" onclick="exportTablePDF('trainerCard','training-attendance')">🖨 PDF</button>
         </div>
       </div>
       <div id="trainerCard" class="card">
@@ -93,8 +120,8 @@
             <th onclick="toggleSort('trainer','date')">Date <span class="sort-ind" id="sort-trainer-date"></span></th>
             <th onclick="toggleSort('trainer','email')">Email <span class="sort-ind" id="sort-trainer-email"></span></th>
             <th onclick="toggleSort('trainer','displayName')">Pharmacist Name <span class="sort-ind" id="sort-trainer-displayName"></span></th>
-            <th class="col-export-skip" id="th-trainer-core" onclick="toggleSort('trainer','core')">Core Completion <span class="sort-ind" id="sort-trainer-core"></span></th>
-            <th class="col-export-skip" id="th-trainer-capsule" onclick="toggleSort('trainer','capsule')">Capsule Completion <span class="sort-ind" id="sort-trainer-capsule"></span></th>
+            <th class="col-export-skip col-core" id="th-trainer-core" onclick="toggleSort('trainer','core')">Core Completion <span class="sort-ind" id="sort-trainer-core"></span></th>
+            <th class="col-export-skip col-core" id="th-trainer-capsule" onclick="toggleSort('trainer','capsule')">Capsule Completion <span class="sort-ind" id="sort-trainer-capsule"></span></th>
             <th class="col-export-skip" onclick="toggleSort('trainer','attendance')">Attendance <span class="sort-ind" id="sort-trainer-attendance"></span></th>
             <th class="no-sort col-export-skip">Notes</th>
           </tr></thead>
@@ -106,7 +133,7 @@
         <h2>Merged Groups</h2>
         <div class="row">
           <label class="small-note"><input type="checkbox" id="mergesShowAll" onchange="renderMergesTable()"> Show unmerged too</label>
-          <button class="btn btn-navy btn-sm" onclick="exportMergesExcel()">⬇ Excel</button>
+          <button class="btn btn-navy btn-sm" data-perm="attend.export" onclick="exportMergesExcel()">⬇ Excel</button>
         </div>
       </div>
       <p class="small-note" style="margin-bottom:8px">Parallel online groups that were run as one session. Each group keeps its own pharmacists and attendance; the merge records who ran the combined session and how many attended in total.</p>
@@ -120,7 +147,7 @@
 
     <!-- GENERAL CONFIGURATIONS TAB -->
     <div id="t-setup" class="trainer-tab hidden">
-      <div class="card">
+      <div class="card" data-perm="setup.master">
         <div class="section-head" style="margin-top:0"><h2>Master Pharmacist Data (Excel Upload)</h2></div>
         <p class="small-note">Expected columns (name match is flexible): <b>District, Area Manager, City, Supervisor Name, Pharmacy No., User/Employee ID, Username (Email), Display Name (Pharmacist name), Phone number (Whatsapp), SCFHS</b> — plus optional <b>Date, Attendance Status, Work Shift, Notes</b>. The Master Sheet file from Analytics &amp; Export has exactly these columns, so it can be uploaded straight back.</p>
         <p class="small-note">Pharmacists already in the tool are recognised (by email, employee ID, or name + supervisor) and keep their training day and attendance; duplicate rows are skipped. You'll see a column-mapping preview and a summary before anything is saved.</p>
@@ -137,7 +164,7 @@
         <p class="small-note" id="completionSourceText"></p>
       </div>
 
-      <div class="card">
+      <div class="card" data-perm="setup.settings">
         <div class="section-head" style="margin-top:0"><h2>Capacity Setting</h2></div>
         <div class="row">
           <div><label class="field-label">Maximum Capacity per Day</label><input type="number" id="maxInput" style="width:100px"></div>
@@ -147,7 +174,7 @@
       </div>
 
       <div class="row" style="align-items:stretch;gap:16px;flex-wrap:wrap;">
-      <div class="card" style="flex:1;min-width:320px;margin-top:0;">
+      <div class="card" data-perm="setup.settings" style="flex:1;min-width:320px;margin-top:0;">
         <div class="section-head" style="margin-top:0"><h2>Trainers Roster</h2></div>
         <div class="row">
           <input type="text" id="newTrainerName" placeholder="Trainer name">
@@ -156,7 +183,7 @@
         <div class="row" style="margin-top:10px" id="trainerNamesList"></div>
       </div>
 
-      <div class="card" style="flex:1;min-width:320px;margin-top:0;">
+      <div class="card" data-perm="setup.settings" style="flex:1;min-width:320px;margin-top:0;">
         <div class="section-head" style="margin-top:0"><h2>Coordinators Roster</h2></div>
         <p class="small-note" style="margin-top:0">Coordinators are separate from trainers — this list feeds the "Coordinator" dropdown when adding or editing an online training day.</p>
         <div class="row">
@@ -167,7 +194,7 @@
       </div>
       </div>
 
-      <div class="card">
+      <div class="card" data-perm="setup.settings">
         <div class="section-head" style="margin-top:0"><h2>Training Names / Programs</h2></div>
         <p class="small-note">Reusable names you can pick from when adding a training day, instead of retyping.</p>
         <div class="row">
@@ -177,7 +204,7 @@
         <div class="row" style="margin-top:10px" id="trainingNamesList"></div>
       </div>
 
-      <div class="card">
+      <div class="card" data-perm="setup.settings">
         <div class="section-head" style="margin-top:0"><h2>City Roster</h2></div>
         <p class="small-note">The cities offered when adding or editing a training day. Link a city to one or more supervisors, and "Auto-select by city" (and the bulk "Assign a city" action) makes a day in that city visible to exactly those supervisors.</p>
         <div class="row">
@@ -197,9 +224,9 @@
         <div class="section-head" style="margin-top:0">
           <h2>Training Days</h2>
           <div class="row">
-            <button class="btn btn-navy btn-sm" onclick="openAddDayModal()">+ Add Training Day</button>
-            <button class="btn btn-outline btn-sm" onclick="hideAllDays()"><svg class="ico-eye-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Hide All</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteAllDays()">🗑 Delete All</button>
+            <button class="btn btn-navy btn-sm" data-perm="days.edit" onclick="openAddDayModal()">+ Add Training Day</button>
+            <button class="btn btn-outline btn-sm" data-perm="days.edit" onclick="hideAllDays()"><svg class="ico-eye-off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Hide All</button>
+            <button class="btn btn-danger btn-sm" data-perm="days.edit" onclick="deleteAllDays()">🗑 Delete All</button>
           </div>
         </div>
         <div class="filter-bar" id="daysFilterBar" style="margin-bottom:14px;"></div>
@@ -308,47 +335,32 @@
 
     <!-- ANALYTICS TAB -->
     <div id="t-analytics" class="trainer-tab hidden">
+      <section class="analytics-overview">
       <div class="section-head" style="margin-top:0">
         <h2>Overview</h2>
         <div class="row">
           <button class="btn btn-outline btn-sm" onclick="refreshAnalytics()">↻ Refresh</button>
         </div>
       </div>
+      <div class="card analytics-filters" data-perm="analytics.cards|analytics.master" id="analyticsFiltersCard">
+        <div class="small-note" style="margin-bottom:8px;">Filters apply to the status cards and the table below (and to the Breakdown further down).</div>
+        <div class="filter-bar" id="masterFilterBar" style="margin:0;"></div>
+      </div>
+      <div data-perm="analytics.cards">
       <div class="chip-row" id="globalChipsBig"></div>
       <div class="chip-row" id="globalChipsSmall" style="margin-top:6px;"></div>
-
-      <div class="card" style="margin-top:14px">
-        <div class="section-head" style="margin-top:0;cursor:pointer;" onclick="toggleBreakdown()">
-          <h2>Breakdown <span id="breakdownChevron" style="font-size:11px;display:inline-block;transition:transform .15s ease;">▸</span></h2>
-        </div>
-        <div id="breakdownBody" class="hidden">
-          <div class="row" style="margin-bottom:10px;">
-            <div class="dim-toggle" id="dimToggle">
-              <button class="btn btn-outline btn-sm active" data-dim="city" onclick="setAnalyticsDim('city')">By City</button>
-              <button class="btn btn-outline btn-sm" data-dim="district" onclick="setAnalyticsDim('district')">By District</button>
-              <button class="btn btn-outline btn-sm" data-dim="areaManager" onclick="setAnalyticsDim('areaManager')">By Area Manager</button>
-              <button class="btn btn-outline btn-sm" data-dim="supervisor" onclick="setAnalyticsDim('supervisor')">By Supervisor</button>
-            </div>
-            <button class="btn btn-outline btn-sm" id="pctToggleBtn" onclick="toggleAnalyticsPct()">Show as %</button>
-          </div>
-          <div class="table-wrap table-scroll"><table id="analyticsTable">
-            <thead><tr><th>#</th><th id="dimHeader">City</th><th>Total</th><th>Attended</th><th>Not Assigned</th><th>Assigned but Absent</th><th>Sick Leave</th><th>Annual Leave</th><th>Resignation</th><th>Promotion</th></tr></thead>
-            <tbody id="analyticsBody"></tbody>
-          </table></div>
-        </div>
       </div>
 
-      <div class="card" style="margin-top:14px" id="masterSheetPreviewCard">
+      <div class="card" data-perm="analytics.master" style="margin-top:14px" id="masterSheetPreviewCard">
         <div class="section-head" style="margin-top:0">
           <h2>Master Sheet Preview <span id="masterStatusTag"></span></h2>
           <div class="row">
             <span class="small-note">Reflects every change made so far.</span>
-            <button class="btn btn-navy btn-sm" onclick="exportMasterSheet()">⬇ Excel</button>
-            <button class="btn btn-navy btn-sm" onclick="exportTableImage('masterSheetPreviewCard','master-sheet')">📷 Image</button>
-            <button class="btn btn-navy btn-sm" onclick="exportTablePDF('masterSheetPreviewCard','master-sheet')">🖨 PDF</button>
+            <button class="btn btn-navy btn-sm" data-perm="analytics.export" onclick="exportMasterSheet()">⬇ Excel</button>
+            <button class="btn btn-navy btn-sm" data-perm="analytics.export" onclick="exportTableImage('masterSheetPreviewCard','master-sheet')">📷 Image</button>
+            <button class="btn btn-navy btn-sm" data-perm="analytics.export" onclick="exportTablePDF('masterSheetPreviewCard','master-sheet')">🖨 PDF</button>
           </div>
         </div>
-        <div class="filter-bar" id="masterFilterBar"></div>
         <div class="table-wrap table-scroll"><table id="masterSheetPreviewTable">
           <thead><tr>
             <th onclick="toggleSort('master','district')">District <span class="sort-ind" id="sort-master-district"></span></th>
@@ -370,6 +382,28 @@
           </tr></thead>
           <tbody id="masterSheetPreviewBody"></tbody>
         </table></div>
+      </div>
+      </section>
+
+      <div class="card" data-perm="analytics.cards" style="margin-top:14px">
+        <div class="section-head" style="margin-top:0;cursor:pointer;" onclick="toggleBreakdown()">
+          <h2>Breakdown <span id="breakdownChevron" style="font-size:11px;display:inline-block;transition:transform .15s ease;">▸</span></h2>
+        </div>
+        <div id="breakdownBody" class="hidden">
+          <div class="row" style="margin-bottom:10px;">
+            <div class="dim-toggle" id="dimToggle">
+              <button class="btn btn-outline btn-sm active" data-dim="city" onclick="setAnalyticsDim('city')">By City</button>
+              <button class="btn btn-outline btn-sm" data-dim="district" onclick="setAnalyticsDim('district')">By District</button>
+              <button class="btn btn-outline btn-sm" data-dim="areaManager" onclick="setAnalyticsDim('areaManager')">By Area Manager</button>
+              <button class="btn btn-outline btn-sm" data-dim="supervisor" onclick="setAnalyticsDim('supervisor')">By Supervisor</button>
+            </div>
+            <button class="btn btn-outline btn-sm" id="pctToggleBtn" onclick="toggleAnalyticsPct()">Show as %</button>
+          </div>
+          <div class="table-wrap table-scroll"><table id="analyticsTable">
+            <thead><tr><th>#</th><th id="dimHeader">City</th><th>Total</th><th>Attended</th><th>Not Assigned</th><th>Assigned but Absent</th><th>Sick Leave</th><th>Annual Leave</th><th>Resignation</th><th>Promotion</th></tr></thead>
+            <tbody id="analyticsBody"></tbody>
+          </table></div>
+        </div>
       </div>
     </div>
 
@@ -513,18 +547,27 @@
       </div>
 
       <div class="card rp-panel">
-        <details id="rpOnbDetails" ontoggle="if(this.open) rpLoadLearners()">
-          <summary><b>8. Onboarding learners</b> <span class="small-note">— people not in the roster yet, for completion reports only</span></summary>
-          <p class="small-note" style="margin-top:8px">They never appear in the supervisor page, Attendance, the Master Sheet or Analytics. If the same email is later added to the roster, the roster record is used. Shared by every course.</p>
-          <div class="row" style="gap:8px;margin:8px 0;">
-            <input type="file" id="rpOnbFile" accept=".xlsx,.xls,.csv" class="hidden" onchange="rpOnLearnersFile(this)">
-            <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('rpOnbFile').click()">⬆ Upload Excel (Master Sheet columns)</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="rpOpenAddLearner()">+ Add one person</button>
+        <details id="rpNirDetails" ontoggle="if(this.open) rpLoadNir()">
+          <summary><b>8. People not in the roster</b> <span class="small-note">— everyone in a published course whose email isn't in the roster</span></summary>
+          <p class="small-note" style="margin-top:8px">Collected from every published course. <b>Hide</b> removes the ticked people from the public reports page (tables and counts, in every course); their completion data is kept and <b>Unhide</b> shows them again. If an email later joins the roster, the roster record is used and the hide no longer applies.</p>
+          <div class="filter-bar" style="margin:8px 0;">
+            <div class="filter-field search-field"><div class="search-box"><span>🔍</span><input type="text" class="big-search-input" placeholder="Search name, email or course…" oninput="rpState.nirQ=this.value; rpRenderNir()"></div></div>
+            <div class="filter-field"><select onchange="rpState.nirFilter=this.value; rpRenderNir()" aria-label="Show">
+              <option value="all">Everyone</option><option value="visible">Shown in reports</option><option value="hidden">Hidden from reports</option>
+            </select></div>
+            <button type="button" class="btn btn-outline btn-sm" onclick="rpLoadNir()">↻ Refresh</button>
+            <button type="button" class="btn btn-navy btn-sm" onclick="rpNirDownload()">⬇ Download list</button>
           </div>
-          <div class="rp-note hidden" id="rpOnbMsg"></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Name</th><th>Email</th><th>District</th><th>Area Manager</th><th>City</th><th>Supervisor</th><th>Pharmacy No.</th><th>Employee ID</th><th>Added</th><th class="no-sort"></th></tr></thead>
-            <tbody id="rpOnbBody"></tbody>
+          <div class="row nir-actions" style="gap:8px;margin:0 0 8px;">
+            <span class="small-note" id="rpNirSummary"></span>
+            <span class="bulk-count" id="rpNirSelCount"></span>
+            <button type="button" class="btn btn-danger btn-sm" id="rpNirHideBtn" onclick="rpNirSetHidden(true)" disabled>🚫 Hide selected from reports</button>
+            <button type="button" class="btn btn-outline btn-sm" id="rpNirUnhideBtn" onclick="rpNirSetHidden(false)" disabled>👁 Unhide selected</button>
+            <button type="button" class="btn btn-outline btn-sm" id="rpNirClearBtn" onclick="rpState.nirSel.clear(); rpRenderNir()" disabled>Clear selection</button>
+          </div>
+          <div class="table-wrap table-scroll" style="max-height:520px;"><table>
+            <thead><tr><th class="sel-cell no-sort" id="rpNirSelHead"><input type="checkbox" id="rpNirAll" onclick="rpNirToggleAll(this.checked)" title="Select all shown"></th><th class="no-sort">Name (from the LMS)</th><th class="no-sort">Email</th><th class="no-sort">Courses</th><th class="no-sort">In reports</th><th class="no-sort">Hidden</th></tr></thead>
+            <tbody id="rpNirBody"></tbody>
           </table></div>
         </details>
       </div>
@@ -538,7 +581,7 @@
           <span class="small-note" id="rpShowNote"></span>
           <div class="row">
             <button type="button" class="btn btn-navy btn-sm" onclick="rpDownloadExcel()">⬇ Download Excel (local analysis)</button>
-            <button type="button" class="btn btn-ok btn-sm" id="rpPublishBtn" onclick="rpPublish()">⬆ Publish to course</button>
+            <button type="button" class="btn btn-ok btn-sm" data-perm="moodle.publish" id="rpPublishBtn" onclick="rpPublish()">⬆ Publish to course</button>
           </div>
         </div>
         <div class="card" id="rpTableCard">
@@ -562,8 +605,10 @@
 
     <!-- REPORTS CONFIGURATION TAB -->
     <div id="t-repconf" class="trainer-tab hidden">
+      <div data-perm="repconf.edit">
       <div class="section-head" style="margin-top:0"><h2>Track New Course Completion</h2></div>
       <div class="card" id="rpCfgFormCard"></div>
+      </div>
 
       <div class="section-head"><h2>Tracked courses</h2><button class="btn btn-outline btn-sm" onclick="rpLoadCourses(true)">↻ Refresh</button></div>
       <div class="card">
@@ -575,7 +620,7 @@
 
       <div class="section-head"><h2>Hub columns (Core / Capsule)</h2></div>
       <p class="small-note" style="margin-bottom:8px">Which course feeds the Attendance tab's <b>Core</b> and <b>Capsule</b> columns (and the supervisor page). You can change them at any time.</p>
-      <div class="card" id="rpSlotsCard"></div>
+      <div class="card" data-perm="repconf.slots" id="rpSlotsCard"></div>
     </div>
 
     <!-- ACTIVITY LOG TAB (super admin only) -->
@@ -605,6 +650,20 @@
           <button class="btn btn-outline btn-sm hidden" id="activityMoreBtn" onclick="loadActivity(true)">Load older…</button></div>
       </div>
     </div>
+
+    <!-- ADMINS PERMISSIONS TAB (super admin only) -->
+    <div id="t-perms" class="trainer-tab hidden">
+      <div class="section-head" style="margin-top:0">
+        <h2>Admins Permissions</h2>
+        <div class="row"><button class="btn btn-outline btn-sm" onclick="loadPermAccounts()">↻ Refresh</button></div>
+      </div>
+      <p class="small-note" style="margin-bottom:10px">Choose what each trainer and coordinator account can see and do — whole tabs, the sections inside them and their actions. Every account starts from its role's usual access; what you change here is saved for that account only, takes effect on their next page load, and is enforced by the server too.</p>
+      <div class="perm-layout">
+        <div class="card perm-accounts" id="permAccounts"><div class="small-note">Loading…</div></div>
+        <div class="card perm-editor" id="permEditor"><div class="empty-msg">Choose an account on the left</div></div>
+      </div>
+    </div>
+    <div id="noTabsNote" class="card empty-msg hidden">Your account has no tabs switched on. Ask the super admin (Admins Permissions).</div>
   </section>
 
 </main>

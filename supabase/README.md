@@ -34,9 +34,9 @@ Everyone on the training team has their own account, so every change is recorded
 
 | Username | Role | Can do |
 |---|---|---|
-| `UPC_TMD` | superadmin | everything, plus the Activity Log tab |
+| `UPC_TMD` | superadmin | everything, plus the Activity Log and Admins Permissions tabs |
 | `UPC_T1` … `UPC_T4` | trainer | everything except the Activity Log |
-| `UPC_Co`, `UPC_Co1`, `UPC_Co2` | coordinator | Attendance tab, Calendar (view only), Master Sheet Preview, Import Completion |
+| `UPC_Co`, `UPC_Co1`, `UPC_Co2` | coordinator | Attendance, Calendar (view only), Master Sheet Preview, Moodle / SAP Reports, Reports Configuration — from v6 the superadmin can change any account’s access in **Admins Permissions** |
 
 Passwords are **never stored** — only a one-way PBKDF2 hash of each one. To set or change passwords:
 1. Open `dev/password-hash.html` in your browser (double-click the file — it works offline and is blocked from the network).
@@ -159,3 +159,33 @@ supervisor gets only their own pharmacists' percentage. The roster no longer ret
 
 **Backup function:** adds the tabs **Courses** (without the public share link), **Course Progress**, **Course Uploads**
 and **Onboarding Learners**. Redeploy `backup` after `api`.
+
+---
+
+## v6 — Admins Permissions, own passwords, hidden report people
+
+**Database:** re-run [`schema.sql`](schema.sql). Its "v6" block creates:
+- `report_hidden`: people not in the roster who are hidden from the public reports.
+- `staff_accounts`: the app-side part of each admin account.
+
+Run it **before** deploying the new `api`. Then redeploy `api`, redeploy `backup`, and push the front end.
+
+**STAFF_ACCOUNTS stays.** It still decides who can sign in and with which role. `staff_accounts` only adds what the app changes:
+- a password the person chose (a PBKDF2 hash that replaces the secret's one);
+- a session version (raised by a password change, a reset or "Sign out everywhere", which ends every other session);
+- "must change password" after a reset;
+- the superadmin's permission switches.
+
+To add or remove a person, or change someone's role, edit `STAFF_ACCOUNTS` as before.
+
+| Action | Who |
+|---|---|
+| `changePassword {current, next}` | any admin, for their own account |
+| `adminAccounts`, `adminSetPerms`, `adminResetPassword`, `adminSignOut` | superadmin |
+| `notInRosterList` | "Moodle Reports" permission (superadmin + coordinators by default) |
+| `reportHideSet {emails, hidden}` | "Hide people" permission |
+
+**Forgotten superadmin password:** SQL Editor → `update staff_accounts set hash = null, must_change = false where username = 'UPC_TMD';`.
+The `STAFF_ACCOUNTS` password works again.
+
+**Keep me signed in:** a 6-day token, kept in that browser only. Tell people to use it only on their own device.

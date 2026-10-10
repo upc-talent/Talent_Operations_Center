@@ -7,7 +7,7 @@
 // app itself never talks to the Sheet — it is a one-way backup.
 //
 // Sheet layout: one tab per table (Pharmacists, Training Days, Approvals, Notifications, Settings, Courses, Course Progress,
-// Course Uploads, Onboarding Learners,
+// Course Uploads, Hidden From Reports, Admin Accounts (no password hashes),
 // Venues), each fully replaced on every run, plus a "Log" tab that gets one new row per run:
 // time, status, rows per table, and what changed since the previous backup — and an "Activity" tab that gets
 // the new Activity Log rows appended (never rewritten), so the who-did-what history also lives outside Supabase.
@@ -165,15 +165,14 @@ async function readTables(): Promise<Table[]> {
   return [pharmacists, trainingDays, approvals, notifications, settings, venues, ...(await readReportTables())];
 }
 
-/* Reports (v5): courses, their published completion rows, the publish audit, and onboarding learners.
+/* Reports (v5): courses, their published completion rows, the publish audit.
    Skipped (no tabs) until the v5 tables exist, so the backup keeps working before schema.sql is re-run. */
 async function readReportTables(): Promise<Table[]> {
-  let cs: any[], cp: any[], cu: any[], ll: any[];
+  let cs: any[], cp: any[], cu: any[];
   try {
     cs = await sql`select * from courses order by sort_order, name`;
     cp = await sql`select * from course_progress order by course_id, email`;
     cu = await sql`select * from course_uploads order by course_id, at`;
-    ll = await sql`select * from lms_learners order by email`;
   } catch (_) {
     console.log("[backup] reports tables not found — skipping the report tabs");
     return [];
@@ -199,11 +198,25 @@ async function readReportTables(): Promise<Table[]> {
       header: ["id", "course_id", "course", "at", "by", "files (json)", "stats (json)", "settings (json)"],
       rows: cu.map((r) => [r.id, r.course_id, courseName[r.course_id] || "", iso(r.at), r.by_user, r.files, r.stats, r.settings].map(cell)),
       ids: cu.map((r) => String(r.id)), names: cu.map((r) => (courseName[r.course_id] || r.course_id) + " " + iso(r.at)) },
-    { tab: "Onboarding Learners",
-      header: ["email", "display_name", "district", "area_manager", "city", "supervisor", "pharmacy_no", "employee_id", "note", "created_at", "created_by"],
-      rows: ll.map((r) => [r.email, r.display_name, r.district, r.area_manager, r.city, r.supervisor, r.pharmacy_no, r.employee_id, r.note,
-        iso(r.created_at), r.created_by].map(cell)),
-      ids: ll.map((r) => r.email), names: ll.map((r) => r.display_name || r.email) },
+  ].concat(await readV6Tables(iso));
+}
+/* v6: people hidden from the reports, and the app-side account settings (permissions, must-change flag). Password
+   hashes are never copied. Skipped until the v6 tables exist. */
+async function readV6Tables(iso: (v: any) => string): Promise<Table[]> {
+  let hid: any[], acc: any[];
+  try {
+    hid = await sql`select * from report_hidden order by email`;
+    acc = await sql`select username, session_version, must_change, perms, updated_at, updated_by from staff_accounts order by username`;
+  } catch (_) {
+    console.log("[backup] v6 tables not found — skipping their tabs");
+    return [];
+  }
+  return [
+    { tab: "Hidden From Reports", header: ["email", "hidden_by", "hidden_at"],
+      rows: hid.map((r) => [r.email, r.hidden_by, iso(r.hidden_at)].map(cell)), ids: hid.map((r) => r.email), names: hid.map((r) => r.email) },
+    { tab: "Admin Accounts", header: ["username", "session_version", "must_change", "permissions (json)", "updated_at", "updated_by"],
+      rows: acc.map((r) => [r.username, r.session_version, r.must_change ? "yes" : "no", r.perms, iso(r.updated_at), r.updated_by].map(cell)),
+      ids: acc.map((r) => r.username), names: acc.map((r) => r.username) },
   ];
 }
 

@@ -115,14 +115,23 @@
     init(mode) { API.mode = mode; },
     setSupervisor(name) { API.supervisor = name; },
 
-    hasToken() { try { return !!sessionStorage.getItem(TOKEN_KEY); } catch (e) { return false; } },
-    clearToken() { try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {} },
+    // The sign-in token lives in sessionStorage (this tab, 10 hours) — or, with "Keep me signed in", in localStorage
+    // (this browser, 6 days). The server decides how long it is valid either way.
+    getToken() {
+      try { return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
+    },
+    setToken(tok, remember) {
+      API.clearToken();
+      try { (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, tok); }
+      catch (e) { throw new Error('Your browser is blocking site storage.'); }
+    },
+    hasToken() { return !!API.getToken(); },
+    clearToken() { try { sessionStorage.removeItem(TOKEN_KEY); localStorage.removeItem(TOKEN_KEY); } catch (e) {} },
 
     async call(action, extra, quiet) {
       const body = Object.assign({ action }, extra || {});
       if (API.mode === 'trainer') {
-        let tok = null;
-        try { tok = sessionStorage.getItem(TOKEN_KEY); } catch (e) {}
+        const tok = API.getToken();
         if (tok) body.token = tok;
       } else if (API.supervisor) {
         body.supervisor = API.supervisor;
@@ -140,22 +149,38 @@
       return out;
     },
 
-    async login(username, password) {
-      const out = await transport({ action: 'login', username, password });
+    async login(username, password, remember) {
+      const out = await transport({ action: 'login', username, password, remember: !!remember });
       if (!out || out.ok === false) throw new Error((out && out.error) || 'Sign-in failed');
-      try { sessionStorage.setItem(TOKEN_KEY, out.token); } catch (e) { throw new Error('Your browser is blocking session storage.'); }
-      API.role = out.role || 'trainer';
+      API.setToken(out.token, !!out.remember);
+      API.applyMe(out);
       API.user = out.user || username;
       return true;
     },
-    logout() { API.clearToken(); API.role = null; API.user = null; },
+    applyMe(out) {
+      API.role = out.role || 'trainer'; API.user = out.user || null;
+      API.perms = out.perms || {}; API.mustChange = !!out.mustChange; API.remember = !!out.remember;
+    },
+    logout() { API.clearToken(); API.role = null; API.user = null; API.perms = {}; API.mustChange = false; },
+    // Own password (v6): the server checks the current one, signs out every other session and returns a fresh token.
+    async changePassword(current, next) {
+      const out = await API.call('changePassword', { current, next });
+      API.setToken(out.token, API.remember);
+      API.mustChange = false;
+      return true;
+    },
+    // Permission switches for this account (Admins Permissions, v6). The superadmin has everything.
+    perms: {},
+    mustChange: false,
+    remember: false,
+    can(key) { return API.role === 'superadmin' || !!(API.perms && API.perms[key]); },
     // 'superadmin' (everything + Activity Log), 'trainer' (everything else) or 'coordinator' (Attendance tab, Calendar
     // view, Master Sheet Preview, Import Completion) — known after sign-in / verifySession. `user` is the account name.
     role: null,
     user: null,
     async verifySession() {
       if (!API.hasToken()) return false;
-      try { const out = await API.call('me'); API.role = out.role || 'trainer'; API.user = out.user || null; return true; } catch (e) { return false; }
+      try { API.applyMe(await API.call('me')); return true; } catch (e) { return false; }
     },
     // Super admin only: one page (500 rows, newest first) of the Activity Log. filters = {from, to, user, act, q, before}
     async activity(filters) { return await API.call('activity', filters || {}); },

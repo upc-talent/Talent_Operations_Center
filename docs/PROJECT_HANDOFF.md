@@ -369,3 +369,73 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   4. Switch the courses to **Active**; pick Core / Capsule in Reports Configuration → Hub columns.
   5. In the old `LMS-reporting` repo, replace its page with a one-line "Moved → <Hub>/reports.html".
   6. Archive the Apps Script deployment and set the old Sheet to **Restricted** (its URL was public and exposed the roster).
+
+## v6 — permissions, passwords, report people, attendance tools
+
+- **Lock fix (R-1):** the lock always wins. A pharmacist who missed their training on a submitted or managed day no
+  longer gets the Date dropdown back; the supervisor rebooks them through Request Change (allowed now for failed
+  pharmacists too). Server: `patchOps` refuses any change to a locked assignment, `validateSupervisorAssignment` refuses
+  leaving a managed day, and `changeRequestAllowed` no longer excludes failed pharmacists. An unlocked absent pharmacist
+  on an editable day can still be rebooked directly. The note under the date reads "Missed the training — use Request Change".
+- **Supervisor page:** Core % / Capsule % columns, their export columns and the Retraining filter are gone. The page no
+  longer requests `course-slots`, and the server returns nothing for supervisors.
+- **Attendance tab:**
+  - Bulk "✔ Mark attendance" pop-up: Day 1 / Day 2 / both Attended, Day 1 / Day 2 / both Absent, with an optional
+    absence reason. One-day trainings use the Day 1 choices and skip the Day 2 ones. The split-day rules hold: Day 2
+    Attended needs Day 1 Attended; Day 1 Absent marks Day 2 Absent. People with no training day are skipped.
+  - New Attendance filter (`attStatusKey`): On Time, Late, Absent, Partial, Day 1 only, Not marked, No training day.
+- **Analytics & Export:** the filter bar moved to the top and applies to the cards, the Breakdown and the Master Sheet
+  Preview (`analyticsScope()` / `renderAnalyticsView()`). It has District, Area Manager, City, Supervisor, Type, Date,
+  Attendance, Work Shift and Retraining, all cascading.
+- **Moodle Reports section 8 — People not in the roster (replaces Onboarding learners):**
+  - `notInRosterList` returns everyone in any published course whose email isn't in the roster, with their courses.
+  - Bulk Hide / Unhide (`reportHideSet`) uses the new `report_hidden` table. A hidden person is left out of the public
+    page's tables and counts in every course (`mergedCourseRows(…, skipHidden)`). The staff export keeps them, marked
+    "(hidden from reports)".
+  - A hidden email that later joins the roster shows again, because the roster wins.
+  - "Download list" exports the filtered list to Excel.
+  - `lms_learners` is no longer read or written; the table is kept as old data, and the onboarding actions are removed.
+- **Public page — headcount sheet (from the old tool):** "Upload Headcount Sheet" reads an Excel or CSV in the browser
+  only; it is never uploaded. The header row is found automatically (Email / Username column, or else the column with
+  the most email addresses).
+  - "Headcount only" shows just those people. Sheet people missing from the course data appear as "No completion
+    data" / "Not in course data", with their details taken from the sheet. Details the course data lacks are also
+    filled in from the sheet.
+  - "Everyone" shows the normal view.
+  - The numbers, filters and exports follow the mode.
+  - It needs the course's Email column.
+- **Accounts (`staff_accounts` table):**
+  - Who exists, and their role, still come from `STAFF_ACCOUNTS`. A row adds `hash` (a password the person chose,
+    PBKDF2-SHA256 150k with a random salt), `session_version`, `must_change` and `perms` (overrides only).
+  - Tokens carry `sv`. A password change, a superadmin reset or "Sign out everywhere" raises `session_version`, which
+    signs out every other session. The account and role are re-checked against `STAFF_ACCOUNTS` on every request.
+  - "Keep me signed in" issues a 6-day token stored in `localStorage`. Otherwise the token lasts 10 hours and is kept
+    in `sessionStorage`.
+  - Change password (🔑 in the top bar) checks the current password, with wrong tries counting towards the sign-in
+    lockout. The new password needs 10+ characters, a letter and a number, and must not contain the username.
+  - Superadmin reset: the browser generates a temporary password, which is shown once. While `must_change` is set,
+    the server allows only `me` / `changePassword` until the person picks their own.
+  - If the superadmin forgets their own password, delete their `staff_accounts.hash` (SQL editor) to fall back to the
+    `STAFF_ACCOUNTS` hash.
+- **Admins Permissions tab (superadmin):** per-account switches, one per tab plus one per section or action inside it
+  (`PERM_TREE` in trainer.js, `PERM_KEYS` / `rolePerms` in index.ts).
+  - Role defaults reproduce the v5 access.
+  - A tab switched off turns off everything inside it.
+  - Server: `can()` / `requirePerm()` guard every action. `checkWritePerms` maps each kind of write to the
+    permissions whose screens make it (e.g. a booking change is accepted with Change dates, Edit Selected, Decide
+    requests, Master upload or Edit training days). Approval lists need `approvals.view`, and `course-slots` needs
+    `attend.coreCapsule`.
+  - Client: `data-perm="key|key2"` hides elements, and rows call `can()`. Body classes handle the rest:
+    `no-cal-edit`, `ro-days`, `ro-approvals`, `perm-export-full`, `no-core-capsule`.
+  - Changes take effect on the person's next page load and are logged as `permissions`.
+- **UI:** `main` is full width (no 1800 px cap), with a responsive gutter. The tab bar scrolls sideways on narrow
+  screens. The bulk bar sticks while scrolling. Buttons have focus and disabled states.
+- **Activity actions added:** `report_hide`, `report_unhide`, `password_change`, `password_change_failed`,
+  `password_reset`, `sign_out_all`, `permissions`.
+- **Backup:** new tabs "Hidden From Reports" and "Admin Accounts" (no hashes). "Onboarding Learners" is no longer written.
+- **Deploy v6:**
+  1. Run `schema.sql` (the v6 block creates `report_hidden` and `staff_accounts`).
+  2. Redeploy `api`, then `backup`.
+  3. Push the front end.
+
+  `STAFF_ACCOUNTS` stays as it is. Existing sessions keep working; everyone gets the new features on their next page load.

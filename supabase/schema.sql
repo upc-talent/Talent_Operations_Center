@@ -200,3 +200,29 @@ alter table courses         enable row level security;
 alter table course_progress enable row level security;
 alter table course_uploads  enable row level security;
 alter table lms_learners    enable row level security;
+
+-- ═════════ v6 — hidden report people, password changes, per-user permissions ═════════
+-- People who are NOT in the roster can be hidden from the public reports (Moodle Reports → section 8).
+-- A hidden email that later joins the roster shows again (the roster always wins).
+create table if not exists report_hidden (
+  email       text primary key,                                -- lowercase
+  hidden_by   text not null default '',
+  hidden_at   timestamptz not null default now()
+);
+alter table report_hidden enable row level security;
+
+-- Admins Dashboard accounts. WHO exists and their ROLE still come from the STAFF_ACCOUNTS secret; a row here only
+-- adds what the app itself changes: a password the person chose (PBKDF2 hash — never the password), a session
+-- version (raised on every password change / reset, which signs out every other session), "must change password"
+-- after a superadmin reset, and the superadmin's permission switches for that account.
+create table if not exists staff_accounts (
+  username        text primary key,                            -- exact (case-sensitive), as in STAFF_ACCOUNTS
+  hash            text,                                        -- null = use the STAFF_ACCOUNTS hash
+  session_version int  not null default 1,
+  must_change     boolean not null default false,
+  perms           jsonb not null default '{}'::jsonb,          -- {permissionKey: true|false} — overrides the role defaults
+  updated_at      timestamptz not null default now(),
+  updated_by      text not null default ''
+);
+alter table staff_accounts enable row level security;
+-- Onboarding learners (lms_learners) are no longer used from v6 on; the table and its rows are kept as old data.

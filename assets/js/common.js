@@ -189,8 +189,9 @@ let leaveRequestsCache = [];
 const K_COURSE_SLOTS = 'course-slots';
 let courseSlots = {core:null, capsule:null};
 async function loadCoreData(){
-  // one request for all of them (a single round-trip)
-  const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS, K_COURSE_SLOTS], {
+  // one request for all of them (a single round-trip). Core / Capsule course data is for the Admins Dashboard only.
+  const staff = !!API.role;
+  const r = await getSharedMany([K_MASTER, K_PENDING, K_CONFIG, K_OPS].concat(staff ? [K_COURSE_SLOTS] : []), {
     [K_MASTER]: [],
     [K_PENDING]: [],
     [K_CONFIG]: {dates:[], maxCapacity:30, trainerNames:[], coordinatorNames:[], trainingNames:[]},
@@ -293,9 +294,9 @@ function dayById(id){
 /* ═══════════════════════════════ MULTI-SELECT FILTER WIDGET ═══════════════════════════════ */
 let supFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), date:new Set(), retrain:new Set() };
 let supSearchQ = '';
-let trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set(), retrain:new Set() };
+let trainerFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set(), att:new Set(), retrain:new Set() };
 let trainerSearchQ = '';
-let masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), date:new Set() };
+let masterFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), type:new Set(), date:new Set(), att:new Set(), shift:new Set(), retrain:new Set() };
 let masterSearchQ = '';
 let daysFilterState = { city:new Set(), type:new Set(), date:new Set(), trainer:new Set(), visibleTo:new Set(), status:new Set() };
 let daysSearchQ = '';
@@ -316,7 +317,7 @@ function rerenderScope(scope){
   else if(scope==='sup') renderSupervisorTable();
   else if(scope==='trainer') renderTrainerTable();
   else if(scope==='days') renderDaysTable();
-  else renderMasterSheetPreview();
+  else renderAnalyticsView();
 }
 
 /* ═══════════════════════════════ BULK SELECTION (checkboxes + action bar) ═══════════════════════════════
@@ -399,9 +400,12 @@ function updateBulkBar(scope){
           + `<button class="btn btn-outline btn-sm" onclick="openBulkDaysModal('city')">🏙 City</button>`
           + `<button class="btn btn-danger btn-sm" onclick="bulkDays('delete')">🗑 Delete</button>`;
   } else {
-    html += `<select id="bulkAssignSelect-${scope}">${bulkAssignOptions(scope)}</select>`
+    // trainer page: each action shows only with its permission (Admins Permissions, v6)
+    const ok = k=>scope!=='trainer' || typeof can!=='function' || can(k);
+    if(ok('attend.assign')) html += `<select id="bulkAssignSelect-${scope}">${bulkAssignOptions(scope)}</select>`
           + `<button class="btn btn-navy btn-sm" onclick="bulkApplyAssign('${scope}')">Apply</button>`;
-    if(scope==='trainer') html += `<button class="btn btn-danger btn-sm" onclick="bulkDeletePharmacists()">🗑 Delete from roster</button>`;
+    if(scope==='trainer' && ok('attend.mark')) html += `<button class="btn btn-navy btn-sm" onclick="openBulkAttendanceModal()">✔ Mark attendance</button>`;
+    if(scope==='trainer' && ok('attend.delete')) html += `<button class="btn btn-danger btn-sm" onclick="bulkDeletePharmacists()">🗑 Delete from roster</button>`;
   }
   html += `<button class="btn btn-outline btn-sm" onclick="bulkClear('${scope}')">Clear</button>`;
   bar.innerHTML = html;
@@ -865,6 +869,26 @@ function attSummary(pid, p){
 function hasAttendedTraining(p){
   return attSummary(p.id, p).status==='Attended';
 }
+// Attendance status filter (Attendance tab, Analytics): one key per pharmacist.
+const ATT_FILTER_OPTIONS = [
+  {value:'onTime', text:'Attended — On Time'}, {value:'late', text:'Attended — Late'}, {value:'absent', text:'Absent'},
+  {value:'partial', text:'Partial (one day missed)'}, {value:'inProgress', text:'Day 1 attended, Day 2 not marked'},
+  {value:'notMarked', text:'Not marked yet'}, {value:'noDay', text:'No training day'}
+];
+function attStatusKey(p){
+  const a = ops.assignments[p.id];
+  if(!a || a.type!=='date') return 'noDay';
+  const s = attSummary(p.id, p);
+  if(s.status==='Attended') return s.punctuality==='Late' ? 'late' : 'onTime';
+  if(s.status==='Absent') return 'absent';
+  if(s.status==='Partial') return 'partial';
+  return s.inProgress ? 'inProgress' : 'notMarked';
+}
+const TYPE_FILTER_OPTIONS = [{value:'physical', text:'Physical'}, {value:'online', text:'Online'}];
+function pharmacistTypeKey(p){ return isOnlinePharmacist(p) ? 'online' : 'physical'; }
+const SHIFT_FILTER_OPTIONS = [{value:'Morning Shift', text:'Morning Shift'}, {value:'Night Shift', text:'Night Shift'}, {value:'none', text:'No shift'}];
+function shiftKey(p){ return (ops.shifts && ops.shifts[p.id]) || 'none'; }
+
 /* The three "Pharmacist status" cards (supervisor page, and the trainer's Analytics & Export tab). Clicking a card
    filters the table below it to that group; clicking it again (or ✕ / Clear Filters) shows everyone again. The
    rules here are the ones the card counts use, so a card's number always equals the rows it filters to. */

@@ -10,8 +10,11 @@
 // touches it, using the service_role's direct DB connection. Every change (and every sign-in) is written to
 // activity_log under the signed-in username — only the superadmin can read it.
 //
-// Roles: superadmin (everything + Activity Log) · trainer (everything else) · coordinator (Attendance tab,
-//        Calendar view, Master Sheet Preview, Import Completion — the old "admin" login).
+// Roles: superadmin (everything + Activity Log + Admins Permissions) · trainer · coordinator (the old "admin").
+//        From v6 each trainer / coordinator account has permission switches (role defaults + the superadmin's
+//        changes, kept in staff_accounts) that every action checks — see "Permissions" below. Admins can change their
+//        own password (stored as a PBKDF2 hash in staff_accounts; it replaces the STAFF_ACCOUNTS one), and
+//        "Keep me signed in" makes a 6-day token instead of 10 hours.
 //
 // Secrets to set (Dashboard → Edge Functions → Manage secrets, or `supabase secrets set`):
 //   STAFF_ACCOUNTS  JSON: {"UPC_TMD":{"role":"superadmin","hash":"pbkdf2$…"}, "UPC_T1":{"role":"trainer","hash":…}, …}
@@ -31,6 +34,7 @@ const sql = postgres(DB_URL, { prepare: false, max: 4, idle_timeout: 20, connect
 
 const CONFIG = {
   TOKEN_TTL_HOURS: 10,
+  REMEMBER_TTL_HOURS: 144,   // "Keep me signed in" = 6 days
   MAX_LOGIN_FAILS: 8,
   LOCKOUT_MINUTES: 10,
   DEFAULT_CAPACITY: 30,
@@ -84,26 +88,32 @@ async function route(req: any, ip = "unknown") {
   if (action === "reportsPublicCourse") { await publicRateLimit(ip); return await reportsPublicCourse(req.slug); }
   const ctx = await authenticate(req);
   switch (action) {
-    case "me": return { ok: true, role: ctx.role, who: ctx.who || null, user: ctx.role === "supervisor" ? null : ctx.user };
+    case "me": return { ok: true, role: ctx.role, who: ctx.who || null, user: ctx.role === "supervisor" ? null : ctx.user,
+                        ...(isStaff(ctx) ? { perms: ctx.perms, mustChange: !!ctx.mustChange, remember: !!ctx.remember } : {}) };
     case "get": return { ok: true, data: await getKey(ctx, req.key) };
     case "getMany": return { ok: true, data: await getMany(ctx, req.keys) };
     case "patch": return await patchKey(ctx, req);
-    case "venues": requireTrainer(ctx); return { ok: true, venues: await venues() };
+    case "venues": requirePerm(ctx, "days.view", "days.edit", "calendar.edit"); return { ok: true, venues: await venues() };
     case "submit": return await submitSupervisor(ctx);
     case "ping": return await pingPresence(ctx);
-    case "presence": requireTrainer(ctx); return { ok: true, ...(await presence()) };
+    case "presence": requirePerm(ctx, "presence.view"); return { ok: true, ...(await presence()) };
     case "activity": requireSuperadmin(ctx); return { ok: true, ...(await readActivity(req)) };
-    // Reports (v5) — Moodle Reports / Reports Configuration: superadmin + coordinator only (never trainers)
-    case "coursesList": requireReportsAdmin(ctx); return { ok: true, ...(await coursesList()) };
-    case "courseSave": requireReportsAdmin(ctx); return { ok: true, course: await courseSave(ctx, req.course) };
-    case "courseDelete": requireSuperadmin(ctx); await courseDelete(ctx, req.id); return { ok: true };
-    case "courseShareRotate": requireReportsAdmin(ctx); return { ok: true, shareSlug: await courseShareRotate(ctx, req.id) };
-    case "courseSlotsSet": requireReportsAdmin(ctx); await courseSlotsSet(ctx, req.coreCourseId, req.capsuleCourseId); return { ok: true };
-    case "coursePublish": requireReportsAdmin(ctx); return { ok: true, ...(await coursePublish(ctx, req)) };
-    case "courseExport": requireReportsAdmin(ctx); return { ok: true, ...(await courseExport(req.id, req.includeNoData)) };
-    case "lmsLearnersList": requireReportsAdmin(ctx); return { ok: true, learners: await lmsLearnersList() };
-    case "lmsLearnersUpsert": requireReportsAdmin(ctx); return { ok: true, ...(await lmsLearnersUpsert(ctx, req.rows)) };
-    case "lmsLearnersDelete": requireReportsAdmin(ctx); return { ok: true, deleted: await lmsLearnersDelete(ctx, req.emails) };
+    // Accounts (v6): own password; the superadmin's Admins Permissions tab
+    case "changePassword": return await changePassword(ctx, req);
+    case "adminAccounts": requireSuperadmin(ctx); return { ok: true, accounts: await adminAccounts(), keys: PERM_KEYS };
+    case "adminSetPerms": requireSuperadmin(ctx); return { ok: true, ...(await adminSetPerms(ctx, req)) };
+    case "adminResetPassword": requireSuperadmin(ctx); await adminResetPassword(ctx, req); return { ok: true };
+    case "adminSignOut": requireSuperadmin(ctx); await adminSignOut(ctx, req); return { ok: true };
+    // Reports (v5) — Moodle Reports / SAP Reports / Reports Configuration (by default superadmin + coordinators)
+    case "coursesList": requirePerm(ctx, "moodle.view", "sap.view", "repconf.view"); return { ok: true, ...(await coursesList()) };
+    case "courseSave": requirePerm(ctx, "repconf.edit"); return { ok: true, course: await courseSave(ctx, req.course) };
+    case "courseDelete": requirePerm(ctx, "repconf.delete"); await courseDelete(ctx, req.id); return { ok: true };
+    case "courseShareRotate": requirePerm(ctx, "repconf.edit"); return { ok: true, shareSlug: await courseShareRotate(ctx, req.id) };
+    case "courseSlotsSet": requirePerm(ctx, "repconf.slots"); await courseSlotsSet(ctx, req.coreCourseId, req.capsuleCourseId); return { ok: true };
+    case "coursePublish": requirePerm(ctx, "moodle.publish"); return { ok: true, ...(await coursePublish(ctx, req)) };
+    case "courseExport": requirePerm(ctx, "moodle.view", "repconf.view"); return { ok: true, ...(await courseExport(req.id, req.includeNoData)) };
+    case "notInRosterList": requirePerm(ctx, "moodle.view"); return { ok: true, people: await notInRosterList() };
+    case "reportHideSet": requirePerm(ctx, "moodle.hide"); return { ok: true, changed: await reportHideSet(ctx, req.emails, req.hidden) };
   }
   throw new Error("Unknown action");
 }
@@ -112,28 +122,91 @@ async function route(req: any, ip = "unknown") {
 // "coordinator" is the lower-access training-team login (the old "admin"): Attendance tab, Calendar (view only),
 // Master Sheet Preview and Import Completion. "trainer" has everything else; "superadmin" also reads the Activity Log.
 type StaffRole = "superadmin" | "trainer" | "coordinator";
-type Ctx = { role: StaffRole | "supervisor"; who?: string; user?: string };
+type Ctx = { role: StaffRole | "supervisor"; who?: string; user?: string; perms?: Record<string, boolean>; mustChange?: boolean;
+             remember?: boolean; sv?: number };
 const STAFF_ROLES: StaffRole[] = ["superadmin", "trainer", "coordinator"];
 const isStaff = (ctx: Ctx) => ctx.role !== "supervisor";
-function requireTrainer(ctx: Ctx) {
-  if (ctx.role !== "trainer" && ctx.role !== "superadmin") throw new Error("Trainer login required.");
-}
 function requireStaff(ctx: Ctx) {
   if (!isStaff(ctx)) throw new Error("Trainer login required.");
 }
 function requireSuperadmin(ctx: Ctx) {
   if (ctx.role !== "superadmin") throw new Error("Super admin login required.");
 }
-// Moodle Reports / Reports Configuration (v5): superadmin and coordinators only — trainers are refused.
-function requireReportsAdmin(ctx: Ctx) {
-  if (ctx.role !== "superadmin" && ctx.role !== "coordinator") throw new Error("Reports access required.");
+
+/* ═════════ Permissions (v6, "Admins Permissions" tab) ═════════
+   Every trainer / coordinator account has switches the superadmin can turn on or off. An account starts from its
+   role's defaults (below — the same access as before v6); staff_accounts.perms keeps only the switches that differ.
+   The superadmin always has everything. The page hides what is off, and the server refuses it (can / requirePerm). */
+const PERM_KEYS = [
+  "attend.view", "attend.assign", "attend.mark", "attend.edit", "attend.delete", "attend.merge", "attend.notes", "attend.export",
+  "attend.exportFull", "attend.coreCapsule",
+  "days.view", "days.edit",
+  "calendar.view", "calendar.edit",
+  "approvals.view", "approvals.decide",
+  "analytics.view", "analytics.cards", "analytics.master", "analytics.export",
+  "setup.view", "setup.master", "setup.settings",
+  "moodle.view", "moodle.publish", "moodle.hide",
+  "sap.view",
+  "repconf.view", "repconf.edit", "repconf.slots", "repconf.delete",
+  "presence.view",
+];
+const REPORT_PERMS = ["moodle.view", "moodle.publish", "moodle.hide", "sap.view", "repconf.view", "repconf.edit", "repconf.slots", "repconf.delete"];
+function rolePerms(role: string): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const k of PERM_KEYS) out[k] = true;
+  if (role === "trainer") {
+    for (const k of REPORT_PERMS) out[k] = false;
+    out["attend.exportFull"] = false;
+  } else if (role === "coordinator") {
+    for (const k of ["days.view", "days.edit", "calendar.edit", "approvals.view", "approvals.decide", "analytics.cards",
+      "setup.view", "setup.master", "setup.settings", "repconf.delete", "presence.view"]) out[k] = false;
+  }
+  return out;
 }
+function effectivePerms(role: string, overrides: any): Record<string, boolean> {
+  const out = rolePerms(role);
+  if (role === "superadmin") return out;
+  if (overrides && typeof overrides === "object") for (const k of PERM_KEYS) if (typeof overrides[k] === "boolean") out[k] = overrides[k];
+  // a tab switched off switches off everything inside it ("attend.mark" needs "attend.view", …)
+  for (const k of PERM_KEYS) {
+    const view = k.split(".")[0] + ".view";
+    if (k !== view && PERM_KEYS.indexOf(view) !== -1 && !out[view]) out[k] = false;
+  }
+  return out;
+}
+function can(ctx: Ctx, ...keys: string[]): boolean {
+  if (ctx.role === "superadmin") return true;
+  if (ctx.role === "supervisor" || !ctx.perms) return false;
+  return keys.some((k) => ctx.perms![k] === true);
+}
+function requirePerm(ctx: Ctx, ...keys: string[]) {
+  if (!can(ctx, ...keys)) throw new Error("Not available for this login — ask the super admin (Admins Permissions).");
+}
+
 const TOKEN_VERSION = 2;   // tokens from before the named accounts (v1) are refused → everyone signs in once more
+// The app-side account row (v6). Missing table (schema.sql not re-run yet) → no row, so everything works as before.
+async function accountRow(user: string): Promise<any | null> {
+  try {
+    const r = await sql`select * from staff_accounts where username = ${user}`;
+    return r.length ? r[0] : null;
+  } catch (_) { return null; }
+}
+// Actions allowed while a reset password still has to be changed.
+const MUST_CHANGE_OK = ["me", "changePassword"];
 async function authenticate(req: any): Promise<Ctx> {
   if (req.token) {
     const p = await verifyToken(req.token);
     if (!p || p.v !== TOKEN_VERSION || STAFF_ROLES.indexOf(p.r as StaffRole) === -1) throw new Error("Session expired — please sign in again.");
-    return { role: p.r as StaffRole, user: p.u };
+    // the account must still exist with that role (STAFF_ACCOUNTS), and the session must not have been ended by a
+    // password change / reset / "sign out everywhere" (session_version)
+    const acc = staffAccounts()[p.u];
+    if (!acc || acc.role !== p.r) throw new Error("Session expired — please sign in again.");
+    const row = await accountRow(p.u);
+    if (((row && row.session_version) || 1) !== (Number(p.sv) || 1)) throw new Error("Session expired — please sign in again.");
+    const ctx: Ctx = { role: acc.role, user: p.u, perms: effectivePerms(acc.role, row && row.perms), mustChange: !!(row && row.must_change),
+                       remember: !!p.rm, sv: Number(p.sv) || 1 };
+    if (ctx.mustChange && MUST_CHANGE_OK.indexOf(String(req.action)) === -1) throw new Error("Please choose a new password first.");
+    return ctx;
   }
   if (req.supervisor) {
     // Indexed existence check instead of pulling the whole distinct-supervisor list on every request.
@@ -182,12 +255,14 @@ async function sign(payload: string): Promise<string> {
   const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
   return b64urlFromBytes(new Uint8Array(sig));
 }
-async function makeToken(user: string, role: StaffRole): Promise<string> {
-  const exp = Date.now() + CONFIG.TOKEN_TTL_HOURS * 3600 * 1000;
-  const payload = b64urlFromBytes(encoder.encode(JSON.stringify({ u: user, e: exp, r: role, v: TOKEN_VERSION })));
+// "Keep me signed in" (v6): 6 days instead of 10 hours. sv = the account's session version (see authenticate).
+function tokenTtlHours(remember: boolean) { return remember ? CONFIG.REMEMBER_TTL_HOURS : CONFIG.TOKEN_TTL_HOURS; }
+async function makeToken(user: string, role: StaffRole, remember = false, sv = 1): Promise<string> {
+  const exp = Date.now() + tokenTtlHours(remember) * 3600 * 1000;
+  const payload = b64urlFromBytes(encoder.encode(JSON.stringify({ u: user, e: exp, r: role, v: TOKEN_VERSION, sv, ...(remember ? { rm: 1 } : {}) })));
   return payload + "." + (await sign(payload));
 }
-async function verifyToken(tok: unknown): Promise<{ u: string; e: number; r?: string; v?: number } | null> {
+async function verifyToken(tok: unknown): Promise<{ u: string; e: number; r?: string; v?: number; sv?: number; rm?: number } | null> {
   if (!tok || typeof tok !== "string") return null;
   const parts = tok.split(".");
   if (parts.length !== 2) return null;
@@ -251,7 +326,9 @@ async function login(req: any) {
     throw new Error("Too many failed attempts. Please try again in a few minutes.");
   }
   // usernames are matched exactly (case-sensitive), like the passwords
-  const acc = Object.prototype.hasOwnProperty.call(accounts, u) ? accounts[u] : undefined;
+  const base = Object.prototype.hasOwnProperty.call(accounts, u) ? accounts[u] : undefined;
+  const row = base ? await accountRow(u) : null;
+  const acc = withOwnPassword(base, row);
   if (!(await passwordMatches(acc, pw)) || !acc) {
     await kvPut(userKey, String(fails + 1), CONFIG.LOCKOUT_MINUTES * 60);
     await kvPut("login_fails_all", String(allFails + 1), CONFIG.LOCKOUT_MINUTES * 60);
@@ -261,8 +338,121 @@ async function login(req: any) {
     throw new Error("Invalid username or password.");
   }
   await kvRemove(userKey);
-  await logActivity([{ username: u, role: acc.role, action: "login", target_kind: "account", target_id: u, target_name: "", details: {} }]);
-  return { ok: true, token: await makeToken(u, acc.role), role: acc.role, user: u, ttlHours: CONFIG.TOKEN_TTL_HOURS };
+  const remember = req.remember === true;
+  await logActivity([{ username: u, role: acc.role, action: "login", target_kind: "account", target_id: u, target_name: "", details: remember ? { keepSignedIn: "6 days" } : {} }]);
+  return { ok: true, token: await makeToken(u, acc.role, remember, (row && row.session_version) || 1), role: acc.role, user: u,
+           ttlHours: tokenTtlHours(remember), remember, mustChange: !!(row && row.must_change),
+           perms: effectivePerms(acc.role, row && row.perms) };
+}
+// A password the person chose in the app (staff_accounts.hash) replaces the STAFF_ACCOUNTS one.
+function withOwnPassword(acc: Account | undefined, row: any): Account | undefined {
+  if (!acc) return acc;
+  return row && row.hash ? { role: acc.role, hash: row.hash } : acc;
+}
+async function hashPassword(pw: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iterations = 150000;
+  return "pbkdf2$" + iterations + "$" + b64urlFromBytes(salt) + "$" + b64urlFromBytes(await pbkdf2(pw, salt, iterations));
+}
+// Password rules: 10–128 characters, at least one letter and one number, not containing the username.
+function passwordProblem(pw: string, user: string): string {
+  if (pw.length < 10) return "The new password must be at least 10 characters.";
+  if (pw.length > 128) return "The new password is too long (128 characters at most).";
+  if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return "The new password needs at least one letter and one number.";
+  if (user && pw.toLowerCase().includes(user.toLowerCase())) return "The new password can't contain your username.";
+  if (/^(.)\1+$/.test(pw)) return "The new password is too simple.";
+  return "";
+}
+async function saveAccount(user: string, by: string, fields: { hash?: string; mustChange?: boolean; bump?: boolean; perms?: any }) {
+  const r = await sql`insert into staff_accounts (username, hash, session_version, must_change, perms, updated_by)
+    values (${user}, ${fields.hash ?? null}::text, ${fields.bump ? 2 : 1}, ${!!fields.mustChange}, ${sql.json(fields.perms || {})}, ${by})
+    on conflict (username) do update set
+      hash = coalesce(${fields.hash ?? null}::text, staff_accounts.hash),
+      session_version = staff_accounts.session_version + ${fields.bump ? 1 : 0},
+      must_change = ${fields.mustChange === undefined ? sql`staff_accounts.must_change` : !!fields.mustChange},
+      perms = ${fields.perms === undefined ? sql`staff_accounts.perms` : sql.json(fields.perms)},
+      updated_at = now(), updated_by = ${by}
+    returning session_version`;
+  return Number(r[0].session_version) || 1;
+}
+// Any signed-in staff member changes their own password: the current one is checked (wrong tries count towards the
+// same lockout as sign-in), every other session of that account is signed out, and this one gets a fresh token.
+async function changePassword(ctx: Ctx, req: any) {
+  requireStaff(ctx);
+  const u = ctx.user || "";
+  const cur = String(req.current || ""), next = String(req.next || "");
+  const userKey = "login_fails:" + u.toLowerCase().slice(0, 64);
+  const fails = Number((await kvGet(userKey)) || 0);
+  if (fails >= CONFIG.MAX_LOGIN_FAILS) throw new Error("Too many failed attempts. Please try again in a few minutes.");
+  const acc = withOwnPassword(staffAccounts()[u], await accountRow(u));
+  if (!acc || !(await passwordMatches(acc, cur))) {
+    await kvPut(userKey, String(fails + 1), CONFIG.LOCKOUT_MINUTES * 60);
+    await logActivity([act(ctx, "password_change_failed", "account", u, u, { reason: "wrong current password" })]);
+    await new Promise((r) => setTimeout(r, 1000));
+    throw new Error("Your current password is not correct.");
+  }
+  const problem = passwordProblem(next, u);
+  if (problem) throw new Error(problem);
+  if (next === cur) throw new Error("The new password must be different from the current one.");
+  if (acc.pass === undefined && await passwordMatches(acc, next)) throw new Error("The new password must be different from the current one.");
+  const sv = await saveAccount(u, u, { hash: await hashPassword(next), mustChange: false, bump: true });
+  await logActivity([act(ctx, "password_change", "account", u, u, {})]);
+  return { ok: true, token: await makeToken(u, ctx.role as StaffRole, !!ctx.remember, sv), ttlHours: tokenTtlHours(!!ctx.remember) };
+}
+
+/* ── Admins Permissions (superadmin) ── */
+function accountName(input: unknown): string {
+  const u = String(input || "");
+  const all = staffAccounts();
+  if (!Object.prototype.hasOwnProperty.call(all, u)) throw new Error("Unknown account.");
+  return u;
+}
+async function adminAccounts() {
+  const all = staffAccounts();
+  let rows: any[] = [];
+  try { rows = await sql`select username, hash is not null as own, session_version, must_change, perms, updated_at, updated_by from staff_accounts`; }
+  catch (_) { throw new Error("Run the v6 block of schema.sql first (staff_accounts table)."); }
+  const byUser: Record<string, any> = {};
+  for (const r of rows) byUser[r.username] = r;
+  const order: Record<string, number> = { superadmin: 0, trainer: 1, coordinator: 2 };
+  return Object.keys(all).sort((a, b) => (order[all[a].role] - order[all[b].role]) || a.localeCompare(b)).map((u) => {
+    const r = byUser[u] || {};
+    return { username: u, role: all[u].role, ownPassword: !!r.own, mustChange: !!r.must_change, overrides: r.perms || {},
+      defaults: rolePerms(all[u].role), perms: effectivePerms(all[u].role, r.perms), updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+      updatedBy: r.updated_by || "" };
+  });
+}
+async function adminSetPerms(ctx: Ctx, req: any) {
+  const u = accountName(req.username);
+  const role = staffAccounts()[u].role;
+  if (role === "superadmin") throw new Error("The super admin always has every permission.");
+  const want = req.perms && typeof req.perms === "object" ? req.perms : {};
+  const defaults = rolePerms(role), overrides: Record<string, boolean> = {};
+  for (const k of PERM_KEYS) if (typeof want[k] === "boolean" && want[k] !== defaults[k]) overrides[k] = want[k];
+  const before = effectivePerms(role, (await accountRow(u) || {}).perms);
+  await saveAccount(u, ctx.user || "", { perms: overrides });
+  const after = effectivePerms(role, overrides);
+  const changed: Record<string, [boolean, boolean]> = {};
+  for (const k of PERM_KEYS) if (before[k] !== after[k]) changed[k] = [before[k], after[k]];
+  if (Object.keys(changed).length) await logActivity([act(ctx, "permissions", "account", u, u, changed)]);
+  return { perms: after, overrides };
+}
+// A forgotten password: the superadmin sets a temporary one; the person must choose a new one at the next sign-in,
+// and every open session of that account is signed out.
+async function adminResetPassword(ctx: Ctx, req: any) {
+  const u = accountName(req.username);
+  if (u === ctx.user) throw new Error("Use Change password for your own account.");
+  const temp = String(req.temp || "");
+  const problem = passwordProblem(temp, u);
+  if (problem) throw new Error(problem.replace("The new password", "The temporary password"));
+  await saveAccount(u, ctx.user || "", { hash: await hashPassword(temp), mustChange: true, bump: true });
+  await kvRemove("login_fails:" + u.toLowerCase().slice(0, 64));
+  await logActivity([act(ctx, "password_reset", "account", u, u, {})]);
+}
+async function adminSignOut(ctx: Ctx, req: any) {
+  const u = accountName(req.username);
+  await saveAccount(u, ctx.user || "", { bump: true });
+  await logActivity([act(ctx, "sign_out_all", "account", u, u, {})]);
 }
 
 /* ═════════ Activity Log (append-only; the superadmin reads it) ═════════
@@ -395,11 +585,12 @@ async function getMany(ctx: Ctx, keys: string[]) {
   for (const k of keys) out[k] = await getKey(ctx, k);
   return out;
 }
-// The coordinator login only ever sees the Attendance tab: roster, operations and training days (plus the new-pharmacist
-// list the page loads with them, and the Core / Capsule course data the Attendance tab shows).
-const COORD_KEYS = ["master-pharmacists", "operations", "training-config", "pending-pharmacists", "group-merges", "course-slots"];
+// Every staff account reads the roster, operations, training days, new-pharmacist list and merges (most tabs need
+// them). The approval lists need "approvals.view"; the Core / Capsule data needs "attend.coreCapsule".
+const APPROVAL_KEYS = ["leave-requests", "quota-approval-history", "pharmacist-notifications", "change-requests", "supervisor-submissions", "data-edit-requests"];
 async function getKey(ctx: Ctx, key: string) {
-  if (ctx.role === "coordinator" && COORD_KEYS.indexOf(key) === -1) throw new Error("Not available for this login.");
+  if (isStaff(ctx) && APPROVAL_KEYS.indexOf(key) !== -1) requirePerm(ctx, "approvals.view", "approvals.decide");
+  if (isStaff(ctx) && key === "course-slots" && !can(ctx, "attend.coreCapsule")) return { records: [], settings: { core: null, capsule: null } };
   switch (key) {
     case "master-pharmacists": return await getMaster(ctx);
     case "operations": return await getOps(ctx);
@@ -410,7 +601,7 @@ async function getKey(ctx: Ctx, key: string) {
     case "quota-approval-history":
     case "pharmacist-notifications":
     case "change-requests": return await getTable(ctx, key);
-    case "supervisor-submissions": requireTrainer(ctx); return await getTable(ctx, key);
+    case "supervisor-submissions": requireStaff(ctx); return await getTable(ctx, key);
     case "group-merges": requireStaff(ctx); return await getTable(ctx, key);
     case "data-edit-requests": return await getTable(ctx, key);
     case "course-slots": return await getCourseSlots(ctx);
@@ -538,8 +729,7 @@ async function patchKey(ctx: Ctx, req: any) {
   const key = req.key;
   const records = req.records || {};
   const settings = req.settings || {};
-  // The coordinator writes only Attendance-tab data (the training config is read-only for it since v5 removed Import Completion).
-  if (ctx.role === "coordinator" && key !== "operations" && key !== "master-pharmacists" && key !== "group-merges") throw new Error("Not available for this login.");
+  if (isStaff(ctx)) checkWritePerms(ctx, key, records, settings);
   switch (key) {
     case "operations": {
       const stored = await patchOps(ctx, records);
@@ -547,19 +737,49 @@ async function patchKey(ctx: Ctx, req: any) {
     }
     case "master-pharmacists": requireStaff(ctx); await patchMaster(ctx, records); break;
     case "training-config": requireStaff(ctx); await patchConfig(ctx, records, settings); break;
-    case "company-logo": requireTrainer(ctx); await patchSettings({ logo: settings.logo === undefined ? null : settings.logo });
+    case "company-logo": requireStaff(ctx); await patchSettings({ logo: settings.logo === undefined ? null : settings.logo });
       await logActivity([act(ctx, "setting", "setting", "logo", "Company logo", { changed: settings.logo ? "updated" : "removed" })]); break;
     case "pending-pharmacists":
     case "leave-requests":
     case "change-requests":
     case "pharmacist-notifications": await patchTableGuarded(ctx, key, records); break;
     case "quota-approval-history":
-    case "supervisor-submissions": requireTrainer(ctx); await patchApprovals(ctx, key, records); break;
+    case "supervisor-submissions": requireStaff(ctx); await patchApprovals(ctx, key, records); break;
     case "group-merges": requireStaff(ctx); await patchMerges(ctx, records); break;
     case "data-edit-requests": await patchTableGuarded(ctx, key, records); break;
     default: throw new Error("Unknown data key.");
   }
   return { ok: true };
+}
+// Staff writes, by permission (v6). Several screens write the same data (e.g. a booking changes from Attendance, from an
+// approved request, from a roster upload or when a training day is deleted), so each kind of change accepts any of the
+// permissions whose screen makes it.
+const PERM_BOOKING = ["attend.assign", "attend.edit", "approvals.decide", "setup.master", "days.edit", "calendar.edit"];
+function checkWritePerms(ctx: Ctx, key: string, records: Record<string, any>, settings: Record<string, any>) {
+  const recs = Object.values(records || {});
+  const has = (o: any, k: string) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  switch (key) {
+    case "operations":
+      for (const r of recs) {
+        if (has(r, "a")) requirePerm(ctx, ...PERM_BOOKING);
+        if (has(r, "t") && r.t !== null && r.t !== undefined) requirePerm(ctx, "attend.mark", "setup.master");
+        if (has(r, "t") && (r.t === null || r.t === undefined)) requirePerm(ctx, "attend.mark", ...PERM_BOOKING);
+        if (has(r, "s")) requirePerm(ctx, "attend.assign", "attend.mark", "setup.master");
+      }
+      return;
+    case "master-pharmacists":
+      if (recs.some((r) => r === null)) requirePerm(ctx, "attend.delete", "setup.master");
+      if (recs.some((r) => r !== null)) requirePerm(ctx, "attend.edit", "attend.notes", "setup.master", "approvals.decide");
+      return;
+    case "training-config":
+      if (recs.length) requirePerm(ctx, "days.edit", "calendar.edit");
+      if (Object.keys(settings || {}).length) requirePerm(ctx, "setup.settings", "days.edit", "calendar.edit");
+      return;
+    case "company-logo": requirePerm(ctx, "setup.settings"); return;
+    case "group-merges": requirePerm(ctx, "attend.merge"); return;
+    default:   // the approval lists (requests, submissions, notifications, data edits)
+      requirePerm(ctx, "approvals.decide");
+  }
 }
 
 /* ---------- master roster (trainer only) ----------
@@ -725,9 +945,9 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
         if (hasAttended(curT) && (changing || has(rec, "t"))) {
           throw new Error("This pharmacist already attended their training — only the training team can change it.");
         }
-        // After Submit the choice is locked — except for a pharmacist who missed their training (Absent / Partial),
-        // who can be booked onto a new day the training team opened for this supervisor.
-        if (changing && curA && curA.locked && !isFailed(curT)) {
+        // After Submit the choice is locked — also for a pharmacist who missed their training (Absent / Partial):
+        // the lock always wins, so the supervisor rebooks them through Request Change.
+        if (changing && curA && curA.locked) {
           throw new Error("This pharmacist's date was submitted and is locked — use Request Change.");
         }
         if (changing) {
@@ -892,10 +1112,9 @@ function noDateSlotLocked(ctx: Ctx, row: any, days: Record<string, any>) {
 }
 // Request Change is allowed when the supervisor can't change the pharmacist themselves: the choice was submitted
 // (locked), their day is managed by the training team, or (no day yet) every day they could pick is managed.
-// A pharmacist who missed their training gets their dropdown back, so they don't need a request.
+// The lock always wins: a pharmacist who missed their training on a locked / managed day is rebooked this way too.
 function changeRequestAllowed(ctx: Ctx, row: any, days: Record<string, any>) {
   const a = row.assignment;
-  if (isFailed(row.attendance)) return false;
   if (a && a.locked) return true;
   if (a && a.type === "date") return readOnlyFor(days[a.dateId], ctx.who);
   return noDateSlotLocked(ctx, row, days);
@@ -905,7 +1124,7 @@ function validateSupervisorAssignment(ctx: Ctx, row: any, oldA: any, newA: any, 
     throw new Error("The training team manages your training days — use Request Change.");
   }
   if (oldA && oldA.type === "date" && !(newA && newA.type === "date" && newA.dateId === oldA.dateId)
-      && readOnlyFor(days[oldA.dateId], ctx.who) && !isFailed(curT)) {
+      && readOnlyFor(days[oldA.dateId], ctx.who)) {
     throw new Error("The training team manages that day — use Request Change.");
   }
   if (newA === null) return null;
@@ -1112,7 +1331,7 @@ function cleanDataEditChanges(changes: any, row: any) {
 }
 
 async function patchTableGuarded(ctx: Ctx, key: string, records: Record<string, any>) {
-  if (ctx.role === "trainer" || ctx.role === "superadmin") {
+  if (isStaff(ctx)) {   // "approvals.decide" was checked in patchKey
     if (key === "pharmacist-notifications") return await patchNotifications(records);
     return await patchApprovals(ctx, key, records);
   }
@@ -1174,7 +1393,7 @@ async function patchTableGuarded(ctx: Ctx, key: string, records: Record<string, 
 }
 
 /* ═════════════════════════════════════════ REPORTS (v5) ═════════════════════════════════════════
-   Course completion lives in courses / course_progress / course_uploads / lms_learners (schema.sql, "v5 — Reports").
+   Course completion lives in courses / course_progress / course_uploads (schema.sql, "v5 — Reports") and report_hidden (v6).
    - Staff: Moodle Reports parses the LMS sheets IN THE BROWSER and publishes computed rows (coursePublish); a publish
      replaces the course's rows. Reports Configuration manages courses, the public display and the Core/Capsule slots.
    - Public (reports.html, no login): reportsPublic (aggregates only) and reportsPublicCourse (the rows of one active
@@ -1402,12 +1621,9 @@ async function coursePublish(ctx: Ctx, req: any) {
   const emails = rows.map((r: any) => r.email);
   const rosterHit = await sql`select count(distinct lower(trim(email)))::int as n from pharmacists
                               where display_name <> '' and lower(trim(email)) = any(${emails}::text[])`;
-  const learnerHit = await sql`select count(*)::int as n from lms_learners l where l.email = any(${emails}::text[])
-                               and not exists (select 1 from pharmacists p where p.display_name <> '' and lower(trim(p.email)) = l.email)`;
   stats.stored = rows.length;
   stats.matchedRoster = rosterHit[0].n;
-  stats.matchedOnboarding = learnerHit[0].n;
-  stats.notInRoster = rows.length - rosterHit[0].n - learnerHit[0].n;
+  stats.notInRoster = rows.length - rosterHit[0].n;
   stats.unreadableTimestamps = stats.unreadableTimestamps || 0;
 
   await sql.begin(async (tx: any) => {
@@ -1433,51 +1649,52 @@ async function coursePublish(ctx: Ctx, req: any) {
 }
 
 /* ---------- the merge used by the export and the public page ----------
-   Every progress row resolves its person: the roster (pharmacists, by email) wins; else an onboarding learner
-   (lms_learners); else "Not in roster". With includeNoData, roster people missing from the upload are added as
-   "No completion data". Onboarding learners without progress are never listed. */
+   Every progress row resolves its person: the roster (pharmacists, by email) wins; else "Not in roster" (the name
+   from the LMS file). With includeNoData, roster people missing from the upload are added as "No completion data".
+   People not in the roster can be hidden from the reports (report_hidden, v6): the public page leaves them out of
+   its tables and counts (skipHidden); the staff export keeps them, marked hidden. A hidden email that later joins
+   the roster shows again — the roster always wins. */
 type MergedRow = {
   email: string; name: string; district: string; areaManager: string; city: string; supervisor: string;
-  flag: "roster" | "onboarding" | "not_in_roster" | "no_data"; p: any | null;
+  flag: "roster" | "not_in_roster" | "no_data"; hidden: boolean; p: any | null;
 };
-type PeopleRef = { byRoster: Map<string, any>; byLearner: Map<string, any> };
-async function rosterAndLearners(): Promise<PeopleRef> {
+type PeopleRef = { byRoster: Map<string, any>; hidden: Set<string> };
+async function peopleRef(): Promise<PeopleRef> {
   const roster = await sql`select lower(trim(email)) as email, display_name, district, area_manager, city, supervisor
                            from pharmacists where display_name <> '' and trim(email) <> '' order by created_at`;
-  const learners = await sql`select * from lms_learners`;
-  const byRoster = new Map<string, any>(), byLearner = new Map<string, any>();
+  const hid = await sql`select email from report_hidden`;
+  const byRoster = new Map<string, any>();
   for (const r of roster) if (!byRoster.has(r.email)) byRoster.set(r.email, r);
-  for (const l of learners) byLearner.set(l.email, l);
-  return { byRoster, byLearner };
+  return { byRoster, hidden: new Set<string>(hid.map((h: any) => h.email)) };
 }
-async function mergedCourseRows(courseId: string, includeNoData: boolean, ref?: PeopleRef) {
-  const { byRoster, byLearner } = ref || await rosterAndLearners();
+async function mergedCourseRows(courseId: string, includeNoData: boolean, ref?: PeopleRef, skipHidden = false) {
+  const { byRoster, hidden } = ref || await peopleRef();
   const prog = await sql`select * from course_progress where course_id = ${courseId}`;
   const out: MergedRow[] = [];
   const seen = new Set<string>();
   for (const p of prog) {
     seen.add(p.email);
-    const r = byRoster.get(p.email), l = !r ? byLearner.get(p.email) : null;
-    const who = r || l;
-    out.push({ email: p.email, name: (who && who.display_name) || p.lms_name || p.email,
-      district: who ? who.district : "", areaManager: who ? who.area_manager : "", city: who ? who.city : "", supervisor: who ? who.supervisor : "",
-      flag: r ? "roster" : (l ? "onboarding" : "not_in_roster"), p });
+    const r = byRoster.get(p.email);
+    const isHidden = !r && hidden.has(p.email);
+    if (isHidden && skipHidden) continue;
+    out.push({ email: p.email, name: (r && r.display_name) || p.lms_name || p.email,
+      district: r ? r.district : "", areaManager: r ? r.area_manager : "", city: r ? r.city : "", supervisor: r ? r.supervisor : "",
+      flag: r ? "roster" : "not_in_roster", hidden: isHidden, p });
   }
   if (includeNoData) {
     for (const [email, r] of byRoster) {
       if (seen.has(email)) continue;
-      out.push({ email, name: r.display_name, district: r.district, areaManager: r.area_manager, city: r.city, supervisor: r.supervisor, flag: "no_data", p: null });
+      out.push({ email, name: r.display_name, district: r.district, areaManager: r.area_manager, city: r.city, supervisor: r.supervisor, flag: "no_data", hidden: false, p: null });
     }
   }
   return out;
 }
 function aggregateOf(rows: MergedRow[]) {
   // modules = videos counted in the rate (the "N modules" badge on the public page)
-  const a = { total: rows.length, completed: 0, finalOnly: 0, inProgress: 0, notStarted: 0, noData: 0, notInRoster: 0, onboarding: 0, avgRate: 0, modules: 0 };
+  const a = { total: rows.length, completed: 0, finalOnly: 0, inProgress: 0, notStarted: 0, noData: 0, notInRoster: 0, avgRate: 0, modules: 0 };
   let sum = 0, n = 0;
   for (const r of rows) {
     if (r.flag === "not_in_roster") a.notInRoster++;
-    if (r.flag === "onboarding") a.onboarding++;
     if (!r.p) { a.noData++; continue; }
     const rate = Number(r.p.rate);
     sum += rate; n++;
@@ -1515,7 +1732,7 @@ async function courseExport(id: unknown, includeNoData: unknown) {
   const rows = merged.map((m) => {
     const p = m.p, sc = scheduleOf(p, c.deadline, now);
     return { name: m.name, email: m.email, district: m.district, areaManager: m.areaManager, city: m.city, supervisor: m.supervisor,
-      match: m.flag, sources: p ? p.sources : "", done: p ? p.done : null, total: p ? p.total : null, rate: p ? Number(p.rate) : null,
+      match: m.flag, hidden: m.hidden, sources: p ? p.sources : "", done: p ? p.done : null, total: p ? p.total : null, rate: p ? Number(p.rate) : null,
       state: p ? p.state : "No completion data", finalDone: p ? p.final_done : false, finalStatus: p ? p.final_status : "",
       finalAt: p ? isoOf(p.final_at) : null, finalAtRaw: p ? p.final_at_raw : "", latestAt: p ? isoOf(p.latest_at) : null,
       latestRaw: p ? p.latest_raw : "", missing: p ? p.missing : [], schedule: sc.schedule, scheduleDays: sc.days };
@@ -1523,58 +1740,44 @@ async function courseExport(id: unknown, includeNoData: unknown) {
   return { course: courseOut(c), lastUpload: last.length ? uploadOut(last[0]) : null, includeNoData: inc, rows };
 }
 
-/* ---------- staff: onboarding learners (completion reporting only — never part of the roster) ---------- */
-async function lmsLearnersList() {
-  const rows = await sql`select l.*, exists (select 1 from pharmacists p where p.display_name <> '' and lower(trim(p.email)) = l.email) as in_roster
-                         from lms_learners l order by l.created_at desc`;
-  return rows.map((r: any) => ({ email: r.email, displayName: r.display_name, district: r.district, areaManager: r.area_manager,
-    city: r.city, supervisor: r.supervisor, pharmacyNo: r.pharmacy_no, employeeId: r.employee_id, note: r.note,
-    createdAt: isoOf(r.created_at), createdBy: r.created_by, inRoster: !!r.in_roster }));
+/* ---------- staff: people not in the roster (v6, Moodle Reports section 8) ----------
+   Everyone in any published course whose email isn't in the roster, with the courses they appear in. The superadmin
+   and coordinators can hide them from the reports (public page tables and counts) or show them again. */
+async function notInRosterList() {
+  const rows = await sql`select cp.email, max(cp.lms_name) as name,
+                                array_agg(distinct coalesce(nullif(c.display_name, ''), c.name)) as courses,
+                                max(c.last_published_at) as last_seen, h.hidden_by, h.hidden_at
+                         from course_progress cp
+                         join courses c on c.id = cp.course_id
+                         left join report_hidden h on h.email = cp.email
+                         where not exists (select 1 from pharmacists p where p.display_name <> '' and lower(trim(p.email)) = cp.email)
+                         group by cp.email, h.hidden_by, h.hidden_at
+                         order by cp.email`;
+  return rows.map((r: any) => ({ email: r.email, name: r.name || "", courses: (r.courses || []).filter(Boolean).sort(),
+    lastSeen: isoOf(r.last_seen), hidden: !!r.hidden_at, hiddenBy: r.hidden_by || "", hiddenAt: isoOf(r.hidden_at) }));
 }
-async function lmsLearnersUpsert(ctx: Ctx, input: unknown) {
-  if (!Array.isArray(input) || !input.length) throw new Error("No learners to save.");
-  if (input.length > 5000) throw new Error("Too many learners in one go (more than 5000).");
-  const invalid: string[] = [], seen = new Set<string>(), clean: any[] = [];
-  for (const r of input) {
-    const email = String((r && r.email) ?? "").trim().toLowerCase();
-    if (!EMAIL_RE.test(email) || email.length > 254) { invalid.push(String((r && r.email) ?? "").slice(0, 100)); continue; }
-    if (seen.has(email)) continue;
-    seen.add(email);
-    clean.push({ email, display_name: str(r.displayName, 150), district: str(r.district, 100), area_manager: str(r.areaManager, 100),
-      city: str(r.city, 100), supervisor: str(r.supervisor, 150), pharmacy_no: str(r.pharmacyNo, 50), employee_id: str(r.employeeId, 50),
-      note: str(r.note, 500) });
-  }
-  const emails = clean.map((r) => r.email);
-  const inRoster: string[] = emails.length ? (await sql`select distinct lower(trim(email)) as email from pharmacists
-                     where display_name <> '' and lower(trim(email)) = any(${emails}::text[])`).map((r: any) => r.email) : [];
-  const rosterSet = new Set(inRoster);
-  const save = clean.filter((r) => !rosterSet.has(r.email));
-  if (save.length) {
-    await sql`insert into lms_learners (email, display_name, district, area_manager, city, supervisor, pharmacy_no, employee_id, note, created_by)
-              select x.email, x.display_name, x.district, x.area_manager, x.city, x.supervisor, x.pharmacy_no, x.employee_id, x.note, ${ctx.user || ""}
-              from jsonb_to_recordset(${sql.json(save as any)}::jsonb) as x(email text, display_name text, district text, area_manager text,
-                     city text, supervisor text, pharmacy_no text, employee_id text, note text)
-              on conflict (email) do update set display_name = excluded.display_name, district = excluded.district,
-                area_manager = excluded.area_manager, city = excluded.city, supervisor = excluded.supervisor,
-                pharmacy_no = excluded.pharmacy_no, employee_id = excluded.employee_id, note = excluded.note`;
-    await logActivity(save.map((r) => act(ctx, "lms_learner_save", "lms_learner", r.email, r.display_name, { supervisor: r.supervisor })));
-  }
+async function reportHideSet(ctx: Ctx, input: unknown, hide: unknown) {
+  const emails = [...new Set((Array.isArray(input) ? input : []).map((e) => String(e ?? "").trim().toLowerCase())
+    .filter((e) => EMAIL_RE.test(e) && e.length <= 254))].slice(0, 5000);
+  if (!emails.length) throw new Error("Choose at least one person.");
+  let changed: any[];
+  if (hide === true) {
+    changed = await sql`insert into report_hidden (email, hidden_by)
+                        select x, ${ctx.user || ""} from unnest(${emails}::text[]) as x
+                        on conflict (email) do nothing returning email`;
+  } else if (hide === false) {
+    changed = await sql`delete from report_hidden where email = any(${emails}::text[]) returning email`;
+  } else throw new Error("Invalid request.");
+  await logActivity(changed.map((r: any) => act(ctx, hide ? "report_hide" : "report_unhide", "person", r.email, r.email, {})));
   clearPublicCache();
-  return { saved: save.length, alreadyInRoster: inRoster, invalid };
-}
-async function lmsLearnersDelete(ctx: Ctx, input: unknown) {
-  const emails = Array.isArray(input) ? input.map((e) => String(e ?? "").trim().toLowerCase()).filter(Boolean).slice(0, 5000) : [];
-  if (!emails.length) throw new Error("No learners to delete.");
-  const gone = await sql`delete from lms_learners where email = any(${emails}::text[]) returning email, display_name`;
-  await logActivity(gone.map((r: any) => act(ctx, "lms_learner_delete", "lms_learner", r.email, r.display_name, {})));
-  clearPublicCache();
-  return gone.length;
+  return changed.length;
 }
 
 /* ---------- Core / Capsule for the Hub ("course-slots" read key) ----------
-   Staff get every row of the two courses ({s: state, r: rate, f: final_at, d: final_done}); a supervisor gets only
-   their own pharmacists, and only the percentage. */
+   Staff get every row of the two courses ({s: state, r: rate, f: final_at, d: final_done}); supervisors get nothing
+   (the supervisor page no longer shows Core / Capsule). */
 async function getCourseSlots(ctx: Ctx) {
+  if (ctx.role === "supervisor") return { records: [], settings: { core: null, capsule: null } };
   const st = await settingsMap();
   const slot = async (courseId: unknown) => {
     if (!courseId) return null;
@@ -1582,14 +1785,8 @@ async function getCourseSlots(ctx: Ctx) {
     if (!cs.length) return null;
     const c = cs[0];
     const byEmail: Record<string, any> = {};
-    if (ctx.role === "supervisor") {
-      const rows = await sql`select cp.email, cp.rate from course_progress cp where cp.course_id = ${c.id}
-                             and cp.email in (select lower(trim(email)) from pharmacists where supervisor = ${ctx.who} and trim(email) <> '')`;
-      for (const r of rows) byEmail[r.email] = { r: Number(r.rate) };
-    } else {
-      const rows = await sql`select email, state, rate, final_at, final_done from course_progress where course_id = ${c.id}`;
-      for (const r of rows) byEmail[r.email] = { s: r.state, r: Number(r.rate), f: isoOf(r.final_at), d: !!r.final_done };
-    }
+    const rows = await sql`select email, state, rate, final_at, final_done from course_progress where course_id = ${c.id}`;
+    for (const r of rows) byEmail[r.email] = { s: r.state, r: Number(r.rate), f: isoOf(r.final_at), d: !!r.final_done };
     return { courseId: c.id, name: c.display_name || c.name, lastPublishedAt: isoOf(c.last_published_at), byEmail };
   };
   return { records: [], settings: { core: await slot(st.coreCourseId), capsule: await slot(st.capsuleCourseId) } };
@@ -1636,11 +1833,11 @@ async function cachedPublic(key: string, build: () => Promise<any>) {
 async function reportsPublic() {
   return await cachedPublic("overview", async () => {
     const courses = await sql`select * from courses where active = true order by sort_order, lower(coalesce(nullif(display_name, ''), name))`;
-    const ref = await rosterAndLearners();
+    const ref = await peopleRef();
     const out: any[] = [];
     for (const c of courses) {
       const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
-      out.push(publicCourseHead(c, aggregateOf(await mergedCourseRows(c.id, !!d.includeRosterNoData, ref))));
+      out.push(publicCourseHead(c, aggregateOf(await mergedCourseRows(c.id, !!d.includeRosterNoData, ref, true))));
     }
     return { ok: true, generatedAt: new Date().toISOString(), courses: out };
   });
@@ -1654,7 +1851,7 @@ async function reportsPublicCourse(slug: unknown) {
     const c = cs[0];
     const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
     const cols = new Set<string>(d.columns || []);
-    const merged = await mergedCourseRows(c.id, !!d.includeRosterNoData);
+    const merged = await mergedCourseRows(c.id, !!d.includeRosterNoData, undefined, true);
     // Only the columns switched on in Reports Configuration are sent (server-side, not just hidden on screen).
     const rows = merged.map((m) => {
       const p = m.p;
