@@ -104,6 +104,9 @@ async function route(req: any, ip = "unknown") {
     case "adminSetPerms": requireSuperadmin(ctx); return { ok: true, ...(await adminSetPerms(ctx, req)) };
     case "adminResetPassword": requireSuperadmin(ctx); await adminResetPassword(ctx, req); return { ok: true };
     case "adminSignOut": requireSuperadmin(ctx); await adminSignOut(ctx, req); return { ok: true };
+    case "adminCreateUser": requireSuperadmin(ctx); await adminCreateUser(ctx, req); return { ok: true };
+    case "adminSetDisabled": requireSuperadmin(ctx); await adminSetDisabled(ctx, req); return { ok: true };
+    case "adminDeleteUser": requireSuperadmin(ctx); await adminDeleteUser(ctx, req); return { ok: true };
     // Reports (v5) — Moodle Reports / SAP Reports / Reports Configuration (by default superadmin + coordinators)
     case "coursesList": requirePerm(ctx, "moodle.view", "sap.view", "repconf.view"); return { ok: true, ...(await coursesList()) };
     case "courseSave": requirePerm(ctx, "repconf.edit"); return { ok: true, course: await courseSave(ctx, req.course) };
@@ -139,7 +142,7 @@ function requireSuperadmin(ctx: Ctx) {
    The superadmin always has everything. The page hides what is off, and the server refuses it (can / requirePerm). */
 const PERM_KEYS = [
   "attend.view", "attend.assign", "attend.mark", "attend.edit", "attend.delete", "attend.merge", "attend.notes", "attend.export",
-  "attend.exportFull", "attend.coreCapsule",
+  "attend.exportFull", "attend.coreCapsule", "attend.unsubmit",
   "days.view", "days.edit",
   "calendar.view", "calendar.edit",
   "approvals.view", "approvals.decide",
@@ -158,7 +161,7 @@ function rolePerms(role: string): Record<string, boolean> {
     for (const k of REPORT_PERMS) out[k] = false;
     out["attend.exportFull"] = false;
   } else if (role === "coordinator") {
-    for (const k of ["days.view", "days.edit", "calendar.edit", "approvals.view", "approvals.decide", "analytics.cards",
+    for (const k of ["attend.unsubmit", "days.view", "days.edit", "calendar.edit", "approvals.view", "approvals.decide", "analytics.cards",
       "setup.view", "setup.master", "setup.settings", "repconf.delete", "presence.view"]) out[k] = false;
   }
   return out;
@@ -199,9 +202,9 @@ async function authenticate(req: any): Promise<Ctx> {
     if (!p || p.v !== TOKEN_VERSION || STAFF_ROLES.indexOf(p.r as StaffRole) === -1) throw new Error("Session expired — please sign in again.");
     // the account must still exist with that role (STAFF_ACCOUNTS), and the session must not have been ended by a
     // password change / reset / "sign out everywhere" (session_version)
-    const acc = staffAccounts()[p.u];
-    if (!acc || acc.role !== p.r) throw new Error("Session expired — please sign in again.");
     const row = await accountRow(p.u);
+    const acc = accountFrom(p.u, row);
+    if (!acc || acc.role !== p.r || (row && row.disabled)) throw new Error("Session expired — please sign in again.");
     if (((row && row.session_version) || 1) !== (Number(p.sv) || 1)) throw new Error("Session expired — please sign in again.");
     const ctx: Ctx = { role: acc.role, user: p.u, perms: effectivePerms(acc.role, row && row.perms), mustChange: !!(row && row.must_change),
                        remember: !!p.rm, sv: Number(p.sv) || 1 };
@@ -298,6 +301,24 @@ function staffAccounts(): Record<string, Account> {
   if (au && ap) out[au] = { role: "coordinator", pass: ap };
   return out;
 }
+/* v7: the superadmin can also create accounts in the app. Those live only in staff_accounts (role + hash); the
+   STAFF_ACCOUNTS ones keep their role from the secret. A username can't be in both (the secret wins). */
+function accountFrom(user: string, row: any): Account | undefined {
+  const secret = staffAccounts();
+  if (Object.prototype.hasOwnProperty.call(secret, user)) return secret[user];
+  if (row && row.role && STAFF_ROLES.indexOf(row.role) !== -1) return { role: row.role as StaffRole };
+  return undefined;
+}
+async function allAccounts(): Promise<Record<string, Account & { app?: boolean }>> {
+  const out: Record<string, Account & { app?: boolean }> = { ...staffAccounts() };
+  try {
+    const rows = await sql`select username, role from staff_accounts where role is not null`;
+    for (const r of rows) {
+      if (!Object.prototype.hasOwnProperty.call(out, r.username) && STAFF_ROLES.indexOf(r.role) !== -1) out[r.username] = { role: r.role, app: true };
+    }
+  } catch (_) { /* v6/v7 schema not run yet — secret accounts only */ }
+  return out;
+}
 async function pbkdf2(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256));
@@ -315,8 +336,7 @@ async function passwordMatches(acc: Account | undefined, pw: string): Promise<bo
 }
 
 async function login(req: any) {
-  const accounts = staffAccounts();
-  if (!Object.keys(accounts).length) throw new Error("Staff accounts are not configured on the server (STAFF_ACCOUNTS secret).");
+  if (!Object.keys(staffAccounts()).length) throw new Error("Staff accounts are not configured on the server (STAFF_ACCOUNTS secret).");
   const u = String(req.username || "").trim(), pw = String(req.password || "");
   // Lockout is per username (8 wrong passwords → 10 minutes), plus an overall cap against guessing many usernames.
   const userKey = "login_fails:" + u.toLowerCase().slice(0, 64);
@@ -326,8 +346,8 @@ async function login(req: any) {
     throw new Error("Too many failed attempts. Please try again in a few minutes.");
   }
   // usernames are matched exactly (case-sensitive), like the passwords
-  const base = Object.prototype.hasOwnProperty.call(accounts, u) ? accounts[u] : undefined;
-  const row = base ? await accountRow(u) : null;
+  const row = u ? await accountRow(u) : null;
+  const base = u ? accountFrom(u, row) : undefined;
   const acc = withOwnPassword(base, row);
   if (!(await passwordMatches(acc, pw)) || !acc) {
     await kvPut(userKey, String(fails + 1), CONFIG.LOCKOUT_MINUTES * 60);
@@ -338,6 +358,8 @@ async function login(req: any) {
     throw new Error("Invalid username or password.");
   }
   await kvRemove(userKey);
+  // a switched-off account is told so only after the right password (no hint to someone guessing)
+  if (row && row.disabled) throw new Error("This account is switched off — ask the super admin.");
   const remember = req.remember === true;
   await logActivity([{ username: u, role: acc.role, action: "login", target_kind: "account", target_id: u, target_name: "", details: remember ? { keepSignedIn: "6 days" } : {} }]);
   return { ok: true, token: await makeToken(u, acc.role, remember, (row && row.session_version) || 1), role: acc.role, user: u,
@@ -384,7 +406,8 @@ async function changePassword(ctx: Ctx, req: any) {
   const userKey = "login_fails:" + u.toLowerCase().slice(0, 64);
   const fails = Number((await kvGet(userKey)) || 0);
   if (fails >= CONFIG.MAX_LOGIN_FAILS) throw new Error("Too many failed attempts. Please try again in a few minutes.");
-  const acc = withOwnPassword(staffAccounts()[u], await accountRow(u));
+  const row0 = await accountRow(u);
+  const acc = withOwnPassword(accountFrom(u, row0), row0);
   if (!acc || !(await passwordMatches(acc, cur))) {
     await kvPut(userKey, String(fails + 1), CONFIG.LOCKOUT_MINUTES * 60);
     await logActivity([act(ctx, "password_change_failed", "account", u, u, { reason: "wrong current password" })]);
@@ -401,30 +424,31 @@ async function changePassword(ctx: Ctx, req: any) {
 }
 
 /* ── Admins Permissions (superadmin) ── */
-function accountName(input: unknown): string {
+async function accountName(input: unknown): Promise<{ u: string; acc: Account & { app?: boolean } }> {
   const u = String(input || "");
-  const all = staffAccounts();
+  const all = await allAccounts();
   if (!Object.prototype.hasOwnProperty.call(all, u)) throw new Error("Unknown account.");
-  return u;
+  return { u, acc: all[u] };
 }
 async function adminAccounts() {
-  const all = staffAccounts();
+  const all = await allAccounts();
   let rows: any[] = [];
-  try { rows = await sql`select username, hash is not null as own, session_version, must_change, perms, updated_at, updated_by from staff_accounts`; }
-  catch (_) { throw new Error("Run the v6 block of schema.sql first (staff_accounts table)."); }
+  try { rows = await sql`select username, hash is not null as own, session_version, must_change, perms, disabled, created_at, created_by, updated_at, updated_by from staff_accounts`; }
+  catch (_) { throw new Error("Run the v6 and v7 blocks of schema.sql first (staff_accounts table)."); }
   const byUser: Record<string, any> = {};
   for (const r of rows) byUser[r.username] = r;
   const order: Record<string, number> = { superadmin: 0, trainer: 1, coordinator: 2 };
   return Object.keys(all).sort((a, b) => (order[all[a].role] - order[all[b].role]) || a.localeCompare(b)).map((u) => {
     const r = byUser[u] || {};
-    return { username: u, role: all[u].role, ownPassword: !!r.own, mustChange: !!r.must_change, overrides: r.perms || {},
-      defaults: rolePerms(all[u].role), perms: effectivePerms(all[u].role, r.perms), updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
-      updatedBy: r.updated_by || "" };
+    return { username: u, role: all[u].role, app: !!all[u].app, disabled: !!r.disabled, ownPassword: !!r.own, mustChange: !!r.must_change,
+      overrides: r.perms || {}, defaults: rolePerms(all[u].role), perms: effectivePerms(all[u].role, r.perms),
+      createdAt: all[u].app && r.created_at ? new Date(r.created_at).toISOString() : null, createdBy: all[u].app ? (r.created_by || "") : "",
+      updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null, updatedBy: r.updated_by || "" };
   });
 }
 async function adminSetPerms(ctx: Ctx, req: any) {
-  const u = accountName(req.username);
-  const role = staffAccounts()[u].role;
+  const { u, acc } = await accountName(req.username);
+  const role = acc.role;
   if (role === "superadmin") throw new Error("The super admin always has every permission.");
   const want = req.perms && typeof req.perms === "object" ? req.perms : {};
   const defaults = rolePerms(role), overrides: Record<string, boolean> = {};
@@ -440,7 +464,7 @@ async function adminSetPerms(ctx: Ctx, req: any) {
 // A forgotten password: the superadmin sets a temporary one; the person must choose a new one at the next sign-in,
 // and every open session of that account is signed out.
 async function adminResetPassword(ctx: Ctx, req: any) {
-  const u = accountName(req.username);
+  const { u } = await accountName(req.username);
   if (u === ctx.user) throw new Error("Use Change password for your own account.");
   const temp = String(req.temp || "");
   const problem = passwordProblem(temp, u);
@@ -450,9 +474,45 @@ async function adminResetPassword(ctx: Ctx, req: any) {
   await logActivity([act(ctx, "password_reset", "account", u, u, {})]);
 }
 async function adminSignOut(ctx: Ctx, req: any) {
-  const u = accountName(req.username);
+  const { u } = await accountName(req.username);
   await saveAccount(u, ctx.user || "", { bump: true });
   await logActivity([act(ctx, "sign_out_all", "account", u, u, {})]);
+}
+/* v7: new accounts made in the app. Trainer or coordinator only (a superadmin stays in STAFF_ACCOUNTS); the person
+   signs in with a temporary password shown once to the superadmin and must choose their own straight away. */
+const USERNAME_RE = /^[A-Za-z0-9_.-]{3,32}$/;
+async function adminCreateUser(ctx: Ctx, req: any) {
+  const u = String(req.username || "").trim();
+  if (!USERNAME_RE.test(u)) throw new Error("The username must be 3–32 characters: letters, numbers, _ . or -");
+  const role = String(req.role || "");
+  if (role !== "trainer" && role !== "coordinator") throw new Error("Choose the role: Trainer or Coordinator.");
+  const all = await allAccounts();
+  if (Object.keys(all).some((x) => x.toLowerCase() === u.toLowerCase())) throw new Error("That username is already taken.");
+  const old = await sql`select role from staff_accounts where lower(username) = lower(${u})`;
+  if (old.length) throw new Error("That username is already taken.");
+  const temp = String(req.temp || "");
+  const problem = passwordProblem(temp, u);
+  if (problem) throw new Error(problem.replace("The new password", "The temporary password"));
+  await sql`insert into staff_accounts (username, role, hash, session_version, must_change, perms, created_by, updated_by)
+            values (${u}, ${role}, ${await hashPassword(temp)}, 1, true, '{}'::jsonb, ${ctx.user || ""}, ${ctx.user || ""})`;
+  await logActivity([act(ctx, "user_create", "account", u, u, { role })]);
+}
+async function adminSetDisabled(ctx: Ctx, req: any) {
+  const { u, acc } = await accountName(req.username);
+  if (u === ctx.user) throw new Error("You can't switch off your own account.");
+  if (acc.role === "superadmin" && req.disabled) throw new Error("A super admin account can't be switched off here.");
+  const off = req.disabled === true;
+  await sql`insert into staff_accounts (username, disabled, session_version, updated_by) values (${u}, ${off}, 2, ${ctx.user || ""})
+            on conflict (username) do update set disabled = ${off}, updated_at = now(), updated_by = ${ctx.user || ""},
+              session_version = staff_accounts.session_version + ${off ? 1 : 0}`;
+  await logActivity([act(ctx, off ? "user_disable" : "user_enable", "account", u, u, {})]);
+}
+async function adminDeleteUser(ctx: Ctx, req: any) {
+  const { u, acc } = await accountName(req.username);
+  if (!acc.app) throw new Error("Only accounts made in the app can be deleted — switch this one off instead (it is in STAFF_ACCOUNTS).");
+  if (u === ctx.user) throw new Error("You can't delete your own account.");
+  await sql`delete from staff_accounts where username = ${u}`;
+  await logActivity([act(ctx, "user_delete", "account", u, u, { role: acc.role })]);
 }
 
 /* ═════════ Activity Log (append-only; the superadmin reads it) ═════════
@@ -961,8 +1021,13 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
         }
       } else {
         if (has(rec, "a")) {
-          // The training team's own changes keep a submitted pharmacist locked for their supervisor.
-          if (a && curA && curA.locked && !has(a, "locked")) a = { ...a, locked: true, lockedAt: curA.lockedAt || nowIso() };
+          // The training team's own changes keep a submitted pharmacist locked for their supervisor — unless they
+          // explicitly Unsubmit (locked: false, v7), which hands the choice back to the supervisor.
+          if (a && curA && curA.locked && a.locked === false) {
+            requirePerm(ctx, "attend.unsubmit");
+            if (hasAttended(curT)) throw new Error(row.display_name + " already attended — nothing to unsubmit.");
+          } else if (a && curA && curA.locked && !has(a, "locked")) a = { ...a, locked: true, lockedAt: curA.lockedAt || nowIso() };
+          if (a && a.locked === false) { a = { ...a }; delete a.locked; delete a.lockedAt; }
           // "who" comes from the signed-in account, never from what the page sent
           if (a && !sameAssignment(curA, a)) a = { ...a, assignedBy: ctx.user, assignedAt: a.assignedAt || nowIso() };
           bump(curA, sup, -1);
@@ -996,7 +1061,8 @@ async function patchOps(ctx: Ctx, records: Record<string, any>) {
       if (!sameJson(actT(curT), actT(t))) { from.t = actT(curT); to.t = actT(t); }
       if ((row.work_shift || "") !== s) { from.s = row.work_shift || ""; to.s = s; }
       if (Object.keys(to).length) {
-        const action = to.a !== undefined || from.a !== undefined ? "date" : (to.t !== undefined || from.t !== undefined ? "attendance" : "shift");
+        const unsub = !!(from.a && from.a.locked && to.a && !to.a.locked && sameAssignment(curA, a));
+        const action = unsub ? "unsubmit" : to.a !== undefined || from.a !== undefined ? "date" : (to.t !== undefined || from.t !== undefined ? "attendance" : "shift");
         logRows.push(act(ctx, action, "pharmacist", id, row.display_name, { from, to }));
       }
     }
@@ -1470,6 +1536,8 @@ function cleanDisplay(d: any, prev: any) {
   if (!d || typeof d !== "object") return out;
   if (Array.isArray(d.columns)) out.columns = DISPLAY_COLUMNS.filter((c) => d.columns.indexOf(c) !== -1);
   for (const k of ["showDeadline", "showDaysLeft", "includeRosterNoData"]) if (k in d) out[k] = !!d[k];
+  // card colour on the public page (v7): "#rrggbb", or "" for the default
+  if ("color" in d) out.color = /^#[0-9a-fA-F]{6}$/.test(String(d.color || "")) ? String(d.color).toLowerCase() : "";
   return out;
 }
 
@@ -1656,16 +1724,31 @@ async function coursePublish(ctx: Ctx, req: any) {
    the roster shows again — the roster always wins. */
 type MergedRow = {
   email: string; name: string; district: string; areaManager: string; city: string; supervisor: string;
-  flag: "roster" | "not_in_roster" | "no_data"; hidden: boolean; p: any | null;
+  flag: "roster" | "not_in_roster" | "no_data"; hidden: boolean; p: any | null; dateId?: string;
 };
 type PeopleRef = { byRoster: Map<string, any>; hidden: Set<string> };
 async function peopleRef(): Promise<PeopleRef> {
-  const roster = await sql`select lower(trim(email)) as email, display_name, district, area_manager, city, supervisor
+  const roster = await sql`select lower(trim(email)) as email, display_name, district, area_manager, city, supervisor, assignment
                            from pharmacists where display_name <> '' and trim(email) <> '' order by created_at`;
   const hid = await sql`select email from report_hidden`;
   const byRoster = new Map<string, any>();
   for (const r of roster) if (!byRoster.has(r.email)) byRoster.set(r.email, r);
   return { byRoster, hidden: new Set<string>(hid.map((h: any) => h.email)) };
+}
+const dateIdOf = (r: any) => (r && r.assignment && r.assignment.type === "date" ? String(r.assignment.dateId || "") : "");
+// "Online QAS - 11, 12 Oct 26" / "JED - 5 Oct 26": training name (online) or city, then the date (both days of a 2-day online training)
+function pubDayLabel(day: any): string {
+  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(String(day.date || ""))) return "";
+  const M = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const d1 = new Date(day.date + "T00:00:00Z"), yy = String(d1.getUTCFullYear()).slice(-2);
+  let txt = d1.getUTCDate() + " " + M[d1.getUTCMonth()] + " " + yy;
+  if (day.isOnline && day.onlineFormat === "split") {
+    const d2 = new Date(d1.getTime() + 864e5);
+    txt = d1.getUTCMonth() === d2.getUTCMonth() ? d1.getUTCDate() + ", " + d2.getUTCDate() + " " + M[d1.getUTCMonth()] + " " + yy
+      : d1.getUTCDate() + " " + M[d1.getUTCMonth()] + ", " + d2.getUTCDate() + " " + M[d2.getUTCMonth()] + " " + yy;
+  }
+  const where = day.isOnline ? (day.trainingName || "Online") : (day.city || day.trainingName || "");
+  return (where ? where + " - " : "") + txt;
 }
 async function mergedCourseRows(courseId: string, includeNoData: boolean, ref?: PeopleRef, skipHidden = false) {
   const { byRoster, hidden } = ref || await peopleRef();
@@ -1679,12 +1762,12 @@ async function mergedCourseRows(courseId: string, includeNoData: boolean, ref?: 
     if (isHidden && skipHidden) continue;
     out.push({ email: p.email, name: (r && r.display_name) || p.lms_name || p.email,
       district: r ? r.district : "", areaManager: r ? r.area_manager : "", city: r ? r.city : "", supervisor: r ? r.supervisor : "",
-      flag: r ? "roster" : "not_in_roster", hidden: isHidden, p });
+      flag: r ? "roster" : "not_in_roster", hidden: isHidden, p, dateId: dateIdOf(r) });
   }
   if (includeNoData) {
     for (const [email, r] of byRoster) {
       if (seen.has(email)) continue;
-      out.push({ email, name: r.display_name, district: r.district, areaManager: r.area_manager, city: r.city, supervisor: r.supervisor, flag: "no_data", hidden: false, p: null });
+      out.push({ email, name: r.display_name, district: r.district, areaManager: r.area_manager, city: r.city, supervisor: r.supervisor, flag: "no_data", hidden: false, p: null, dateId: dateIdOf(r) });
     }
   }
   return out;
@@ -1817,7 +1900,7 @@ function publicCourseHead(c: any, agg: any) {
   const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
   const head: any = { slug: c.share_slug, title: c.display_name || c.name, category: c.category, order: c.sort_order, source: c.source,
     lastPublishedAt: isoOf(c.last_published_at),
-    display: { columns: d.columns, showDeadline: !!d.showDeadline, showDaysLeft: !!d.showDaysLeft, includeRosterNoData: !!d.includeRosterNoData },
+    display: { columns: d.columns, showDeadline: !!d.showDeadline, showDaysLeft: !!d.showDaysLeft, includeRosterNoData: !!d.includeRosterNoData, color: d.color || "" },
     agg };
   // the deadline is sent when it is shown, or when Days Left needs it
   if (d.showDeadline || d.showDaysLeft) head.deadline = isoOf(c.deadline);
@@ -1852,6 +1935,7 @@ async function reportsPublicCourse(slug: unknown) {
     const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
     const cols = new Set<string>(d.columns || []);
     const merged = await mergedCourseRows(c.id, !!d.includeRosterNoData, undefined, true);
+    const days = await daysMap();   // every training day, visible to supervisors or hidden
     // Only the columns switched on in Reports Configuration are sent (server-side, not just hidden on screen).
     const rows = merged.map((m) => {
       const p = m.p;
@@ -1865,6 +1949,9 @@ async function reportsPublicCourse(slug: unknown) {
       if (cols.has("supervisor")) o.su = m.supervisor;
       if (cols.has("rate")) o.r = p ? Number(p.rate) : null;
       if (cols.has("completionDate")) o.f = p && p.final_done ? isoOf(p.final_at) : null;
+      // Training Date filter (v7): the roster person's booked training day — date (for sorting) and label
+      const day = m.dateId ? days[m.dateId] : null;
+      if (day && day.date) { o.td = String(day.date); o.tl = pubDayLabel(day); }
       return o;
     });
     return { ok: true, generatedAt: new Date().toISOString(), course: publicCourseHead(c, aggregateOf(merged)), rows };

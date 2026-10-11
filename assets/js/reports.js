@@ -16,11 +16,12 @@ const PUB_COLS = {   // display.columns key → table column
   state:{label:'State', f:'s'}, completionDate:{label:'Completion date', f:'f'}, daysLeft:{label:'Days Left'}
 };
 const PUB_COL_ORDER = ['num','district','areaManager','city','supervisor','name','email','rate','state','completionDate','daysLeft'];
+const PUB_NO_TDAY = '__none';   // Training Date filter: people with no training day
 const PUB_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 const pubState = { overview:null, course:null, slug:'', locked:false, offline:false, offlineAt:null, q:'', sortKey:'', sortDir:-1, rows:[], syncedAt:null,
   hc:null, hcMode:'hc' };   // hc = the uploaded headcount sheet (kept in this tab only, never sent anywhere)
-let pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set() };
+let pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set(), tdate:new Set() };
 let pubSearchTimer = null;
 
 /* ---------- small helpers ---------- */
@@ -125,7 +126,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   registerFilterScope('pub', ()=>pubFilterState, pubRenderTable);
   registerFilterFacets('pub', { items: ()=>pubBaseRows(), values: {
     district:x=>[x.di||''], areaManager:x=>[x.am||''], city:x=>[x.ci||''], supervisor:x=>[x.su||''],
-    state:x=>[x.s], match:x=>[x.fl], date:x=>[x.f ? pubDateText(x.f) : '']
+    state:x=>[x.s], match:x=>[x.fl], date:x=>[x.f ? pubDateText(x.f) : ''], tdate:x=>[x.tl || PUB_NO_TDAY]
   }});
   getShared('company-logo', null).then(logo=>{ if(logo) document.getElementById('logoBox').innerHTML = '<img alt="" src="'+String(logo).replace(/"/g,'')+'">'; }).catch(()=>{});
   const slug = new URLSearchParams(location.search).get('c');
@@ -194,6 +195,9 @@ function pubNotesHtml(a){
   if(a.notInRoster) notes.push(`${a.notInRoster} not in the roster`);
   return notes.length ? `<div class="small-note pub-card-note">${esc(notes.join(' · '))}</div>` : '';
 }
+// The course colour chosen in Reports Configuration (v7) — a coloured band on its card, so people find it fast.
+function pubColor(c){ const v = c && c.display && c.display.color; return /^#[0-9a-f]{6}$/i.test(v||'') ? v : ''; }
+function pubColorAttr(c){ const v = pubColor(c); return v ? ` has-color" style="--course-color:${v}"` : '"'; }
 function pubModulesBadge(a){ return a && a.modules ? `<span class="pub-modules">${a.modules} module${a.modules===1?'':'s'}</span>` : ''; }
 function pubAggOfRows(rows, base){
   const a = {total:rows.length, completed:0, finalOnly:0, inProgress:0, notStarted:0, noData:0, notInRoster:0, avgRate:0, modules:(base && base.modules)||0};
@@ -226,7 +230,7 @@ function pubShowOverview(){
   grid.innerHTML = courses.length ? courses.map(c=>{
     const a = c.agg;
     const dl = c.display && c.display.showDeadline && c.deadline ? `<div class="small-note">Deadline: ${esc(pubDateTimeText(c.deadline))} KSA</div>` : '';
-    return `<div class="card pub-card">
+    return `<div class="card pub-card${pubColorAttr(c)}>
       <div class="pub-card-head">
         <div>${c.category ? `<span class="pub-cat">${esc(c.category)}</span>` : ''}<h3>${esc(c.title)}</h3></div>
         ${pubModulesBadge(a)}
@@ -259,7 +263,7 @@ async function pubOpenCourse(slug){
   pubState.course = out.course;
   pubState.rows = out.rows || [];
   if(!keepFilters){
-    pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set() };
+    pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set(), tdate:new Set() };
     pubState.q = '';
     const cols = pubVisibleCols();
     pubState.sortKey = cols.includes('rate') ? 'rate' : (cols.includes('name') ? 'name' : '');
@@ -299,7 +303,10 @@ function pubRenderSummary(){
   if(c.display.showDeadline && c.deadline) meta.push('Deadline: '+esc(pubDateTimeText(c.deadline))+' KSA');
   if(pubHcActive()) meta.push('📋 Headcount: '+esc(pubState.hc.fileName));
   const hasData = !!c.lastPublishedAt;
-  document.getElementById('pubSummary').innerHTML = `
+  const sumEl = document.getElementById('pubSummary');
+  sumEl.style.setProperty('--course-color', pubColor(c) || 'var(--navy)');
+  sumEl.classList.toggle('has-color', !!pubColor(c));
+  sumEl.innerHTML = `
     <div class="pub-card-head"><div><h2>${esc(c.title)}</h2>${meta.length ? `<div class="small-note">${meta.join(' · ')}</div>` : ''}</div>${pubModulesBadge(c.agg)}</div>
     ${hasData ? pubStatBoxesHtml(a) + pubProgressHtml(a.avgRate) + pubNotesHtml(a) : ''}
     <div class="pub-updated">${hasData ? `<i class="dot"></i>Updated ${esc(pubAgo(c.lastPublishedAt))}` : ''}</div>`;
@@ -440,7 +447,15 @@ function pubBuildFilterBar(){
   if(cols.has('supervisor')) html += renderMsFilter('pub','supervisor','Supervisor', values('su'));
   if(cols.has('completionDate')){
     const dates = [...new Set(rows.filter(x=>x.f).map(x=>x.f.slice(0,10)+'|'+pubDateText(x.f)))].sort().map(v=>({value:v.split('|')[1], text:v.split('|')[1]}));
-    html += renderMsFilter('pub','date','Date', [...new Map(dates.map(o=>[o.value,o])).values()]);
+    html += renderMsFilter('pub','date','Completion Date', [...new Map(dates.map(o=>[o.value,o])).values()]);
+  }
+  // Training Date (v7): the day each roster person is booked on in the Admins Dashboard — visible or hidden days alike
+  if(rows.some(x=>x.tl)){
+    const seen = new Map();
+    rows.filter(x=>x.tl).sort((a,b)=>String(a.td).localeCompare(String(b.td))).forEach(x=>{ if(!seen.has(x.tl)) seen.set(x.tl, {value:x.tl, text:x.tl}); });
+    const opts = [...seen.values()];
+    if(rows.some(x=>!x.tl)) opts.push({value:PUB_NO_TDAY, text:'No training day'});
+    html += renderMsFilter('pub','tdate','Training Date', opts);
   }
   html += renderMsFilter('pub','state','Status', PUB_STATES.filter(s=>rows.some(x=>x.s===s)).map(s=>({value:s, text:s})));
   html += renderMsFilter('pub','match','Roster match', Object.keys(PUB_MATCH).filter(k=>rows.some(x=>x.fl===k)).map(k=>({value:k, text:PUB_MATCH[k]})));
@@ -449,7 +464,7 @@ function pubBuildFilterBar(){
 }
 function pubOnSearch(v){ clearTimeout(pubSearchTimer); pubSearchTimer = setTimeout(()=>{ pubState.q = v; pubRenderTable(); }, 200); }
 function pubClearFilters(){
-  pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set() };
+  pubFilterState = { district:new Set(), areaManager:new Set(), city:new Set(), supervisor:new Set(), state:new Set(), match:new Set(), date:new Set(), tdate:new Set() };
   pubState.q = '';
   pubBuildFilterBar();
   pubRenderTable();
@@ -459,7 +474,7 @@ function pubView(){
   const out = pubBaseRows().filter(x=>
     (!q || String(x.n||'').toLowerCase().includes(q) || String(x.e||'').toLowerCase().includes(q))
     && inSet(x.di||'', fs.district) && inSet(x.am||'', fs.areaManager) && inSet(x.ci||'', fs.city) && inSet(x.su||'', fs.supervisor)
-    && inSet(x.s, fs.state) && inSet(x.fl, fs.match) && inSet(x.f ? pubDateText(x.f) : '', fs.date));
+    && inSet(x.s, fs.state) && inSet(x.fl, fs.match) && inSet(x.f ? pubDateText(x.f) : '', fs.date) && inSet(x.tl || PUB_NO_TDAY, fs.tdate));
   const k = pubState.sortKey, d = pubState.sortDir, dl = pubState.course.deadline;
   if(!k) return out;
   const val = x=>{

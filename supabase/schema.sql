@@ -226,3 +226,11 @@ create table if not exists staff_accounts (
 );
 alter table staff_accounts enable row level security;
 -- Onboarding learners (lms_learners) are no longer used from v6 on; the table and its rows are kept as old data.
+
+-- ═════════ v7 — accounts made in the app ═════════
+-- The superadmin can create trainer / coordinator accounts in the app (Admins Permissions → Add user) and switch any
+-- account off. An app account has a role here; a STAFF_ACCOUNTS one leaves role empty (its role comes from the secret).
+alter table staff_accounts add column if not exists role       text;
+alter table staff_accounts add column if not exists disabled   boolean not null default false;
+alter table staff_accounts add column if not exists created_at timestamptz not null default now();
+alter table staff_accounts add column if not exists created_by text not null default '';

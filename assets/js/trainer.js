@@ -2533,7 +2533,7 @@ function trainerRowCells(p, rownum){
       ${bulkCheckboxCell('trainer', p.id)}
       <td><span class="rownum">${rownum}</span>${cityCellHtml(p)}</td>
       <td>${esc(p.supervisor)}</td>
-      <td class="no-truncate">${dateCellHtml(p, can('attend.assign'), days, 'onTrainerAssignChange')}</td>
+      <td class="no-truncate">${dateCellHtml(p, can('attend.assign'), days, 'onTrainerAssignChange')}${submittedTagHtml(p)}</td>
       <td class="email-cell">${esc(p.email||'—')}</td>
       <td class="name-cell">${esc(p.displayName)}</td>
       <td class="col-export-skip col-core">${courseSlotCellHtml(p, 'core')}</td>
@@ -2972,8 +2972,71 @@ async function renderSubmissions(){
       <td>${s.dates||0}</td>
       <td>${s.leaves||0}</td>
       <td>${s.unassigned||0}</td>
-      <td class="no-truncate">${s.status==='New' ? `<button class="btn btn-outline btn-sm" onclick="markSubmissionSeen('${s.id}')">✓ Seen</button>` : '<span class="small-note">Seen</span>'}</td>
+      <td class="no-truncate">${s.status==='New' ? `<button class="btn btn-outline btn-sm" onclick="markSubmissionSeen('${s.id}')">✓ Seen</button>` : '<span class="small-note">Seen</span>'}
+        ${can('attend.unsubmit') ? `<button class="btn btn-outline btn-sm ro-ok" title="Hand days back to this supervisor so they can edit again" onclick="openUnsubmitForSupervisor('${esc(s.supervisor)}')">🔓 Unsubmit…</button>` : ''}</td>
     </tr>`).join('');
+}
+/* ═══════════════════════════════ UNSUBMIT (v7) ═══════════════════════════════
+   A supervisor's Submit locks their choices. The training team can hand chosen pharmacists back (per pharmacist, in
+   bulk on the Attendance tab, or per day from a submission in Approvals): the date / status stays, but the supervisor
+   can change it again and Submit again — no Request Change needed. Attended pharmacists stay with the training team.
+   This is separate from a training day's "Editable" switch: a pharmacist on a day that isn't editable for their
+   supervisor stays managed by the training team even after Unsubmit. */
+function isSubmittedLocked(pid){ const a = ops.assignments[pid]; return !!(a && a.locked); }
+function submittedTagHtml(p){
+  if(!isSubmittedLocked(p.id)) return '';
+  const btn = can('attend.unsubmit') && !hasAttendedTraining(p)
+    ? ` <button type="button" class="link-btn" title="Let the supervisor change this choice again" onclick="unsubmitPharmacists(['${p.id}'])">Unsubmit</button>` : '';
+  return `<div class="small-note submitted-tag" title="The supervisor submitted this choice — they can't change it unless you unsubmit it">🔒 Submitted${btn}</div>`;
+}
+function managedNote(ids){
+  const n = ids.filter(pid=>{
+    const p = masterData.find(m=>m.id===pid), a = ops.assignments[pid];
+    const d = a && a.type==='date' ? dayById(a.dateId) : null;
+    return p && d && (d.readOnlySupervisors||[]).includes(p.supervisor);
+  }).length;
+  return n ? ` ${n} of them are on a day that isn't Editable for their supervisor, so they stay managed by the training team until you tick Editable on that day.` : '';
+}
+async function unsubmitPharmacists(ids, skipConfirm){
+  if(!can('attend.unsubmit')){ toast('Not available for this login','err'); return false; }
+  const list = ids.filter(pid=>isSubmittedLocked(pid)).filter(pid=>{ const p = masterData.find(m=>m.id===pid); return p && !hasAttendedTraining(p); });
+  if(!list.length){ toast('None of these are submitted (or they already attended) — nothing to unsubmit','info'); return false; }
+  if(!skipConfirm){
+    const go = await confirmDialog(`Unsubmit ${list.length} pharmacist(s)? Their date or status stays, but their supervisor can change it again and Submit again.` + managedNote(list));
+    if(!go) return false;
+  }
+  list.forEach(pid=>{ ops.assignments[pid] = {...ops.assignments[pid], locked:false}; delete ops.assignments[pid].lockedAt; });
+  bulkSel.trainer.clear();
+  renderTrainerTable();
+  const ok = await setShared(K_OPS, ops);
+  if(ok) toast(`${list.length} pharmacist(s) unsubmitted — their supervisor can edit them again`,'ok');
+  return ok;
+}
+function bulkUnsubmit(){ return unsubmitPharmacists([...bulkSel.trainer]); }
+// From a submission in Approvals: pick which days (or statuses) of that supervisor to hand back.
+function openUnsubmitForSupervisor(sup){
+  const groups = {};
+  masterData.filter(p=>p.supervisor===sup && isSubmittedLocked(p.id) && !hasAttendedTraining(p)).forEach(p=>{
+    const a = ops.assignments[p.id];
+    const key = a.type==='date' ? 'date:'+a.dateId : 'leave:'+a.status;
+    (groups[key] = groups[key] || {key, ids:[], text: a.type==='date' ? (dayById(a.dateId) ? shortDayText(dayById(a.dateId)) : '(deleted day)') : a.status,
+      sort: a.type==='date' ? ((dayById(a.dateId)||{}).date || '9') : 'z'+a.status}).ids.push(p.id);
+  });
+  const list = Object.values(groups).sort((a,b)=>a.sort.localeCompare(b.sort));
+  if(!list.length){ toast(`Nothing of ${sup}'s is locked by Submit right now`,'info'); return; }
+  window._unsubGroups = list;
+  showModal(`<h3>Unsubmit — ${esc(sup)}</h3>
+    <p class="small-note" style="margin-top:-6px;">Tick the days (or statuses) to hand back. The supervisor can then change those pharmacists and Submit again. Attended pharmacists are not listed.</p>
+    <div class="bulk-att-choices">${list.map((g,i)=>`<label class="bulk-att-choice"><input type="checkbox" class="unsub-cb" value="${i}" checked> ${esc(g.text)} <span class="small-note" style="margin-left:auto">${g.ids.length} pharmacist(s)</span></label>`).join('')}</div>
+    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-navy btn-sm" onclick="applyUnsubmitGroups()">🔓 Unsubmit ticked</button></div>`, 'max-width:520px;');
+}
+async function applyUnsubmitGroups(){
+  const ids = [...document.querySelectorAll('.unsub-cb:checked')].flatMap(cb=>window._unsubGroups[+cb.value].ids);
+  if(!ids.length){ toast('Tick at least one day','info'); return; }
+  closeModal();
+  await loadCoreData();   // act on the latest state
+  await unsubmitPharmacists(ids);
 }
 async function markSubmissionSeen(id){
   submissionsCache = await getShared(K_SUBMISSIONS, []);
@@ -3903,7 +3966,8 @@ const ACTIVITY_LABELS = {
   lms_learner_save:'Onboarding learner saved', lms_learner_delete:'Onboarding learner removed',
   report_hide:'Hidden from reports', report_unhide:'Shown in reports again', password_change:'Password changed',
   password_change_failed:'Password change refused', password_reset:'Password reset (temporary)', sign_out_all:'Signed out everywhere',
-  permissions:'Permissions changed'
+  permissions:'Permissions changed', unsubmit:'Unsubmitted (handed back to the supervisor)', user_create:'Account created',
+  user_disable:'Account switched off', user_enable:'Account switched on', user_delete:'Account deleted'
 };
 const ROLE_NAMES = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'Coordinator', supervisor:'Supervisor'};
 function ksaTime(isoStr){
@@ -4130,7 +4194,8 @@ const PERM_TREE = [
     ['attend.notes','Notes','Type notes on pharmacists'],
     ['attend.coreCapsule','Core / Capsule columns','Course completion columns in the table'],
     ['attend.export','Exports','Excel / Image / PDF of the table and merged groups'],
-    ['attend.exportFull','Full export','Exports include completion, attendance, late time and notes']]},
+    ['attend.exportFull','Full export','Exports include completion, attendance, late time and notes'],
+    ['attend.unsubmit','Unsubmit','Hand submitted pharmacists back to their supervisor so they can edit again']]},
   {tab:'Training Days Setup', view:'days.view', items:[['days.edit','Edit training days','Add, edit, hide, delete, bulk actions']]},
   {tab:'Calendar', view:'calendar.view', items:[['calendar.edit','Edit the calendar','Add, import, drag to reschedule, undo / redo']]},
   {tab:'Approvals', view:'approvals.view', items:[['approvals.decide','Decide requests','Approve / reject submissions, changes, data edits, quota, leave, new pharmacists']]},
@@ -4163,7 +4228,7 @@ function renderPermAccounts(){
     <button type="button" class="perm-acc${permSel===a.username?' active':''}" onclick="selectPermAccount('${esc(a.username)}')">
       <b>${esc(a.username)}</b><span class="small-note">${esc(ROLE_LABELS[a.role]||a.role)}</span>
       <span class="perm-acc-tags">${a.role==='superadmin' ? '<span class="rp-tag ok">everything</span>' : (permChangedCount(a) ? `<span class="rp-tag mid">${permChangedCount(a)} changed</span>` : '<span class="rp-tag grey">role defaults</span>')}
-        ${a.mustChange ? '<span class="rp-tag no">must change password</span>' : ''}</span>
+        ${a.mustChange ? '<span class="rp-tag no">must change password</span>' : ''}${a.disabled ? '<span class="rp-tag no">switched off</span>' : ''}${a.app ? '<span class="rp-tag grey" title="Made in the app">app account</span>' : ''}</span>
     </button>`).join('') || '<div class="small-note">No accounts</div>';
 }
 function selectPermAccount(user){
@@ -4187,11 +4252,14 @@ function renderPermEditor(){
   el.innerHTML = `
     <div class="perm-head">
       <div><h3 style="margin:0">${esc(a.username)} <span class="small-note">· ${esc(ROLE_LABELS[a.role]||a.role)}</span></h3>
-        <div class="small-note">${a.ownPassword ? 'Uses a password they chose' : 'Uses the password from the server settings'}${a.updatedAt ? ' · last changed '+esc(ksaTime(a.updatedAt))+' KSA'+(a.updatedBy?' by '+esc(a.updatedBy):'') : ''}</div></div>
+        ${a.disabled ? '<div class="rp-note warn" style="margin:6px 0">This account is switched off — it can\'t sign in.</div>' : ''}
+        <div class="small-note">${a.app ? 'Made in the app'+(a.createdBy?' by '+esc(a.createdBy):'')+' · ' : ''}${a.ownPassword ? 'Uses a password they chose' : 'Uses the password from the server settings'}${a.updatedAt ? ' · last changed '+esc(ksaTime(a.updatedAt))+' KSA'+(a.updatedBy?' by '+esc(a.updatedBy):'') : ''}</div></div>
       <div class="row">
         ${self ? '<button class="btn btn-outline btn-sm" onclick="openChangePassword()">🔑 Change my password</button>' : `
         <button class="btn btn-outline btn-sm" onclick="openResetPassword('${esc(a.username)}')">🔑 Reset password</button>
-        <button class="btn btn-outline btn-sm" onclick="permSignOutEverywhere('${esc(a.username)}')">⎋ Sign out everywhere</button>`}
+        <button class="btn btn-outline btn-sm" onclick="permSignOutEverywhere('${esc(a.username)}')">⎋ Sign out everywhere</button>
+        ${sa ? '' : `<button class="btn btn-outline btn-sm" onclick="permSetDisabled('${esc(a.username)}', ${!a.disabled})">${a.disabled ? '⏻ Switch on' : '⏻ Switch off'}</button>`}
+        ${a.app ? `<button class="btn btn-danger btn-sm" onclick="permDeleteUser('${esc(a.username)}')">🗑 Delete</button>` : ''}`}
       </div>
     </div>
     ${sa ? '<p class="rp-note">The super admin always has every tab and action, plus the Activity Log and this page.</p>' : ''}
@@ -4249,4 +4317,48 @@ async function permSignOutEverywhere(user){
   if(!await confirmDialog(`Sign ${user} out on every device and browser now?`)) return;
   try{ await API.call('adminSignOut', {username:user}); toast(`${user} was signed out everywhere`,'ok'); loadPermAccounts(); }
   catch(e){ toast('Could not sign out — '+(e.message||''),'err'); }
+}
+
+/* ── Users (v7): the superadmin adds trainer / coordinator accounts in the app ── */
+function openAddUser(){
+  showModal(`<h3>Add a user</h3>
+    <p class="small-note" style="margin-top:-6px;">They sign in with a temporary password (shown once on the next screen) and must choose their own straight away. You can then set what they see in Admins Permissions.</p>
+    <form onsubmit="event.preventDefault(); submitAddUser()" class="pw-form">
+      <label class="field-label" for="nuName">Username</label>
+      <input type="text" id="nuName" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. UPC_T5" maxlength="32" required>
+      <span class="small-note">3–32 characters: letters, numbers, _ . or -</span>
+      <label class="field-label" for="nuRole" style="margin-top:10px">Role</label>
+      <select id="nuRole"><option value="trainer">Trainer — the training team's usual access</option><option value="coordinator">Coordinator — attendance and reports</option></select>
+      <p class="login-error hidden" id="nuErr" role="alert"></p>
+      <div class="modal-actions"><button type="button" class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-navy btn-sm" id="nuGo">Create user</button></div>
+    </form>`, 'max-width:440px;');
+  setTimeout(()=>{ const el = document.getElementById('nuName'); if(el) el.focus(); }, 0);
+}
+async function submitAddUser(){
+  const u = document.getElementById('nuName').value.trim(), role = document.getElementById('nuRole').value;
+  const err = document.getElementById('nuErr'), btn = document.getElementById('nuGo');
+  err.classList.add('hidden');
+  if(!/^[A-Za-z0-9_.-]{3,32}$/.test(u)){ err.textContent = 'The username must be 3–32 characters: letters, numbers, _ . or -'; err.classList.remove('hidden'); return; }
+  const temp = makeTempPassword();
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try{ await API.call('adminCreateUser', {username:u, role, temp}); }
+  catch(e){ err.textContent = e.message || 'Could not create the user'; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Create user'; return; }
+  permSel = u;
+  showModal(`<h3>${esc(u)} is ready</h3>
+    <p class="small-note">Give them their username and this temporary password privately. It is shown only now; they must change it when they first sign in.</p>
+    <input type="text" id="tempPwOut" readonly value="${esc(temp)}" style="width:100%;font-size:16px;font-weight:700;letter-spacing:.5px;" onfocus="this.select()">
+    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="copyTempPassword()">Copy</button>
+      <button class="btn btn-navy btn-sm" onclick="closeModal()">Done</button></div>`, 'max-width:420px;');
+  loadPermAccounts();
+}
+async function permSetDisabled(user, off){
+  if(!await confirmDialog(off ? `Switch off ${user}? They are signed out everywhere and can't sign in until you switch the account on again.` : `Switch ${user} on again?`)) return;
+  try{ await API.call('adminSetDisabled', {username:user, disabled:off}); toast(off ? `${user} is switched off` : `${user} can sign in again`,'ok'); loadPermAccounts(); }
+  catch(e){ toast('Could not change it — '+(e.message||''),'err'); }
+}
+async function permDeleteUser(user){
+  if(!await confirmDialog(`Delete the account ${user}? They can no longer sign in. Their past changes stay in the Activity Log. This can't be undone.`)) return;
+  try{ await API.call('adminDeleteUser', {username:user}); toast(`${user} deleted`,'ok'); permSel = null; loadPermAccounts(); }
+  catch(e){ toast('Could not delete — '+(e.message||''),'err'); }
 }

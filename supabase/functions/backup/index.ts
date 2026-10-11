@@ -206,7 +206,7 @@ async function readV6Tables(iso: (v: any) => string): Promise<Table[]> {
   let hid: any[], acc: any[];
   try {
     hid = await sql`select * from report_hidden order by email`;
-    acc = await sql`select username, session_version, must_change, perms, updated_at, updated_by from staff_accounts order by username`;
+    acc = await sql`select * from staff_accounts order by username`;
   } catch (_) {
     console.log("[backup] v6 tables not found — skipping their tabs");
     return [];
@@ -214,8 +214,8 @@ async function readV6Tables(iso: (v: any) => string): Promise<Table[]> {
   return [
     { tab: "Hidden From Reports", header: ["email", "hidden_by", "hidden_at"],
       rows: hid.map((r) => [r.email, r.hidden_by, iso(r.hidden_at)].map(cell)), ids: hid.map((r) => r.email), names: hid.map((r) => r.email) },
-    { tab: "Admin Accounts", header: ["username", "session_version", "must_change", "permissions (json)", "updated_at", "updated_by"],
-      rows: acc.map((r) => [r.username, r.session_version, r.must_change ? "yes" : "no", r.perms, iso(r.updated_at), r.updated_by].map(cell)),
+    { tab: "Admin Accounts", header: ["username", "role (app-made accounts)", "switched off", "session_version", "must_change", "permissions (json)", "created_by", "updated_at", "updated_by"],
+      rows: acc.map((r) => [r.username, r.role || "", r.disabled ? "yes" : "no", r.session_version, r.must_change ? "yes" : "no", r.perms, r.created_by || "", iso(r.updated_at), r.updated_by].map(cell)),
       ids: acc.map((r) => r.username), names: acc.map((r) => r.username) },
   ];
 }

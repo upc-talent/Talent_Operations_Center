@@ -387,7 +387,7 @@ tbody td.cell-missing{background:var(--danger-bg) !important;box-shadow:inset 0 
 body.no-cal-edit .cal-edit{display:none !important;}
 body.no-cal-edit .cal-cell, body.no-cal-edit .cal-event{cursor:default;}
 body.ro-days .day-actions .btn, body.ro-days #bulkBar-days, body.ro-days #t-days .sel-cell input{display:none !important;}
-body.ro-approvals #t-approvals .btn, body.ro-approvals #t-approvals .att-btn{display:none !important;}
+body.ro-approvals #t-approvals .btn:not(.ro-ok), body.ro-approvals #t-approvals .att-btn{display:none !important;}
 body.no-core-capsule .col-core{display:none !important;}
 /* Trainer's Attendance exports (Image / PDF) leave out Completion, Attendance and Notes */
 body:not(.perm-export-full) #trainerCard.exporting .col-export-skip{display:none !important;}
@@ -670,3 +670,21 @@ label.btn{cursor:pointer;}
 .analytics-overview{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px 4px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,50,97,.04);}
 .analytics-overview > .card{box-shadow:none;}
 .analytics-overview .analytics-filters{background:var(--row-alt);}
+/* course colours (v7): a band across the top of the card + matching accents */
+.pub-card.has-color,.pub-summary.has-color{border-top:6px solid var(--course-color);background:linear-gradient(180deg,color-mix(in srgb,var(--course-color) 9%,#fff) 0,#fff 90px);}
+.pub-card.has-color h3,.pub-summary.has-color h2{color:var(--course-color);}
+.pub-card.has-color .pub-cat{color:var(--course-color);}
+.pub-card.has-color .pub-details{border-color:var(--course-color);color:var(--course-color);}
+.pub-card.has-color .pub-details:hover:not(:disabled){background:var(--course-color);color:#fff;}
+.pub-card.has-color .pub-progress-track i,.pub-summary.has-color .pub-progress-track i{background:var(--course-color);}
+/* colour picker (Reports Configuration) */
+.rp-colors{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.rp-color{width:30px;height:30px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1.5px var(--border);cursor:pointer;padding:0;position:relative;}
+.rp-color.active{box-shadow:0 0 0 2.5px var(--navy);}
+.rp-color.active::after{content:'✓';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;}
+.rp-color.none{background:#fff;color:var(--muted);font-size:12px;}
+.rp-color.none.active::after{color:var(--navy);}
+.rp-color-custom{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
+.rp-color-custom input[type=color]{width:34px;height:30px;padding:0;border:1.5px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;}
+.rp-color-dot{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle;margin-right:6px;border:1px solid rgba(0,0,0,.1);}
+.submitted-tag{color:var(--pending);font-weight:700;margin-top:3px;}

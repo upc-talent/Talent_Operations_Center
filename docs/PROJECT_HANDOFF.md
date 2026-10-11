@@ -439,3 +439,36 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   3. Push the front end.
 
   `STAFF_ACCOUNTS` stays as it is. Existing sessions keep working; everyone gets the new features on their next page load.
+
+## v7 — Training Date filter, Unsubmit, course colours, users made in the app
+
+- **Public page:** new **Training Date** filter, showing the training day each roster person is booked on in the Admins
+  Dashboard. It covers visible and hidden days, plus "No training day".
+  - `reportsPublicCourse` sends `td` (ISO date, for sorting) and `tl` (label from `pubDayLabel`, e.g. "JED - 5 Oct 26",
+    "Online QAS - 11, 12 Oct 26").
+  - The old "Date" filter is renamed **Completion Date**. It always was the date each person finished the final video (KSA).
+- **Unsubmit:**
+  - **Where trainers do it:** a "🔒 Submitted" tag with an **Unsubmit** link on the Attendance Date cell, a bulk
+    **🔓 Unsubmit**, and **🔓 Unsubmit…** on each Approvals → Supervisor Submissions row (pick days or statuses).
+  - **Effect:** the date or status stays, the `locked` flag is removed, and the supervisor can change it and Submit again.
+  - **Server:** an explicit `a.locked === false` from staff needs the `attend.unsubmit` permission. Pharmacists who
+    attended are refused. The change is logged as `unsubmit`.
+  - **Defaults:** on for trainers, off for coordinators.
+  - **Separate from a day's Editable switch:** a pharmacist on a non-editable day stays managed by the training team.
+- **Course card colour:** Reports Configuration offers ten preset colours, any custom colour, or Default.
+  - It is stored as `courses.display.color` (`#rrggbb`) and validated in `cleanDisplay`.
+  - On the public page it colours the top band of the course's card and summary, its title, its button and its progress bar.
+- **Users made in the app** (Admins Permissions → **+ Add user**):
+  - **New columns:** `staff_accounts.role`, `disabled`, `created_at` and `created_by`.
+  - **Who:** trainer or coordinator only (a superadmin stays in `STAFF_ACCOUNTS`). The username must be unique,
+    ignoring case, across both sources.
+  - **First sign-in:** a temporary password is shown once, with `must_change`.
+  - **Switch off / on:** works for any account except your own and superadmins. Switching off signs the person out
+    everywhere and blocks sign-in.
+  - **Delete:** only for app-made accounts.
+  - **Sign-in rule:** `accountFrom()` resolves an account from the secret first, then the app.
+  - **New activity actions:** `user_create`, `user_disable`, `user_enable`, `user_delete`.
+- **Deploy v7:**
+  1. Run `schema.sql` again (it adds the v7 block of `staff_accounts` columns).
+  2. Redeploy `api`, then `backup`.
+  3. Push the front end.

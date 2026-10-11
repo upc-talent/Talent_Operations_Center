@@ -953,11 +953,30 @@ async function rpOpenConfigTab(){
   rpRenderCfgForm();
 }
 function rpEditCourse(id){ rpState.editingId = id; rpRenderCfgForm(); const card = document.getElementById('rpCfgFormCard'); if(card && id) card.scrollIntoView({behavior:'smooth', block:'start'}); }
+/* Course card colour (v7): a few ready colours, or any colour from the picker; "Default" = the usual navy card. */
+const RP_COLORS = [['#003261','Navy'],['#2fb3df','Sky blue'],['#1f9d55','Green'],['#0f9488','Teal'],['#e67e22','Orange'],['#c0392b','Red'],
+  ['#7a3fb0','Purple'],['#d63384','Pink'],['#b8720a','Amber'],['#5b6b80','Grey']];
+function rpColorPickerHtml(cur){
+  cur = (cur||'').toLowerCase();
+  const custom = cur && !RP_COLORS.some(x=>x[0]===cur);
+  return `<div class="rp-colors" id="rpCfgColors">
+    <button type="button" class="rp-color none${!cur?' active':''}" title="Default" onclick="rpPickColor('')">${cur?'∅':''}</button>
+    ${RP_COLORS.map(([v,t])=>`<button type="button" class="rp-color${cur===v?' active':''}" style="background:${v}" title="${t}" aria-label="${t}" onclick="rpPickColor('${v}')"></button>`).join('')}
+    <label class="rp-color-custom" title="Any colour"><input type="color" value="${cur||'#003261'}" oninput="rpPickColor(this.value, true)">${custom?'<b>Custom</b>':'Custom…'}</label>
+  </div>`;
+}
+function rpPickColor(v, fromPicker){
+  rpState.cfgColor = (v||'').toLowerCase();
+  const box = document.getElementById('rpCfgColors');
+  if(box && !fromPicker) box.outerHTML = rpColorPickerHtml(rpState.cfgColor);
+  else if(box) box.querySelectorAll('.rp-color').forEach(b=>b.classList.remove('active'));
+}
 function rpRenderCfgForm(){
   const card = document.getElementById('rpCfgFormCard');
   if(!card) return;
   const c = rpState.editingId ? rpCourse(rpState.editingId) : null;
-  const d = c ? c.display : {columns:RP_DISPLAY_COLUMNS.map(x=>x[0]), showDeadline:true, showDaysLeft:true, includeRosterNoData:false};
+  const d = c ? c.display : {columns:RP_DISPLAY_COLUMNS.map(x=>x[0]), showDeadline:true, showDaysLeft:true, includeRosterNoData:false, color:''};
+  rpState.cfgColor = d.color || '';
   const cats = [...new Set(rpState.courses.map(x=>x.category).filter(Boolean))].sort();
   card.innerHTML = `${c ? `<p class="small-note" style="margin-top:0">Editing <b>${esc(rpCourseTitle(c))}</b></p>` : ''}
     <div class="de-grid">
@@ -969,6 +988,8 @@ function rpRenderCfgForm(){
       <label><span class="field-label">Display order</span><input id="rpCfgOrder" type="number" step="1" value="${c?c.sortOrder:0}"></label>
       <label class="rp-check"><input type="checkbox" id="rpCfgActive" ${c && c.active?'checked':''}> <span><b>Active</b> — visible on the public page</span></label>
     </div>
+    <div class="rp-color-row"><span class="field-label">Card colour on the public page</span>${rpColorPickerHtml(d.color||'')}
+      <p class="small-note" style="margin:4px 0 0">Colours the course's card and summary on the public reports page, so people can find it quickly (e.g. one colour per category).</p></div>
     ${c ? `<div class="rp-subcard">
       <h3>What the public page shows</h3>
       <div class="rp-cols">${RP_DISPLAY_COLUMNS.map(([k,l])=>`<label><input type="checkbox" class="rpCfgCol" value="${k}" ${(d.columns||[]).indexOf(k)>-1?'checked':''}> ${esc(l)}</label>`).join('')}</div>
@@ -990,11 +1011,11 @@ async function rpSaveCourseForm(){
   if(!name){ toast('Enter the course name','err'); return; }
   const course = { name, source:document.getElementById('rpCfgSource').value, active:document.getElementById('rpCfgActive').checked,
     displayName:document.getElementById('rpCfgDisplay').value.trim(), category:document.getElementById('rpCfgCategory').value.trim(),
-    sortOrder:Number(document.getElementById('rpCfgOrder').value)||0 };
+    sortOrder:Number(document.getElementById('rpCfgOrder').value)||0, display:{color:rpState.cfgColor||''} };
   if(c){
     course.id = c.id;
     // keep display options a newer page may have added (the server merges over what is stored)
-    course.display = Object.assign({}, c.display, {
+    course.display = Object.assign({}, c.display, {color:rpState.cfgColor||'',
       columns:[...document.querySelectorAll('.rpCfgCol:checked')].map(x=>x.value),
       showDeadline:document.getElementById('rpCfgShowDl').checked, showDaysLeft:document.getElementById('rpCfgShowDays').checked,
       includeRosterNoData:document.getElementById('rpCfgNoData').checked });
@@ -1046,7 +1067,7 @@ function rpRenderCoursesTable(){
   if(!tb) return;
   const sa = typeof can==='function' && can('repconf.delete');
   tb.innerHTML = rpState.courses.length ? rpState.courses.map(c=>`<tr>
-      <td class="name-cell"><b>${esc(rpCourseTitle(c))}</b>${c.displayName && c.displayName!==c.name ? '<br><span class="small-note">'+esc(c.name)+'</span>' : ''}
+      <td class="name-cell">${c.display && c.display.color ? `<span class="rp-color-dot" style="background:${esc(c.display.color)}" title="Card colour"></span>` : ''}<b>${esc(rpCourseTitle(c))}</b>${c.displayName && c.displayName!==c.name ? '<br><span class="small-note">'+esc(c.name)+'</span>' : ''}
         ${c.active && !c.lastPublishedAt ? ' <span class="rp-tag mid" title="The public page shows it as \'No data published yet\'">No data yet</span>' : ''}</td>
       <td><span class="badge ${c.source==='sap'?'badge-leave':'badge-date'}">${c.source==='sap'?'SAP':'Moodle'}</span></td>
       <td><label class="rp-switch" title="Visible on the public page"><input type="checkbox" ${c.active?'checked':''} onchange="rpToggleActive('${c.id}', this.checked)"> ${c.active?'Active':'Off'}</label></td>

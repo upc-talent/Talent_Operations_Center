@@ -405,6 +405,7 @@ function updateBulkBar(scope){
     if(ok('attend.assign')) html += `<select id="bulkAssignSelect-${scope}">${bulkAssignOptions(scope)}</select>`
           + `<button class="btn btn-navy btn-sm" onclick="bulkApplyAssign('${scope}')">Apply</button>`;
     if(scope==='trainer' && ok('attend.mark')) html += `<button class="btn btn-navy btn-sm" onclick="openBulkAttendanceModal()">✔ Mark attendance</button>`;
+    if(scope==='trainer' && ok('attend.unsubmit')) html += `<button class="btn btn-outline btn-sm" title="Let the supervisors change the ticked submitted pharmacists again" onclick="bulkUnsubmit()">🔓 Unsubmit</button>`;
     if(scope==='trainer' && ok('attend.delete')) html += `<button class="btn btn-danger btn-sm" onclick="bulkDeletePharmacists()">🗑 Delete from roster</button>`;
   }
   html += `<button class="btn btn-outline btn-sm" onclick="bulkClear('${scope}')">Clear</button>`;

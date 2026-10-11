@@ -189,3 +189,14 @@ To add or remove a person, or change someone's role, edit `STAFF_ACCOUNTS` as be
 The `STAFF_ACCOUNTS` password works again.
 
 **Keep me signed in:** a 6-day token, kept in that browser only. Tell people to use it only on their own device.
+
+## v7 — users made in the app, Unsubmit, course colours, Training Date filter
+
+Re-run [`schema.sql`](schema.sql). Its v7 block adds `role`, `disabled`, `created_at` and `created_by` to
+`staff_accounts`. Then redeploy `api` and `backup`.
+
+- **New staff actions:**
+  - superadmin: `adminCreateUser {username, role, temp}`, `adminSetDisabled {username, disabled}`, `adminDeleteUser {username}` (app-made accounts only).
+  - "Unsubmit" permission: Unsubmit (an operations patch with `a.locked: false`).
+- **Accounts now come from two places:** `STAFF_ACCOUNTS` (which wins on a clash) and accounts created in the app.
+  Switching any account off blocks sign-in and ends its sessions.
