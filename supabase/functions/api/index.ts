@@ -112,6 +112,7 @@ async function route(req: any, ip = "unknown") {
     case "courseSave": requirePerm(ctx, "repconf.edit"); return { ok: true, course: await courseSave(ctx, req.course) };
     case "courseDelete": requirePerm(ctx, "repconf.delete"); await courseDelete(ctx, req.id); return { ok: true };
     case "courseShareRotate": requirePerm(ctx, "repconf.edit"); return { ok: true, shareSlug: await courseShareRotate(ctx, req.id) };
+    case "categoryColorsSet": requirePerm(ctx, "repconf.edit"); return { ok: true, categoryColors: await categoryColorsSet(ctx, req.colors) };
     case "courseSlotsSet": requirePerm(ctx, "repconf.slots"); await courseSlotsSet(ctx, req.coreCourseId, req.capsuleCourseId); return { ok: true };
     case "coursePublish": requirePerm(ctx, "moodle.publish"); return { ok: true, ...(await coursePublish(ctx, req)) };
     case "courseExport": requirePerm(ctx, "moodle.view", "repconf.view"); return { ok: true, ...(await courseExport(req.id, req.includeNoData)) };
@@ -1526,7 +1527,8 @@ async function coursesList() {
   for (const u of ups) (byCourse[u.course_id] ||= []).push(uploadOut(u));
   const st = await settingsMap();
   return { courses: courses.map((c: any) => courseOut(c, byCourse[c.id] || [])),
-           coreCourseId: st.coreCourseId || null, capsuleCourseId: st.capsuleCourseId || null };
+           coreCourseId: st.coreCourseId || null, capsuleCourseId: st.capsuleCourseId || null,
+           categoryColors: cleanCategoryColors(st.categoryColors) };
 }
 
 // Display options: only the known keys are taken from the request, merged over what is stored (so options added later
@@ -1607,6 +1609,37 @@ async function courseShareRotate(ctx: Ctx, id: unknown) {
   return slug;
 }
 
+/* Category colours (v7.2): {category: {color, bg, text}} in settings.categoryColors. Every course of a category uses
+   them, except for the colours the course sets itself. */
+const HEX6 = /^#[0-9a-fA-F]{6}$/;
+function cleanCategoryColors(input: unknown): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (!input || typeof input !== "object") return out;
+  for (const name of Object.keys(input as any).slice(0, 200)) {
+    const cat = String(name).trim().slice(0, 80), v = (input as any)[name] || {};
+    if (!cat) continue;
+    const c: any = {};
+    for (const k of ["color", "bg", "text"]) if (HEX6.test(String(v[k] || ""))) c[k] = String(v[k]).toLowerCase();
+    if (Object.keys(c).length) out[cat] = c;
+  }
+  return out;
+}
+function categoryColorsByKey(saved: unknown): Record<string, any> {
+  const out: Record<string, any> = {};
+  const clean = cleanCategoryColors(saved);
+  for (const k of Object.keys(clean)) out[k.toLowerCase()] = clean[k];
+  return out;
+}
+async function categoryColorsSet(ctx: Ctx, input: unknown) {
+  const next = cleanCategoryColors(input);
+  const prev = cleanCategoryColors((await settingsMap()).categoryColors);
+  await patchSettings({ categoryColors: next });
+  const changes: Record<string, [unknown, unknown]> = {};
+  for (const k of new Set([...Object.keys(prev), ...Object.keys(next)])) if (!sameJson(prev[k] || null, next[k] || null)) changes[k] = [prev[k] || null, next[k] || null];
+  if (Object.keys(changes).length) await logActivity([act(ctx, "category_colors", "category", "colors", "Category colours", { changes })]);
+  clearPublicCache();
+  return next;
+}
 async function courseSlotsSet(ctx: Ctx, core: unknown, capsule: unknown) {
   const pick = async (v: unknown) => {
     if (v === null || v === undefined || v === "") return null;
@@ -1897,11 +1930,13 @@ async function publicRateLimit(ip: string) {
   // expired counters are cleared now and then (kv_cache rows expire but aren't removed on their own)
   if (Math.random() < 0.02) { try { await sql`delete from kv_cache where key like 'rl:%' and expires_at < now()`; } catch (_) { /* ignore */ } }
 }
-function publicCourseHead(c: any, agg: any) {
+function publicCourseHead(c: any, agg: any, catColors: Record<string, any> = {}) {
   const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
+  // a course's own colour wins; an empty one follows its category's colour (v7.2)
+  const cat = catColors[String(c.category || "").trim().toLowerCase()] || {};
   const head: any = { slug: c.share_slug, title: c.display_name || c.name, category: c.category, order: c.sort_order, source: c.source,
     lastPublishedAt: isoOf(c.last_published_at),
-    display: { columns: d.columns, showDeadline: !!d.showDeadline, showDaysLeft: !!d.showDaysLeft, includeRosterNoData: !!d.includeRosterNoData, color: d.color || "", bg: d.bg || "", text: d.text || "" },
+    display: { columns: d.columns, showDeadline: !!d.showDeadline, showDaysLeft: !!d.showDaysLeft, includeRosterNoData: !!d.includeRosterNoData, color: d.color || cat.color || "", bg: d.bg || cat.bg || "", text: d.text || cat.text || "" },
     agg };
   // the deadline is sent when it is shown, or when Days Left needs it
   if (d.showDeadline || d.showDaysLeft) head.deadline = isoOf(c.deadline);
@@ -1918,10 +1953,11 @@ async function reportsPublic() {
   return await cachedPublic("overview", async () => {
     const courses = await sql`select * from courses where active = true order by sort_order, lower(coalesce(nullif(display_name, ''), name))`;
     const ref = await peopleRef();
+    const cats = categoryColorsByKey((await settingsMap()).categoryColors);
     const out: any[] = [];
     for (const c of courses) {
       const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
-      out.push(publicCourseHead(c, aggregateOf(await mergedCourseRows(c.id, !!d.includeRosterNoData, ref, true))));
+      out.push(publicCourseHead(c, aggregateOf(await mergedCourseRows(c.id, !!d.includeRosterNoData, ref, true)), cats));
     }
     return { ok: true, generatedAt: new Date().toISOString(), courses: out };
   });
@@ -1955,6 +1991,6 @@ async function reportsPublicCourse(slug: unknown) {
       if (day && day.date) { o.td = String(day.date); o.tl = pubDayLabel(day); }
       return o;
     });
-    return { ok: true, generatedAt: new Date().toISOString(), course: publicCourseHead(c, aggregateOf(merged)), rows };
+    return { ok: true, generatedAt: new Date().toISOString(), course: publicCourseHead(c, aggregateOf(merged), categoryColorsByKey((await settingsMap()).categoryColors)), rows };
   });
 }

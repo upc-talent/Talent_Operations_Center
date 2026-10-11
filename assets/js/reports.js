@@ -203,7 +203,7 @@ function pubColors(c){
   const accent = PUB_HEX.test(d.color||'') ? d.color : '', bg = PUB_HEX.test(d.bg||'') ? d.bg : '';
   let text = PUB_HEX.test(d.text||'') ? d.text : '';
   if(!text && bg) text = pubAutoText(bg);
-  return {accent, bg, text, any: !!(accent || bg || text)};
+  return {accent, bg, text, explicit: PUB_HEX.test(d.text||''), any: !!(accent || bg || text)};
 }
 function pubAutoText(bg){
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(bg);
@@ -216,7 +216,7 @@ function pubColorVars(k){
 function pubColorAttr(c){
   const k = pubColors(c);
   if(!k.any) return '"';
-  return `${k.accent?' has-color':''}${k.bg?' has-fill':''}${k.text?' has-text':''}" style="${pubColorVars(k)}"`;
+  return `${k.accent?' has-color':''}${k.bg?' has-fill':''}${k.text?' has-text':''}${k.explicit?' text-explicit':''}" style="${pubColorVars(k)}"`;
 }
 function pubApplyColors(el, c){
   const k = pubColors(c);
@@ -227,6 +227,7 @@ function pubApplyColors(el, c){
   el.classList.toggle('has-color', !!k.accent);
   el.classList.toggle('has-fill', !!k.bg);
   el.classList.toggle('has-text', !!k.text);
+  el.classList.toggle('text-explicit', !!k.explicit);
 }
 function pubModulesBadge(a){ return a && a.modules ? `<span class="pub-modules">${a.modules} module${a.modules===1?'':'s'}</span>` : ''; }
 function pubAggOfRows(rows, base){

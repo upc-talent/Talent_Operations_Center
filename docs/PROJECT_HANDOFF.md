@@ -477,3 +477,8 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   - **Fill:** the card and summary background; the number boxes stay white so the figures stay readable.
   - **Text:** an empty text colour with a fill means automatic (black or white by contrast, `pubAutoText` / `rpAutoText`).
   - **Form:** Reports Configuration has a picker row for each colour and a live preview.
+- **Category colours, v7.2:** `settings.categoryColors` holds `{category: {color, bg, text}}`; category names match regardless of upper / lower case.
+  - **Precedence:** a course's own colours win per colour, so an empty one follows its category (`publicCourseHead`, `rpEffectiveColors`).
+  - **Editing:** Reports Configuration → Category colours → Edit colours. The pop-up can also clear the courses' own colours, so the whole category follows.
+  - **Server:** action `categoryColorsSet` (needs `repconf.edit`), logged as `category_colors`. `coursesList` returns `categoryColors`.
+  - **Course form:** in a course's form the empty swatch reads "Use category colour".

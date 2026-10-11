@@ -690,7 +690,7 @@ label.btn{cursor:pointer;}
 .rp-color-dot{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle;margin-right:6px;border:1px solid rgba(0,0,0,.1);}
 .submitted-tag{color:var(--pending);font-weight:700;margin-top:3px;}
 /* course card fill + text colour (v7.1) — the number boxes stay white so the figures always read clearly */
-.pub-card.has-fill,.pub-summary.has-fill{background:var(--course-bg);border-color:color-mix(in srgb,var(--course-bg) 80%,#000 8%);}
+.pub-card.has-fill,.pub-summary.has-fill{background:var(--course-bg);border-left-color:color-mix(in srgb,var(--course-bg) 80%,#000 8%);border-right-color:color-mix(in srgb,var(--course-bg) 80%,#000 8%);border-bottom-color:color-mix(in srgb,var(--course-bg) 80%,#000 8%);}
 .pub-card.has-fill:not(.has-color),.pub-summary.has-fill:not(.has-color){border-top:6px solid color-mix(in srgb,var(--course-bg) 75%,#000 25%);}
 .pub-card.has-text,.pub-summary.has-text,
 .pub-card.has-text h3,.pub-summary.has-text h2,.pub-card.has-text .pub-cat,
@@ -723,3 +723,9 @@ label.btn{cursor:pointer;}
 .rp-color-code{width:150px;padding:6px 9px;border:1.5px solid var(--border);border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;}
 .rp-color-code.bad{border-color:var(--danger);background:var(--danger-bg);}
 .rp-color-rgb{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;}
+.rp-color-dot.empty{background:#fff;border:1.5px dashed #b9c7d8;}
+.rp-prev-card.mini{margin:0;padding:8px 10px;gap:4px;box-shadow:none;}
+.rp-prev-card.mini .rp-prev-title{font-size:12.5px;}
+.rp-prev-card.mini .rp-prev-note,.rp-prev-card.mini .rp-prev-btn{display:none;}
+/* with automatic text (no text colour chosen) the title and category keep the accent colour */
+.pub-card.has-color:not(.text-explicit) h3,.pub-summary.has-color:not(.text-explicit) h2,.pub-card.has-color:not(.text-explicit) .pub-cat{color:var(--course-color);}
