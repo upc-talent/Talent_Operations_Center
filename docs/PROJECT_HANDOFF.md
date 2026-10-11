@@ -472,3 +472,8 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   1. Run `schema.sql` again (it adds the v7 block of `staff_accounts` columns).
   2. Redeploy `api`, then `backup`.
   3. Push the front end.
+- **Card colours, v7.1:** each course now has three colours, `display.color` (accent), `display.bg` (card fill) and `display.text`, each `#rrggbb` or "" for the default.
+  - **Accent:** colours the top band, title, button and progress bar.
+  - **Fill:** the card and summary background; the number boxes stay white so the figures stay readable.
+  - **Text:** an empty text colour with a fill means automatic (black or white by contrast, `pubAutoText` / `rpAutoText`).
+  - **Form:** Reports Configuration has a picker row for each colour and a live preview.

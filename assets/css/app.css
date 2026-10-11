@@ -671,7 +671,8 @@ label.btn{cursor:pointer;}
 .analytics-overview > .card{box-shadow:none;}
 .analytics-overview .analytics-filters{background:var(--row-alt);}
 /* course colours (v7): a band across the top of the card + matching accents */
-.pub-card.has-color,.pub-summary.has-color{border-top:6px solid var(--course-color);background:linear-gradient(180deg,color-mix(in srgb,var(--course-color) 9%,#fff) 0,#fff 90px);}
+.pub-card.has-color,.pub-summary.has-color{border-top:6px solid var(--course-color);}
+.pub-card.has-color:not(.has-fill),.pub-summary.has-color:not(.has-fill){background:linear-gradient(180deg,color-mix(in srgb,var(--course-color) 9%,#fff) 0,#fff 90px);}
 .pub-card.has-color h3,.pub-summary.has-color h2{color:var(--course-color);}
 .pub-card.has-color .pub-cat{color:var(--course-color);}
 .pub-card.has-color .pub-details{border-color:var(--course-color);color:var(--course-color);}
@@ -688,3 +689,37 @@ label.btn{cursor:pointer;}
 .rp-color-custom input[type=color]{width:34px;height:30px;padding:0;border:1.5px solid var(--border);border-radius:8px;background:#fff;cursor:pointer;}
 .rp-color-dot{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle;margin-right:6px;border:1px solid rgba(0,0,0,.1);}
 .submitted-tag{color:var(--pending);font-weight:700;margin-top:3px;}
+/* course card fill + text colour (v7.1) — the number boxes stay white so the figures always read clearly */
+.pub-card.has-fill,.pub-summary.has-fill{background:var(--course-bg);border-color:color-mix(in srgb,var(--course-bg) 80%,#000 8%);}
+.pub-card.has-fill:not(.has-color),.pub-summary.has-fill:not(.has-color){border-top:6px solid color-mix(in srgb,var(--course-bg) 75%,#000 25%);}
+.pub-card.has-text,.pub-summary.has-text,
+.pub-card.has-text h3,.pub-summary.has-text h2,.pub-card.has-text .pub-cat,
+.pub-card.has-text .small-note,.pub-summary.has-text .small-note,
+.pub-card.has-text .pub-updated,.pub-summary.has-text .pub-updated,
+.pub-card.has-text .pub-progress-lbl,.pub-summary.has-text .pub-progress-lbl,
+.pub-card.has-text .pub-nodata{color:var(--course-text);}
+.pub-card.has-fill .pub-st,.pub-summary.has-fill .pub-st{background:#fff;}
+.pub-card.has-fill .pub-nodata{background:rgba(255,255,255,.85);color:#1a2b45;}
+.pub-card.has-fill .pub-details{background:#fff;}
+.pub-card.has-fill .pub-progress-track,.pub-summary.has-fill .pub-progress-track{background:rgba(255,255,255,.55);}
+/* Reports Configuration: three colour rows + a live preview */
+.rp-color-grid{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:18px;align-items:start;}
+@media (max-width:860px){ .rp-color-grid{grid-template-columns:1fr;} }
+.rp-color-line{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px dashed var(--border);}
+.rp-color-line:last-child{border-bottom:none;}
+.rp-color-lbl{width:170px;display:flex;flex-direction:column;}
+.rp-color-lbl .small-note{font-size:11px;}
+.rp-prev-card{--p-accent:#003261;--p-bg:#fff;--p-text:#1a2b45;margin-top:6px;display:flex;flex-direction:column;gap:7px;padding:14px 16px;border-radius:12px;
+  border:1px solid var(--border);border-top:6px solid var(--p-accent);background:var(--p-bg);color:var(--p-text);box-shadow:0 2px 8px rgba(0,50,97,.08);}
+.rp-prev-cat{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;opacity:.8;}
+.rp-prev-title{font-size:15px;}
+.rp-prev-bar{height:7px;border-radius:5px;background:rgba(127,127,127,.25);overflow:hidden;}
+.rp-prev-bar i{display:block;height:100%;width:64%;background:var(--p-accent);}
+.rp-prev-note{font-size:11px;opacity:.85;}
+.rp-prev-btn{align-self:flex-start;font-size:11.5px;font-weight:700;padding:5px 10px;border-radius:7px;border:1.5px solid var(--p-accent);color:var(--p-accent);background:#fff;}
+.rp-color.active::after{text-shadow:0 0 2px rgba(0,0,0,.9),0 0 1px #000;}
+.pub-card.has-fill .pub-modules,.pub-summary.has-fill .pub-modules{background:#fff;color:#1a2b45;}
+.rp-color-code-wrap{display:inline-flex;flex-direction:column;gap:1px;}
+.rp-color-code{width:150px;padding:6px 9px;border:1.5px solid var(--border);border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;}
+.rp-color-code.bad{border-color:var(--danger);background:var(--danger-bg);}
+.rp-color-rgb{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;}

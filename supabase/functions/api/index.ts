@@ -1537,7 +1537,8 @@ function cleanDisplay(d: any, prev: any) {
   if (Array.isArray(d.columns)) out.columns = DISPLAY_COLUMNS.filter((c) => d.columns.indexOf(c) !== -1);
   for (const k of ["showDeadline", "showDaysLeft", "includeRosterNoData"]) if (k in d) out[k] = !!d[k];
   // card colour on the public page (v7): "#rrggbb", or "" for the default
-  if ("color" in d) out.color = /^#[0-9a-fA-F]{6}$/.test(String(d.color || "")) ? String(d.color).toLowerCase() : "";
+  // card fill and text colour (v7.1); "" = default / automatic
+  for (const k of ["color", "bg", "text"]) if (k in d) out[k] = /^#[0-9a-fA-F]{6}$/.test(String(d[k] || "")) ? String(d[k]).toLowerCase() : "";
   return out;
 }
 
@@ -1900,7 +1901,7 @@ function publicCourseHead(c: any, agg: any) {
   const d = { ...DEFAULT_DISPLAY, ...(c.display || {}) };
   const head: any = { slug: c.share_slug, title: c.display_name || c.name, category: c.category, order: c.sort_order, source: c.source,
     lastPublishedAt: isoOf(c.last_published_at),
-    display: { columns: d.columns, showDeadline: !!d.showDeadline, showDaysLeft: !!d.showDaysLeft, includeRosterNoData: !!d.includeRosterNoData, color: d.color || "" },
+    display: { columns: d.columns, showDeadline: !!d.showDeadline, showDaysLeft: !!d.showDaysLeft, includeRosterNoData: !!d.includeRosterNoData, color: d.color || "", bg: d.bg || "", text: d.text || "" },
     agg };
   // the deadline is sent when it is shown, or when Days Left needs it
   if (d.showDeadline || d.showDaysLeft) head.deadline = isoOf(c.deadline);

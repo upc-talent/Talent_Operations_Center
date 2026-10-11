@@ -195,9 +195,39 @@ function pubNotesHtml(a){
   if(a.notInRoster) notes.push(`${a.notInRoster} not in the roster`);
   return notes.length ? `<div class="small-note pub-card-note">${esc(notes.join(' · '))}</div>` : '';
 }
-// The course colour chosen in Reports Configuration (v7) — a coloured band on its card, so people find it fast.
-function pubColor(c){ const v = c && c.display && c.display.color; return /^#[0-9a-f]{6}$/i.test(v||'') ? v : ''; }
-function pubColorAttr(c){ const v = pubColor(c); return v ? ` has-color" style="--course-color:${v}"` : '"'; }
+// Course colours chosen in Reports Configuration: accent (band, title, button, bar), card fill and text. With a fill
+// and no text colour, the text is black or white — whichever reads best on that fill.
+const PUB_HEX = /^#[0-9a-f]{6}$/i;
+function pubColors(c){
+  const d = (c && c.display) || {};
+  const accent = PUB_HEX.test(d.color||'') ? d.color : '', bg = PUB_HEX.test(d.bg||'') ? d.bg : '';
+  let text = PUB_HEX.test(d.text||'') ? d.text : '';
+  if(!text && bg) text = pubAutoText(bg);
+  return {accent, bg, text, any: !!(accent || bg || text)};
+}
+function pubAutoText(bg){
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(bg);
+  const lin = x=>{ x = parseInt(x,16)/255; return x<=0.03928 ? x/12.92 : Math.pow((x+0.055)/1.055, 2.4); };
+  return 0.2126*lin(m[1]) + 0.7152*lin(m[2]) + 0.0722*lin(m[3]) > 0.4 ? '#1a2b45' : '#ffffff';
+}
+function pubColorVars(k){
+  return [k.accent ? `--course-color:${k.accent}` : '', k.bg ? `--course-bg:${k.bg}` : '', k.text ? `--course-text:${k.text}` : ''].filter(Boolean).join(';');
+}
+function pubColorAttr(c){
+  const k = pubColors(c);
+  if(!k.any) return '"';
+  return `${k.accent?' has-color':''}${k.bg?' has-fill':''}${k.text?' has-text':''}" style="${pubColorVars(k)}"`;
+}
+function pubApplyColors(el, c){
+  const k = pubColors(c);
+  ['--course-color','--course-bg','--course-text'].forEach(v=>el.style.removeProperty(v));
+  if(k.accent) el.style.setProperty('--course-color', k.accent);
+  if(k.bg) el.style.setProperty('--course-bg', k.bg);
+  if(k.text) el.style.setProperty('--course-text', k.text);
+  el.classList.toggle('has-color', !!k.accent);
+  el.classList.toggle('has-fill', !!k.bg);
+  el.classList.toggle('has-text', !!k.text);
+}
 function pubModulesBadge(a){ return a && a.modules ? `<span class="pub-modules">${a.modules} module${a.modules===1?'':'s'}</span>` : ''; }
 function pubAggOfRows(rows, base){
   const a = {total:rows.length, completed:0, finalOnly:0, inProgress:0, notStarted:0, noData:0, notInRoster:0, avgRate:0, modules:(base && base.modules)||0};
@@ -304,8 +334,7 @@ function pubRenderSummary(){
   if(pubHcActive()) meta.push('📋 Headcount: '+esc(pubState.hc.fileName));
   const hasData = !!c.lastPublishedAt;
   const sumEl = document.getElementById('pubSummary');
-  sumEl.style.setProperty('--course-color', pubColor(c) || 'var(--navy)');
-  sumEl.classList.toggle('has-color', !!pubColor(c));
+  pubApplyColors(sumEl, c);
   sumEl.innerHTML = `
     <div class="pub-card-head"><div><h2>${esc(c.title)}</h2>${meta.length ? `<div class="small-note">${meta.join(' · ')}</div>` : ''}</div>${pubModulesBadge(c.agg)}</div>
     ${hasData ? pubStatBoxesHtml(a) + pubProgressHtml(a.avgRate) + pubNotesHtml(a) : ''}
