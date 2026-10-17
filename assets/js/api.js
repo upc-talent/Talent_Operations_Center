@@ -160,8 +160,11 @@
     applyMe(out) {
       API.role = out.role || 'trainer'; API.user = out.user || null;
       API.perms = out.perms || {}; API.mustChange = !!out.mustChange; API.remember = !!out.remember;
+      // v7.5: the sign-in username (can differ from the account id in `user`), the display name, and the names to show
+      // for every account id ({id: {n: display name, l: sign-in username (superadmin only)}})
+      API.login = out.login || API.user; API.displayName = out.displayName || ''; API.staffNames = out.staffNames || {};
     },
-    logout() { API.clearToken(); API.role = null; API.user = null; API.perms = {}; API.mustChange = false; },
+    logout() { API.clearToken(); API.role = null; API.user = null; API.login = null; API.displayName = ''; API.staffNames = {}; API.perms = {}; API.mustChange = false; },
     // Own password (v6): the server checks the current one, signs out every other session and returns a fresh token.
     async changePassword(current, next) {
       const out = await API.call('changePassword', { current, next });
@@ -178,6 +181,7 @@
     // view, Master Sheet Preview, Import Completion) — known after sign-in / verifySession. `user` is the account name.
     role: null,
     user: null,
+    login: null, displayName: '', staffNames: {},
     async verifySession() {
       if (!API.hasToken()) return false;
       try { API.applyMe(await API.call('me')); return true; } catch (e) { return false; }

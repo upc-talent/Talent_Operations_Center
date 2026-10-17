@@ -1,59 +1,90 @@
 # Talent Operations Center — project handoff
 
 Everything a new developer (human or AI agent) needs to continue this project.
-**No secrets are in this file** — the trainer login and database credentials live only in the Supabase
-Edge Function secrets (ask the owner).
+
+**No secrets are in this file.** Passwords, the token secret and the backup credentials live only in the Supabase Edge
+Function secrets (ask the owner).
+
+Companion documents:
+
+| Document | What it gives you |
+|---|---|
+| [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md) | Every feature and rule, with IDs |
+| [LESSONS_LEARNED.md](LESSONS_LEARNED.md) | Mistakes made, how they were found and how to avoid them |
+| [../supabase/README.md](../supabase/README.md) | Setup and the deploy checklist |
+| [WORK_SUMMARY.md](WORK_SUMMARY.md) | Sept 2026 history |
 
 ---
 
 ## 1. What this is
 
-A web tool for **United Pharmacy (UPC) — Talent Management** that coordinates pharmacist training between
-**supervisors** and the **training team (trainers)**.
+A web tool for **United Pharmacy (UPC) — Talent Management**.
 
-- **Supervisors** pick their name, then assign each of their pharmacists to a training day or record a status
-  (Sick Leave / Annual Leave / Resignation / Promotion), request new pharmacists and annual leave (both need
-  trainer approval), and see notes about their pharmacists.
-- **Trainers** (behind a login) mark attendance (Attended/Absent, On Time/Late + arrival time, notes), manage the
-  roster and training days, approve requests, see analytics, and export Excel/PNG/PDF.
-- Data lives in **Supabase Postgres**; a single **Edge Function** (`api`) is the backend; the front end is static
-  files on **GitHub Pages**.
+- **Supervisors** (no password, pick their name):
+  - book each of their pharmacists on a training day or record a status (Sick / Annual Leave, Resignation, Promotion);
+  - press **Submit** to lock their choices;
+  - ask for changes (Request Change, Request Data Edit, new pharmacists, annual leave).
+- **The training team** (Admins Dashboard, own accounts) does all of the following, as far as each account's permissions allow:
+  - attendance, training days and the calendar;
+  - approvals, analytics and exports;
+  - course completion reports: Moodle Reports, Reports Configuration and the public page.
+- **The superadmin** (`UPC_TMD`) also has the Activity Log and **Admins Permissions**: per-account switches, password resets and creating users.
+- **Anyone** can open the public **Course Progress Reports** page (`reports.html`).
+- **How it is built:**
+  - Data lives in **Supabase Postgres**.
+  - One **Edge Function** (`api`) is the whole backend.
+  - The front end is static files on **GitHub Pages**.
+  - A second function (`backup`) copies everything to a Google Sheet every hour.
 
-**Owner:** muhammed.zaghloul237@gmail.com. Working dir on the owner's PC: `D:\Work\UPC\Sync Training`.
+**Owner:** muhammed.zaghloul237@gmail.com. Working dir on the owner's PC: `D:\Work\UPC\Sync Training`. Git repo, branch `main`;
+the owner pushes to GitHub.
 
-**History:** it began as a single 2.2 MB HTML artifact, was split into pages backed by a Google Sheet, and was
-later migrated off Google Sheets entirely onto Supabase for speed. The Sheet is no longer involved in any way.
+**History:**
+1. A single 2.2 MB HTML file.
+2. Pages backed by a Google Sheet.
+3. Supabase (Sept 2026).
+4. Then versions v3 → v7.2; see §10 and [LESSONS_LEARNED.md](LESSONS_LEARNED.md).
+
+The old reporting tool (separate `LMS-reporting` repo + public Google Sheet) was folded into the Hub in v5. Copies of the
+old tools are kept locally in `reference/` (git-ignored).
 
 ---
 
 ## 2. Repository layout
 
 ```
-index.html            Landing: Supervisor · Course Progress Reports (external) · trainer icon (bottom-right)
-supervisor.html       Supervisor page (no login; pick your name)
-trainer.html          Trainer page: sign-in form first, app hidden until a valid token exists
+index.html            Landing: Supervisor · Course Progress Reports (reports.html) · Admins Dashboard icon
+supervisor.html       Supervisor page
+trainer.html          Admins Dashboard: sign-in first; the app shows only the tabs the account may see
+reports.html          Public course progress reports
 assets/
-  css/app.css         All styles
-  img/logo.png        Default header logo (a logo uploaded in Trainer>Setup overrides it)
-  vendor/             xlsx.full.min.js, jszip.min.js, html2canvas.min.js, jspdf.umd.min.js
-  js/config.js        ONLY place for URLs: Supabase URL + anon key, LINKS
-  js/api.js           Backend client + storage adapter (getShared/setShared) — see §4
-  js/common.js        Shared helpers (formatting, colours, filters, sort, modals, exports, capacity,
-                      loadCoreData, bulk-selection framework, optimistic saveShared)
-  js/supervisor.js    Supervisor logic + page startup
-  js/trainer.js       Trainer logic (setup, attendance, approvals, analytics, calendar) + sign-in + startup
+  css/app.css         All styles (version blocks appended at the end: v4 … v7.5)
+  img/logo.png        Default logo (a logo uploaded in General Configurations overrides it)
+  vendor/             SheetJS 0.20.3 (xlsx.full.min.js), jszip, html2canvas, jspdf
+  js/config.js        ONLY place for URLs: Supabase URL + anon key
+  js/api.js           Backend client: sessions (token in session/localStorage), API.can(), getShared/setShared diffs
+  js/common.js        Shared helpers: filters (cascading), sort, modals, exports (styled Excel), attendance rules,
+                      bulk-selection framework, optimistic saveShared, loadCoreData
+  js/supervisor.js    Supervisor logic + startup
+  js/trainer.js       Admins Dashboard: every staff tab, sign-in, change password, Admins Permissions, users
+  js/reports-admin.js Moodle Reports engine (rp*), Reports Configuration, people not in the roster, colours
+  js/reports.js       Public page (pub*): overview, course table, filters, headcount sheet, exports, colours
 supabase/
-  schema.sql          The database: tables, indexes, RLS lockdown
-  functions/api/      The Edge Function (TypeScript/Deno) — all reads, writes and auth
-  README.md           Setup + redeploy runbook, performance notes
-dev/serve.ps1         Tiny static server (PowerShell HttpListener) — the PC has NO Node or Python
-docs/PROJECT_HANDOFF.md   this file
-docs/WORK_SUMMARY.md      record of the Sept 2026 changes (what, why, measured results, open items)
-README.md             Overview, data model, security model
+  schema.sql          Tables, indexes, RLS lockdown; safe to re-run; upgrade blocks v4, v5, v6, v7 at the end
+  functions/api/      The Edge Function (TypeScript / Deno) — all reads, writes and auth
+  functions/backup/   Hourly Google Sheet backup
+  backup.sql          pg_cron job for the backup
+  README.md           Setup, secrets, deploy checklist, version notes
+dev/serve.ps1         Static server (PowerShell) — the PC has NO Node, Python or Deno
+dev/password-hash.html  Offline PBKDF2 tool for STAFF_ACCOUNTS (no network access)
+docs/                 This file, FEATURE_CATALOGUE, LESSONS_LEARNED, WORK_SUMMARY, Hub_Reports_Integration_Plan
+reference/            Old tools (local only, git-ignored)
 ```
 
-The JS files are **classic scripts sharing globals** (~170 inline `onclick="fn()"` handlers), not ES modules.
-Load order per page: vendor libs → `config.js` → `api.js` → `common.js` → page script.
+- **Classic scripts sharing globals.** The JS files are not ES modules, and handlers are inline `onclick="fn()"`.
+- **Load order per page:** vendor libs → `config.js` → `api.js` → `common.js` → page script(s).
+- **The Admins Dashboard** also loads `reports-admin.js`.
+- **Name prefixes:** reports globals start with `rp` (staff) and `pub` (public).
 
 ---
 
@@ -63,174 +94,202 @@ Project ref `aoqgabdsayaqgqroscdw`. Schema in `supabase/schema.sql`.
 
 | Table | Content |
 |---|---|
-| `pharmacists` | The roster, one row per person. Master columns + `assignment` / `attendance` (`jsonb`) + `note`, `completion_pct` (Core Completion), `capsule_pct` (Capsule Completion), `work_shift` (Morning Shift / Night Shift, set by the supervisor). |
-| `training_days` | One row per day; the whole day object lives in `data` (`jsonb`). |
-| `approvals` | `New Pharmacist` / `Annual Leave` / `Over-Quota Decision` / `Date Change` (Request Change) / `Submission` (supervisor pressed Submit) rows; columns for filtering, full record in `data`. |
-| `notifications` | Approval results shown to supervisors. |
-| `settings` | `key` → `value` (`jsonb`): maxCapacity, trainerNames, coordinatorNames, trainingNames, cityRoster (`[{name, supervisors}]`), completionCourse, completionLastSynced, logo. |
-| `venues` | `city` → recommended venue, offered in Add/Edit Training Day. |
-| `kv_cache` | Small expiring key/value store (login lockout counter, generated token secret, `presence:<supervisor>` pings for "supervisors online", `backup_state` fingerprints for the backup Log). |
+| `pharmacists` | The roster.<br>Master columns, plus `assignment` / `attendance` (jsonb), `note`, `work_shift`.<br>`history` (jsonb): retraining attempts, v4.<br>`completion_pct` / `capsule_pct`: old data, unused since v5. |
+| `training_days` | One row per day; the day object in `data` (jsonb).<br>Includes `visibleSupervisors`, `readOnlySupervisors` (managed), quotas, capacity, deadline, online format. |
+| `approvals` | Types: New Pharmacist, Annual Leave, Over-Quota Decision, Date Change, Submission, Group Merge, Data Edit.<br>Full record in `data`. |
+| `notifications` | Results shown to supervisors. |
+| `settings` | `key` → jsonb.<br>maxCapacity, trainerNames, coordinatorNames, trainingNames, cityRoster, logo, `coreCourseId`, `capsuleCourseId`, `categoryColors`. |
+| `venues` | City → recommended venue. |
+| `kv_cache` | Expiring key / value store:<br>`login_fails:<user>`, `login_fails_all`, `token_secret`, `presence:<supervisor>`, `rl:<ip>:<minute>`, `rlhits:<date>`, backup state. |
+| `activity_log` | Append-only audit (v4); superadmin reads it. |
+| `courses` | Tracked courses (v5).<br>`display` jsonb: columns, deadline options, `color` / `bg` / `text`.<br>`engine` jsonb.<br>Random `share_slug`. |
+| `course_progress` | One row per learner per course; a publish replaces the course's rows. |
+| `course_uploads` | Publish history (counts only, never the exclusion list). |
+| `report_hidden` | v6. Not-in-roster people hidden from the public reports. |
+| `staff_accounts` | v6 / v7. Own password `hash`, `session_version`, `must_change`, `perms` (overrides).<br>For app-made users: `role`, `disabled`, `created_*`. |
+| `lms_learners` | v5 onboarding learners: kept as old data, unused since v6. |
 
-**Every table has RLS enabled with no policies** → the public anon key can read/write nothing. Only the Edge
-Function touches the data, using the service-role connection. Indexes: `supervisor`, and an expression index on
-`(assignment->>'dateId')` which the seat-count query relies on.
-
-ID prefixes: `ph_` pharmacist, `day_` training day, `lr_` leave request, `ntf_` notification, `qh_` over-quota decision.
+**Every table has RLS enabled with no policies**, so the anon key can read and write nothing. Only the Edge Function
+touches the data. ID prefixes: `ph_` pharmacist, `day_` day, `lr_` leave request, `ntf_` notification,
+`qh_` over-quota decision, `sub_` submission.
 
 ---
 
 ## 4. Front-end ↔ backend contract
 
 ### Storage adapter (`api.js`)
-The app calls `getShared(key, fallback)` / `setShared(key, value)`. `getShared` fetches `{records, settings}`,
-remembers a **snapshot**, and returns the old-style value; `setShared` **diffs against the snapshot and sends only
-changed records** (`patch`) — this is what prevents "two people save → last one wins" data loss. No prior snapshot
-⇒ only adds/updates, never deletes. `peekSnapshot(key)` is used by undo history.
+- **Reads:** `getShared(key, fallback)` fetches `{records, settings}` and remembers a **snapshot**.
+- **Writes:** `setShared(key, value)` **diffs against the snapshot and sends only the changed records**. This prevents
+  last-write-wins data loss.
+- **Optimistic saves:** `saveShared(key, getValue)` updates the screen first and coalesces rapid changes. A failed save
+  triggers `APP_HOOKS.onSaveFailed`, which reloads the true state.
+- **Values the server stores** (retraining markers, unsubmit) come back in `{ops:{pid:{a,h}}}` and are applied through
+  `applyServerOps` / `APP_HOOKS.onOpsUpdated`.
 
-**Saves are optimistic**: the caller updates the screen first, then `saveShared(key, getValue)` persists in the
-background, coalescing rapid changes into as few requests as possible. If a save fails, `APP_HOOKS.onSaveFailed`
-reloads the true state and re-renders, which reverts the optimistic change.
+**Data keys:**
+- **Arrays of `{id,…}`:** `master-pharmacists`, `pending-pharmacists`, `leave-requests`, `quota-approval-history`,
+  `pharmacist-notifications`, `change-requests`, `supervisor-submissions`, `group-merges`, `data-edit-requests`.
+- **`operations`:** `{assignments:{pid:{type,dateId|status,locked?,retraining?…}}, attendance:{pid:{…,day1,day2}}, shifts:{pid}}`.
+  Wire form `{pid:{a,t,s,h}}`.
+- **`training-config`:** `{dates:[…], maxCapacity, trainerNames, coordinatorNames, trainingNames, cityRoster}`.
+- **`company-logo`**.
+- **`course-slots`:** Core / Capsule course data. Staff only; needs `attend.coreCapsule`.
 
-Keys → shapes: `master-pharmacists`, `pending-pharmacists`, `leave-requests`, `quota-approval-history`,
-`pharmacist-notifications`, `change-requests`, `supervisor-submissions` are arrays of `{id,…}`; `operations` =
-`{assignments:{pid:{type:'date'|'leave',locked?,…}}, attendance:{pid:{status,reason?,punctuality,time,note,day1,day2,…}}, shifts:{pid:'Morning Shift'|'Night Shift'}}`
-(wire form `{pid:{a,t,s}}`); `training-config` = `{dates:[…], maxCapacity, trainerNames, coordinatorNames,
-trainingNames, completionCourse, completionLastSynced}`; `company-logo` = data-URL string.
+### HTTP API (`POST` JSON to the Edge Function, anon key in the headers)
 
-### HTTP API (`POST` JSON to the Edge Function, with the anon key in the headers)
-`{action, token?|supervisor?, …}` →
-`login{username,password}` · `supervisors` (names list, public) · `get{key}` · `getMany{keys}` ·
-`patch{key,records,settings}` · `venues` (trainer) · `me` · `submit` (supervisor: lock all their choices) ·
-`ping` (supervisor heartbeat, every 60 s) · `presence` (trainer: how many supervisors pinged in the last 150 s). `get company-logo` is public.
-Every response includes `_ms`, the server's own execution time.
+| Who | Actions |
+|---|---|
+| **Public** | `login{username,password,remember}`, `supervisors`, `get company-logo`, `reportsPublic`, `reportsPublicCourse{slug}` |
+| **Supervisor or staff** | `me`, `get{key}`, `getMany{keys}`, `patch{key,records,settings}`, `submit` (supervisor), `ping` (supervisor heartbeat) |
+| **Staff, by permission** | `venues`, `presence`, `coursesList`, `courseSave`, `courseDelete`, `courseShareRotate`, `courseSlotsSet`, `coursePublish`, `courseExport`, `categoryColorsSet`, `notInRosterList`, `reportHideSet` |
+| **Own account** | `changePassword{current,next}` |
+| **Superadmin** | `activity`, `adminAccounts`, `adminSetPerms`, `adminResetPassword`, `adminSignOut`, `adminCreateUser`, `adminSetDisabled`, `adminDeleteUser`, `adminSetNames` |
 
-### Auth & authorization (server-side; the URL and anon key are public by nature of a static site)
-- **Trainer** *(v4: named accounts — see "v4" at the end)*: username/password compared to the `TRAINER_USER` / `TRAINER_PASS` secrets; returns an HMAC-signed
-  token (`TOKEN_SECRET`), TTL 10 h, kept in `sessionStorage`. 8 failed logins in 10 min lock login for 10 min.
-- **Admin** (lower access): same sign-in page, credentials in the `ADMIN_USER` / `ADMIN_PASS` secrets; the token
-  carries `r:'admin'`. Tabs: Attendance · Calendar (view only) · Analytics & Export
-  (Master Sheet Preview only) · General Configurations (Import Completion only). The server lets it read roster /
-  operations / days / pending list and write `operations`, `master-pharmacists` and only the four completion-sync
-  settings of `training-config` (`ADMIN_SETTING_KEYS`) — everything else is refused.
-- **Supervisor:** picks a name (no password), validated by an indexed lookup. Server limits reads to that
-  supervisor's own pharmacists (no phone/SCFHS) and scopes approvals/notifications; other supervisors' ops rows
-  are reduced to `{type:'date',dateId}` (seat counts only).
-- **Supervisor writes are re-validated server-side** (`patchOps` / `validateSupervisorAssignment`): pharmacist
-  ownership, day visible/active, online↔offline match, deadline, capacity, per-supervisor quota (recomputed —
-  a forged `quotaApproved` is ignored), leave-status allow-list, no attendance writes.
-- **Trainer-only:** master roster, training-config/days, settings, logo, quota history, approvals, attendance.
-- Writes that move someone between days run in a transaction holding a Postgres advisory lock, so capacity stays
-  correct under concurrency. Attendance-only writes skip the lock (they can't overbook).
+Every response includes `_ms`, the server's own time.
+
+### Auth and authorization
+- **Staff accounts:**
+  - The `STAFF_ACCOUNTS` secret (`{user:{role,hash}}`), plus app-made accounts in `staff_accounts`. The secret wins on a clash.
+  - A password the person chose (`staff_accounts.hash`) replaces the secret's hash.
+  - Lockout: 8 wrong tries per username in 10 minutes, plus an overall cap.
+- **Tokens:**
+  - HMAC-signed `{u, r, v:2, sv, rm, e}`, valid 10 h, or 144 h with "Keep me signed in".
+  - Stored in `sessionStorage`, or `localStorage` when remembered.
+  - Each request re-checks: the account exists with that role, it isn't switched off, and `sv` matches `session_version`.
+  - While `must_change` is set, only `me` and `changePassword` are allowed.
+- **Permissions:**
+  - `PERM_KEYS` and the role defaults in `rolePerms`, plus per-account overrides. `effectivePerms` also turns off a tab's children when the tab is off.
+  - The server guards actions with `requirePerm`.
+  - Writes are mapped by `checkWritePerms` (a booking change accepts Change dates / Edit Selected / Decide requests / Master upload / Edit training days).
+  - The page hides `data-perm` elements and calls `can()`.
+- **Supervisors:**
+  - Name checked by an indexed lookup; they see only their own pharmacists.
+  - Every write is re-validated: ownership, visible and active day, online ↔ physical match, deadline, capacity, quota, locks, and no attendance writes.
+- **Concurrency:** writes that move someone between days run in a transaction with a Postgres advisory lock, so two
+  people can't take the last seat.
 
 ---
 
 ## 5. Business rules worth knowing
 
-- Capacity per day (default 30, `settings.maxCapacity`, optional per-day override). Trainers may exceed capacity
-  after a confirm; supervisors may not.
-- Supervisor deadline per day (disables assignment after the date/time).
-- **Per-supervisor quotas work on any day — in-person or online.** Beyond quota, an assignment is *pending* and
-  needs trainer approval (Trainer → Approvals → over-quota).
-- Online days (city `Online`, "Mix n"): default **split = 2 days** (no Friday start) or full-day.
-- Split attendance: Day 2 can't be Attended unless Day 1 was; Absent on Day 1 auto-marks Day 2 Absent; one
-  attended day ⇒ `Partial` (make-up).
-- New pharmacists and Annual Leave requests are submitted by supervisors and **only take effect on trainer
-  approval** (bulk-add and annual-leave Excel templates exist).
-- City colours/codes: JED N/S = blue, JAZ/BAH/ABH/TAIF = green, MAD/MEC = yellow, RUH/EAST = purple, Online = grey.
-- **Hidden days are hidden from supervisors only.** Trainers still see, edit and assign them (marked "hidden from
-  supervisors" in dropdowns; dashed border in the calendar). Supervisors never receive them in their lists.
-- **Attended = locked for supervisors.** Once a pharmacist is fully attended (both days for a split online training),
-  a supervisor can't change their day/leave status or clear it — enforced in the UI and in `patchOps`
-  (`hasAttended`). Trainers can still change it. "Partial" is not locked (a make-up day is still needed).
-- **Day labels are numbered per group** in date order (`computeDayLabels` in trainer.js): in-person by city code
-  (JED N 1, JED N 2…), online by training name else city (Online QAS 1, Online QAS 2…); a split online training
-  counts once; names already ending in a number ("Mix 3") are kept. Display only — nothing is stored.
-- **Master Sheet export = upload format.** Analytics & Export → Master Sheet columns (District … SCFHS, Attendance
-  Status, Work Shift, Notes) are exactly what General Configurations → Master Pharmacist Data accepts. The upload
-  matches each row to an existing pharmacist (email → employee ID → name+supervisor), so they keep their id, day and attendance; duplicate rows are
-  skipped; "Date" / "Attendance Status" text is read back into assignments and attendance (blank / "Not Assigned"
-  leaves what's recorded). The trainer chooses whether people missing from the file are kept or removed.
-  When two days share a city and date, the Date text gets the training name, e.g. `Online — 5 - 6 October 26 (Mix 4)`.
-  If a Date text still matches several groups, the upload picks the one the pharmacist's **own supervisor** can see.
-- **Same-date groups** (e.g. "Online QAS" for Dr. Islam Jaber and "Online North" for Dr. Mahmoud Sorour, both
-  6 - 7 Oct, city "Online") are labelled `Online QAS — 6 - 7 October 26 · Dr. Islam Jaber` in every list
-  (`dayGroupText` in common.js). Trainers may still put anyone in any group.
-- **Group mix-up check** (Attendance tab banner): lists pharmacists in a group their supervisor can't see and moves
-  them, after review, to their supervisor's group on the same date. Rows unticked in the review are remembered per
-  browser (`group-fix-ignored`) and not flagged again.
-- **Edit Selected** (Attendance tab): tick pharmacists → edit their master details in a grid → review a before/after
-  list → Confirm saves (duplicate emails are refused; a brand-new supervisor name is flagged as a possible typo).
-- **Submit needs everything filled:** every one of the supervisor's pharmacists (Offline and Online) must have a Date
-  or other status AND a Work Shift, or Submit is refused (in the page and in `submitSupervisor`) and the table shows
-  only the missing rows. Work Shift: Night = red, Morning = green.
-- **No-date lock:** when every day a supervisor can see for a pharmacist's type is not editable for them, a pharmacist
-  with no date has the whole Date slot locked, leave statuses included (`noDateSlotLocked` / `supNoDateSlotLocked`).
-- **Submit & locks (supervisor).** Choices are free until the supervisor presses **Submit** (`submit` action): every
-  pharmacist with a date or leave status gets `assignment.locked`, and a `Submission` row notifies the trainer
-  (Approvals tab + badge). Locked pharmacists lose their dropdown; the supervisor asks via **Request Change**
-  (`change-requests`, reason required) → trainer approves (applied, still locked) or rejects (supervisor notified).
-  Trainer changes keep the lock (`patchOps` carries it over). Exception: a pharmacist who **missed** training
-  (Absent, or Partial on a 2-day online training) gets the dropdown back and can be booked onto another visible day
-  (the missed day isn't offered); that new pick is free until the next Submit. Work Shift is never locked.
-- **Visible vs Editable (per day).** Edit Training Day → Visible to has two columns; Editable defaults to Visible.
-  Unticked = `readOnlySupervisors`: the supervisor sees the day but can't put pharmacists on it or move them off it
-  (except someone who missed training) — only through Request Change. Enforced in `validateSupervisorAssignment`.
-- **Absent reason is optional** (Interaction / Pharmacy / LMS): one click on Absent records it; the reason buttons
-  under it add, change or remove `reason` on the attendance (per day for split trainings). Shown as "Absent - LMS" in exports and the supervisor view, and read back by the upload.
-- **City Roster** (General Configurations): cities + linked supervisors. "Auto-select by city" and the bulk "City"
-  action make a day visible to exactly the linked supervisors (falls back to the old guess when none are linked).
-  Renaming a city renames it on training days, not on pharmacists.
-- **Cascading filters** everywhere: each filter lists only values present among rows matching the other filters
-  (`registerFilterFacets` / `narrowMsOptions` in common.js).
-- **Attendance tab date labels** are short: `Online QAS - 11,12 Oct 26` (online: training name, else city;
-  in-person: city) — `shortDayText`; a supervisor hint is added only if two days would still read the same.
-- **Bulk actions**: checkboxes on the trainer Records table, the trainer Days table and the supervisor table.
-  Pharmacists → Assign to a day / set a leave status / unassign (+ trainer-only delete from roster).
-  Days → Hide / Unhide / Deadline / Supervisors / Capacity / Trainer · Coordinator / City / Delete (Supervisors and
-  Trainer can Add to or Replace what the days have). Anything that doesn't fit (wrong online/offline type, day full) is skipped and
-  reported; selections prune to what's visible when filters change.
+The full list with IDs is in [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md) §11. The ones that cause the most questions:
 
-### Training days / calendar
-Days are created in the app, or imported in bulk from a planning spreadsheet via **Trainer → Calendar → Import
-Calendar** (parsed in the browser by `parseCalendarAoa`, then saved like any other config change).
-- **Identity = the code** (`JED N 1`, `RUH 3`, `MIX 4`, normalised `JEDN1`; repeats get `#2`), so re-importing
-  updates the same day instead of duplicating it, and everything set in the app is preserved.
-- A day block is at most **5 columns wide** so the summary tables to the right of the grid aren't read as trainings.
-- A `MIX n` appears under **both** of its two days in the grid → keep day 1 only.
-- Ignored (not pharmacist trainings): `Salaries`, `Saudi National Day`, `CC`, `Re-Training`, `Learning Booster`, `Ams & SVs`.
+- **Capacity:** default 30 (per-day override). Trainers may go over after a confirmation; supervisors may not.
+- **Quotas:** per-supervisor quotas work on every day. Bookings over quota wait for approval.
+- **Hidden days** are hidden from supervisors only. Trainers still see and use them, and they appear in the public
+  Training Date filter.
+- **Visible vs Editable:** a day can be visible but not editable for a supervisor (a "managed" day). They can't book
+  onto it or move people off it; they use Request Change instead.
+- **Submit:**
+  - Locks every pharmacist the supervisor has filled in.
+  - Pharmacists booked on a training day need a Work Shift first.
+  - Empty rows stay open.
+- **The lock always wins (v6)**, including for absent pharmacists. Rebook them through Request Change, or a trainer
+  **Unsubmits** them (v7). Unsubmit doesn't override a managed day.
+- **Attended:** only the training team can change the pharmacist.
+- **Split online training:**
+  - Day 2 can't be Attended before Day 1; Day 1 Absent marks Day 2 Absent.
+  - One day attended + one day Absent = Partial (failed).
+  - Day 1 attended + Day 2 not marked = in progress.
+- **Retraining:** a failed attempt is archived when the pharmacist moves to another date; the new booking carries
+  `retraining`. It isn't archived for a move to another group on the same date.
+- **Master Sheet export = upload format.** The upload matches people by email → employee ID → name + supervisor, and
+  keeps their ids, days and attendance.
+- **Calendar import:** identity = the day code (`JED N 1`, `MIX 4`), so re-importing updates the same day.
+- **Reports:**
+  - **Roster match:** the roster (by email) wins; anyone else is "Not in roster", and can be hidden from the reports.
+  - **Timestamps:** read in KSA. An unreadable timestamp means "Completed (date unknown)", never Late.
+  - **Course colours:** a course's own colour wins, then its category's colour, then the default.
 
 ---
 
-## 6. Performance design (why it is fast)
+### 5.1 Detailed rules (from earlier versions, still valid)
 
-- **Rendering:** the trainer table's row template is one shared function; an attendance change refreshes only that
-  row (`updateTrainerRow`), not all ~1,450. Day dropdowns render one option and fill the full list on first open.
-  `dayById` replaces repeated linear scans.
-- **Saving:** optimistic + coalesced (see §4), so a click never waits on the network.
-- **Server:** writes read only the rows they touch; seat counts come from a `GROUP BY` limited to the days
-  involved; trainer/attendance writes skip the capacity machinery entirely; bulk writes are one statement.
-  See `supabase/README.md` → *Performance notes*.
-- **Measuring:** open any page with `?debug=1` to log round-trip vs server time per request.
+- **Online days** (city `Online`, "Mix n"): split over 2 days by default (no Friday start), or a full day.
+- **Absent reason is optional** (Interaction / Pharmacy / LMS).
+  - One click on Absent records the absence; the reason buttons add, change or remove `reason` (per day for split
+    trainings).
+  - Shown as "Absent - LMS" in exports and on the supervisor page, and read back by the roster upload.
+- **New pharmacists and Annual Leave** requested by supervisors take effect only once a trainer approves them. Bulk-add
+  and annual-leave Excel templates exist.
+- **City colours / codes:** JED N/S = blue, JAZ/BAH/ABH/TAIF = green, MAD/MEC = yellow, RUH/EAST = purple,
+  Online = grey.
+- **Day labels are numbered per group** in date order (`computeDayLabels`). Display only; nothing is stored.
+  - In-person days by city code (JED N 1, JED N 2…); online days by training name, else city (Online QAS 1…).
+  - A split online training counts once; names already ending in a number ("Mix 3") are kept.
+- **Same-date groups** (e.g. "Online QAS" and "Online North", both 6–7 Oct, city "Online") are labelled with the
+  training name and supervisor in every list (`dayGroupText`). Trainers may still put anyone in any group.
+- **Attendance tab date labels** are short, e.g. `Online QAS - 11,12 Oct 26` (`shortDayText`). A supervisor hint is
+  added only when two days would still read the same.
+- **Group mix-up check** (Attendance tab banner):
+  - Lists pharmacists in a group their supervisor can't see.
+  - After review, moves them to their supervisor's group on the same date.
+  - Rows unticked in the review are remembered per browser (`group-fix-ignored`).
+- **Edit Selected** (Attendance tab): tick pharmacists → edit their details in a grid → review before / after → Confirm.
+  Duplicate emails are refused; a brand-new supervisor name is flagged as a possible typo.
+- **Master Sheet upload:**
+  - The Date text is read back into assignments. When two days share a city and date, it includes the training name,
+    e.g. `Online — 5 - 6 October 26 (Mix 4)`.
+  - If a Date text still matches several groups, the upload picks the one the pharmacist's own supervisor can see.
+  - The trainer chooses whether people missing from the file are kept or removed.
+- **City Roster** (General Configurations): cities and their linked supervisors.
+  - "Auto-select by city" and the bulk "City" action make a day visible to exactly the linked supervisors.
+  - Renaming a city renames it on training days, not on pharmacists.
+- **Calendar import** (`parseCalendarAoa`):
+  - Day identity = the code, normalised (`JEDN1`; repeats get `#2`), so re-imports update days and keep what was set in
+    the app.
+  - A day block is at most 5 columns wide.
+  - A `MIX n` shown under both of its days is kept once.
+  - Ignored entries: `Salaries`, `Saudi National Day`, `CC`, `Re-Training`, `Learning Booster`, `Ams & SVs`.
+- **Bulk actions:**
+  - Pharmacists: assign / leave / unassign / Mark attendance / Unsubmit / delete.
+  - Days: hide / unhide / deadline / supervisors / capacity / trainer · coordinator / city / delete.
+  - Anything that doesn't fit (wrong online / physical type, day full, attended…) is skipped and reported.
+  - Selections shrink to what is visible when filters change.
+- **Work Shift colours:** Night = red, Morning = green. The Work Shift is never locked.
+
+
+## 6. Performance design
+
+- **Rendering:**
+  - The trainer table refreshes only the changed row (`updateTrainerRow`).
+  - Day dropdowns are filled on first open.
+  - `dayById` uses an index.
+- **Saving:** optimistic and coalesced.
+- **Server:**
+  - Writes read only the rows they touch.
+  - Seat counts use a `GROUP BY` limited to the days involved.
+  - Bulk writes are one statement.
+  - Public answers are cached for 60 s per instance.
+- **Measuring:** `?debug=1` logs round-trip vs server time.
 
 ---
 
 ## 7. Known issues and limits
 
-- Analytics buckets don't sum: people assigned but not yet marked, and split "Partial" attendees, appear in no bucket.
-- Undo/Redo covers training-config only; deleting a day also wipes its assignments and attendance (not restorable).
-- Roster upload keeps existing people's ids (see §5). A person whose email, employee ID *and* name/supervisor all
-  changed at once can't be recognised and is treated as new. Blank cells in a mapped column overwrite that field
-  (except Notes, which a blank never wipes). Completion % isn't in the file and is kept as is.
-- `patchMaster` writes in one transaction with set-based statements, so an upload is all-or-nothing.
-- Days for cities with no pharmacists have no supervisor until pharmacists exist (or "Visible to" is set by hand).
-- Supervisors have no password (name picker only). Optional next step: per-supervisor access codes.
-  (Staff have named accounts and an Activity Log since v4; lockout is per username.)
-- Notes are visible to supervisors — by design, but sensitive notes are exposed to them.
-- Deadline comparison uses the browser's clock against the stored ISO timestamp.
-- A free Supabase project pauses after 7 days of inactivity (one-click resume).
+- **Supervisor access:** supervisors have no password.
+- **Analytics:** buckets don't add up when someone is assigned but not yet marked.
+- **Undo / Redo:**
+  - Covers training-config only.
+  - Deleting a day also wipes its assignments and attendance.
+- **Roster upload:**
+  - Someone whose email, employee ID *and* name / supervisor all changed at once is treated as new.
+  - Blank cells overwrite fields (except Notes).
+- **Permissions:**
+  - Changes apply on the person's next page load.
+  - Write checks are lenient by design (any screen that makes a change allows it).
+- **Public page:** can lag up to 60 s after a publish or hide (cache).
+- **Headcount filter:** needs the course's Email column.
+- **Notes:** visible to supervisors, by design.
+- **Free Supabase:** pauses after 7 days without use.
 
-**Ideas not built**: per-supervisor codes / per-trainer accounts, fixing analytics buckets, realtime live-sync
-(Supabase supports it), ES-module refactor, automated tests.
+**Ideas not built:**
+- Per-supervisor access codes.
+- Realtime live sync.
+- An Unlock / auto-notification to supervisors after Unsubmit.
+- A contrast warning in the colour picker.
+- Automated tests.
+- An ES-module refactor.
 
 ---
 
@@ -239,31 +298,62 @@ Calendar** (parsed in the browser by `parseCalendarAoa`, then saved like any oth
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File dev/serve.ps1 -Port 5173
 ```
-Open `http://localhost:5173/`. It talks to the **live Supabase backend** — there is no offline mock any more
-(the old one emulated Google Sheets, which no longer exists). Use a throwaway supervisor/day when testing writes.
 
-**Deploying a change:**
-- Front end → commit/push (GitHub Pages: branch `main`, root).
-- Backend → paste `supabase/functions/api/index.ts` into the `api` function and **Deploy**
-  (or `supabase functions deploy api`). See `supabase/README.md`.
-- The two are independent; the wire protocol only changes if a data key is added.
+Open `http://localhost:5173/`. It talks to the **live** backend, so:
+
+- **Writes are tested against an in-browser mock** of the Edge Function (see [LESSONS_LEARNED.md](LESSONS_LEARNED.md) §5).
+  Temporary `dev/_t_*.TEMP.html` pages load the real page plus the mock. Delete them afterwards; never commit them.
+- **Checks against the live system are read-only.**
+- **`rpSelfTest()`** (with `?debug=1`) runs 23 Moodle-engine checks.
+
+**Deploy:** use the checklist in [../supabase/README.md](../supabase/README.md#deploy-checklist).
+1. `schema.sql`.
+2. `api`.
+3. `backup`.
+4. Push the front end.
+
+Always run the schema before deploying a new `api`.
 
 ---
 
 ## 9. Gotchas for whoever continues
 
-- The owner's Windows PC has **no Node/Python/Deno**; use PowerShell (`dev/serve.ps1`). Git is installed but the
-  owner pushes to GitHub themselves.
-- Never commit real roster/attendance exports (`*.xlsx` are git-ignored).
-- Table column order must stay in sync between the `<thead>` in the HTML and the row template in the JS
-  (header cell count = body cell count, including the bulk-select checkbox column).
-- Keep `esc()` around every value interpolated into HTML.
-- Any new field on a pharmacist needs adding in three places: the `schema.sql` column, the Edge Function's
-  `getMaster`/`patchMaster`, and the front-end master shape.
-- The Edge Function can't be type-checked on the owner's PC (no Deno) — review carefully, deploy, then exercise
-  the supervisor path (it needs no password) to smoke-test reads *and* writes.
+- **No Node / Python / Deno on the owner's PC.** Check scripts with the Perl scope checker and by loading every changed
+  page in the browser. See [LESSONS_LEARNED.md](LESSONS_LEARNED.md) for the editing traps (Perl `$1`, heredocs,
+  apostrophes in JS strings).
+- **Git** needs `-c "safe.directory=D:/Work/UPC/Sync Training"`. The owner pushes; commit per phase.
+- **Never commit roster exports** (`*.xlsx`, `*.xls`, `*.csv` are ignored) or secrets.
+- **Table columns:** the `<thead>` in the HTML and the row template in the JS must have the same number of cells
+  (including the bulk-select checkbox column).
+- **`esc()`** around every value put into HTML.
+- **A new field on a pharmacist** needs four changes: `schema.sql`, `getMaster` / `patchMaster` in the Edge Function, the
+  front-end master shape, and the mock.
+- **A new staff screen or action** needs four things:
+  - a permission key in `PERM_KEYS` (server) and `PERM_TREE` (Admins Permissions);
+  - a role default in `rolePerms`;
+  - a server check;
+  - a `data-perm` tag or `can()` call on the page.
+- **A new Activity Log action** needs a label in `ACTIVITY_LABELS` (trainer.js).
+- **Ask the owner** before adding anything they didn't ask for.
 
-## Later additions (v3)
+---
+
+## 10. Change history (oldest first)
+
+Older entries describe the rules **as they were then**. Where a later version changed a rule, the later entry wins.
+§5 above is always current.
+
+### Before v3 (Sept 2026)
+- **Speed work and the move from Google Sheets to Supabase.** See [WORK_SUMMARY.md](WORK_SUMMARY.md).
+- **Rules from then that were later changed:**
+  - **Submit needed every row filled.** Since v4 (S-11) it locks only what is filled.
+  - **A pharmacist who missed training got the dropdown back, even when locked.** Removed in v6: the lock always wins.
+  - **One shared trainer login (`TRAINER_USER`/`TRAINER_PASS`) and an "admin" login (`ADMIN_USER`/`ADMIN_PASS`).**
+    Replaced by named accounts in v4. The four secrets still work only as a fallback while `STAFF_ACCOUNTS` is unset.
+  - **Core / Capsule completion was imported into `pharmacists.completion_pct` / `capsule_pct`.** Since v5 it comes
+    from published course data.
+
+### v3
 
 - **Two completion columns** in the Attendance tab: Core Completion (`completion_pct`) and Capsule Completion
   (`capsule_pct`). General Configurations → Import Completion syncs each from its own LMS course (Capsule defaults to
@@ -275,7 +365,7 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
 - **Hourly Google Sheet backup**: `supabase/functions/backup` + `supabase/backup.sql` (pg_cron); setup steps in
   `supabase/README.md`.
 
-## v4 (update v4.md)
+### v4 (update v4.md)
 
 - **Named staff accounts** (`STAFF_ACCOUNTS` secret, PBKDF2 hashes made offline with `dev/password-hash.html`):
   `UPC_TMD` superadmin · `UPC_T1`–`T4` trainer · `UPC_Co`, `UPC_Co1`, `UPC_Co2` coordinator (the old "admin" role —
@@ -312,9 +402,9 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
 - **Deploy order matters**: run the `schema.sql` upgrade lines (history column + activity_log) BEFORE deploying the new
   `api` function — it reads/writes `pharmacists.history`.
 
-## v5 — Reports (in progress — see docs/Hub_Reports_Integration_Plan.md)
+### v5 — Reports (see Hub_Reports_Integration_Plan.md)
 
-- **Done: Phases 1–5** (database, Edge Function, staff tabs, Hub columns, public page). Phase 6 is manual (below). Tables `courses`, `course_progress` (one row per learner per
+- **Done: Phases 1–5** (database, Edge Function, staff tabs, Hub columns, public page). Tables `courses`, `course_progress` (one row per learner per
   course; a publish replaces the course's rows), `course_uploads` (publish audit; never the exclusion list),
   `lms_learners` (onboarding people for completion reporting only — never part of the roster). Settings keys
   `coreCourseId` / `capsuleCourseId`.
@@ -326,7 +416,7 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
 - One merge (`mergedCourseRows`) feeds the staff export and the public page: roster by email wins, else onboarding, else
   "Not in roster"; optional "No completion data" rows for roster people missing from the upload.
 - Public actions run before `authenticate()`, are rate-limited per IP in `kv_cache` (`rl:<ip>:<minute>`, daily
-  `rlhits:<date>` counter), cached 60 s per isolate, mask emails (`ab•••@domain`) and send only enabled columns.
+  `rlhits:<date>` counter), cached 60 s per isolate and send only enabled columns (emails were masked at first; since the v5 UI round they are shown in full — owner decision).
 - `pharmacists.completion_pct` / `capsule_pct` are kept but no longer read or written. Until Phase 4, the Attendance
   tab's Core / Capsule columns show "—" and the old Import Completion card no longer saves anything.
 - Fixed with this change: `patchMaster` declared `const s` twice (a v4 syntax error that would stop `api` deploying).
@@ -360,17 +450,9 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   in Reports Configuration to send no emails for that course. A "Report
   unavailable" answer (inactive course / renewed link) is never replaced by the saved copy. `config.js` no longer has
   any Apps Script link; the landing card opens `reports.html`.
-- **Phase 6 (manual, owner) — migration and retirement of the old dashboard:**
-  1. For each course tab of the old Google Sheet: File → Download → .xlsx.
-  2. Reports Configuration → track a course with the same name (Moodle) → Moodle Reports → choose it → upload that
-     file → check the preview (final video, counted statuses, unreadable timestamps) → Publish.
-  3. Compare per course with the old dashboard (totals, finished, in progress) — differences usually come from the
-     final-video or counted-status choice, or people missing from the roster (see "Not in roster").
-  4. Switch the courses to **Active**; pick Core / Capsule in Reports Configuration → Hub columns.
-  5. In the old `LMS-reporting` repo, replace its page with a one-line "Moved → <Hub>/reports.html".
-  6. Archive the Apps Script deployment and set the old Sheet to **Restricted** (its URL was public and exposed the roster).
 
-## v6 — permissions, passwords, report people, attendance tools
+
+### v6 — permissions, passwords, report people, attendance tools
 
 - **Lock fix (R-1):** the lock always wins. A pharmacist who missed their training on a submitted or managed day no
   longer gets the Date dropdown back; the supervisor rebooks them through Request Change (allowed now for failed
@@ -440,7 +522,7 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
 
   `STAFF_ACCOUNTS` stays as it is. Existing sessions keep working; everyone gets the new features on their next page load.
 
-## v7 — Training Date filter, Unsubmit, course colours, users made in the app
+### v7 — Training Date filter, Unsubmit, course colours, users made in the app
 
 - **Public page:** new **Training Date** filter, showing the training day each roster person is booked on in the Admins
   Dashboard. It covers visible and hidden days, plus "No training day".
@@ -482,3 +564,58 @@ Open `http://localhost:5173/`. It talks to the **live Supabase backend** — the
   - **Editing:** Reports Configuration → Category colours → Edit colours. The pop-up can also clear the courses' own colours, so the whole category follows.
   - **Server:** action `categoryColorsSet` (needs `repconf.edit`), logged as `category_colors`. `coursesList` returns `categoryColors`.
   - **Course form:** in a course's form the empty swatch reads "Use category colour".
+
+### v7.3 — Image / PDF exports never cut off
+
+- **Problem:** Image and PDF exports captured only what fitted on screen. On a phone, or in a window that didn't fill the
+  screen, columns past the right edge were lost and the rest were squeezed.
+- **Fix (`captureFull` in common.js):** the export draws a copy laid out off the page, so the page itself doesn't move.
+  - **Tables** (default; course report, Attendance, Master Sheet Preview, supervisor list): the copy takes the table's
+    whole width (CSS class `export-full`): no sideways scroll box, no wrapping and no "…" cells.
+  - **Calendar:** `{minWidth:1100}`, so it is laid out at desktop width at least.
+  - **Unchanged:** the `.exporting` rules, e.g. the trainer's short export still leaves out `col-export-skip`.
+- **Size limits:** the image is 2× for sharp text. It is made smaller for very long tables, because browsers refuse
+  canvases over about 32,000 px on a side, and phones over about 16.7 million pixels (`exportCanvasScale`). Example: a
+  1,400-row course on a phone gives a complete but small image; use Excel for that.
+- **Deploy:** front end only.
+- **Also fixed:** `dev/serve.ps1` uses `-LiteralPath`, so the local server works in a folder whose name has `[ ]`
+  brackets.
+
+### v7.4 — Attendance tab headcount sheet
+
+- **What:** the public page's "Upload Headcount Sheet" (PUB-8), now also on the Attendance tab (T-A15), for every
+  account that sees that tab. No permission switch and no server change: the file is read in the browser only.
+- **Code:**
+  - `readHeadcountFile` / `parseHeadcountSheet` moved from reports.js into common.js, so both pages share them.
+    The header row is found in the first 10 rows (Email / Username column), or else the column with the most emails.
+  - trainer.js `trainerHc*`. `applyTrainerFilters` keeps only sheet emails in "Headcount only" mode, so the table,
+    bulk selection and the Excel export follow; Image / PDF follow the table on screen.
+  - The `trainer` filter facets and the District / Area Manager / City / Supervisor lists use `trainerHcBase()`.
+    Values already ticked stay listed.
+  - Emails match ignoring upper / lower case and spaces.
+- **Deploy:** front end only.
+
+### v7.5 — account names and typed temporary passwords
+
+- **Admins Permissions → ✎ Name & username** (SA-8), for any account:
+  - **Display name** (`staff_accounts.display_name`, up to 60 characters). Shown in the top bar, Admins Permissions,
+    the Activity Log (and its export and user filter), "merged by" and the Master Sheet's marked-by, also on past entries.
+  - **Sign-in username** (`staff_accounts.login_name`, unique ignoring case). `login()` resolves it with
+    `resolveLogin()`. Once it is set, the original username no longer signs in. Changing it raises `session_version`
+    (signed out everywhere), except for the superadmin's own account.
+  - **Fixed id:** `username` stays the account's id everywhere: tokens, `staff_accounts` key, permissions, Activity
+    Log rows, stamps. So a rename rewrites nothing. A new username or sign-in username must not equal any account's
+    original username or sign-in username, ignoring case.
+  - **Server:** `adminSetNames {username, displayName, loginName}` (superadmin; logged as `user_name` / `user_login`).
+    `login` and `me` also return `login`, `displayName` and `staffNames` (`{id: {n, l}}`; `l` only for the superadmin).
+  - **Front end:** `API.login`, `API.displayName`, `API.staffNames`; `staffLabel(id)` / `staffLabelFull(id)` in
+    common.js; `renderRoleBadge()` in trainer.js.
+- **Reset password and Add user:** "Generate one for me" or "Type it myself" (`chosenTempPassword`). Same rules as the
+  server: 10+ characters, a letter and a number, and it must not contain either username. Either way the person must
+  choose their own password at the next sign-in. Add user also takes an optional display name.
+- **Password rule:** `passwordProblem(pw, ...users)` now refuses both the original username and the sign-in username.
+- **Backup:** the Admin Accounts tab has "display name" and "sign-in username (if changed)".
+- **Deploy v7.5:**
+  1. Run `schema.sql` (the v7.5 block adds `display_name`, `login_name` and a unique index).
+  2. Redeploy `api`, then `backup`.
+  3. Push the front end.

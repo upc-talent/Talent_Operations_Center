@@ -89,6 +89,7 @@
     <div id="t-attend" class="trainer-tab">
       <div id="groupMixBanner" class="mix-banner hidden"></div>
       <div class="filter-bar" id="trainerFilterBar"></div>
+      <div class="hc-bar" id="trainerHcBar"></div>
 
       <div class="card" id="sessionCard" style="display:none;">
         <div class="row">
@@ -425,8 +426,8 @@
       </div>
       <p class="small-note cal-edit" style="margin-bottom:8px;">Drag a training day onto another date to reschedule it.</p>
       <div class="row" style="margin-bottom:10px;">
-        <button class="btn btn-navy btn-sm" onclick="exportTableImage('calendarExportArea','training-calendar')">📷 Image</button>
-        <button class="btn btn-navy btn-sm" onclick="exportTablePDF('calendarExportArea','training-calendar')">🖨 PDF</button>
+        <button class="btn btn-navy btn-sm" onclick="exportTableImage('calendarExportArea','training-calendar',{minWidth:1100})">📷 Image</button>
+        <button class="btn btn-navy btn-sm" onclick="exportTablePDF('calendarExportArea','training-calendar',{minWidth:1100})">🖨 PDF</button>
         <button class="btn btn-navy btn-sm" onclick="exportCalendarExcel()">⬇ Excel</button>
       </div>
       <div class="row calendar-quarter-nav" style="justify-content:space-between;margin-bottom:10px;">

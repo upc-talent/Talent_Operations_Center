@@ -89,7 +89,8 @@ async function route(req: any, ip = "unknown") {
   const ctx = await authenticate(req);
   switch (action) {
     case "me": return { ok: true, role: ctx.role, who: ctx.who || null, user: ctx.role === "supervisor" ? null : ctx.user,
-                        ...(isStaff(ctx) ? { perms: ctx.perms, mustChange: !!ctx.mustChange, remember: !!ctx.remember } : {}) };
+                        ...(isStaff(ctx) ? { perms: ctx.perms, mustChange: !!ctx.mustChange, remember: !!ctx.remember,
+                                             ...(await accountNamesFor(ctx.user || "", ctx.role, await accountRow(ctx.user || ""))) } : {}) };
     case "get": return { ok: true, data: await getKey(ctx, req.key) };
     case "getMany": return { ok: true, data: await getMany(ctx, req.keys) };
     case "patch": return await patchKey(ctx, req);
@@ -107,6 +108,7 @@ async function route(req: any, ip = "unknown") {
     case "adminCreateUser": requireSuperadmin(ctx); await adminCreateUser(ctx, req); return { ok: true };
     case "adminSetDisabled": requireSuperadmin(ctx); await adminSetDisabled(ctx, req); return { ok: true };
     case "adminDeleteUser": requireSuperadmin(ctx); await adminDeleteUser(ctx, req); return { ok: true };
+    case "adminSetNames": requireSuperadmin(ctx); return { ok: true, ...(await adminSetNames(ctx, req)) };
     // Reports (v5) — Moodle Reports / SAP Reports / Reports Configuration (by default superadmin + coordinators)
     case "coursesList": requirePerm(ctx, "moodle.view", "sap.view", "repconf.view"); return { ok: true, ...(await coursesList()) };
     case "courseSave": requirePerm(ctx, "repconf.edit"); return { ok: true, course: await courseSave(ctx, req.course) };
@@ -346,11 +348,13 @@ async function login(req: any) {
   if (fails >= CONFIG.MAX_LOGIN_FAILS || allFails >= CONFIG.MAX_LOGIN_FAILS * 6) {
     throw new Error("Too many failed attempts. Please try again in a few minutes.");
   }
-  // usernames are matched exactly (case-sensitive), like the passwords
-  const row = u ? await accountRow(u) : null;
-  const base = u ? accountFrom(u, row) : undefined;
+  // usernames are matched exactly (case-sensitive), like the passwords. `id` = the account's fixed username, which can
+  // differ from what was typed once the superadmin has changed its sign-in username (v7.5).
+  const id = u ? await resolveLogin(u) : null;
+  const row = id ? await accountRow(id) : null;
+  const base = id ? accountFrom(id, row) : undefined;
   const acc = withOwnPassword(base, row);
-  if (!(await passwordMatches(acc, pw)) || !acc) {
+  if (!(await passwordMatches(acc, pw)) || !acc || !id) {
     await kvPut(userKey, String(fails + 1), CONFIG.LOCKOUT_MINUTES * 60);
     await kvPut("login_fails_all", String(allFails + 1), CONFIG.LOCKOUT_MINUTES * 60);
     await logActivity([{ username: u.slice(0, 64), role: acc ? acc.role : "", action: "login_failed", target_kind: "account", target_id: u.slice(0, 64),
@@ -362,10 +366,71 @@ async function login(req: any) {
   // a switched-off account is told so only after the right password (no hint to someone guessing)
   if (row && row.disabled) throw new Error("This account is switched off — ask the super admin.");
   const remember = req.remember === true;
-  await logActivity([{ username: u, role: acc.role, action: "login", target_kind: "account", target_id: u, target_name: "", details: remember ? { keepSignedIn: "6 days" } : {} }]);
-  return { ok: true, token: await makeToken(u, acc.role, remember, (row && row.session_version) || 1), role: acc.role, user: u,
+  await logActivity([{ username: id, role: acc.role, action: "login", target_kind: "account", target_id: id, target_name: "", details: remember ? { keepSignedIn: "6 days" } : {} }]);
+  return { ok: true, token: await makeToken(id, acc.role, remember, (row && row.session_version) || 1), role: acc.role, user: id,
            ttlHours: tokenTtlHours(remember), remember, mustChange: !!(row && row.must_change),
-           perms: effectivePerms(acc.role, row && row.perms) };
+           perms: effectivePerms(acc.role, row && row.perms), ...(await accountNamesFor(id, acc.role, row)) };
+}
+/* ── Account names (v7.5) ──
+   staff_accounts.display_name: shown in the app instead of the username. staff_accounts.login_name: a different
+   sign-in username. `username` stays the account's fixed id — tokens, permissions, the Activity Log and the
+   "marked by" stamps keep using it, so nothing has to be rewritten when a name changes. */
+// The account id a typed sign-in username belongs to, or null when that username was replaced by a new one.
+async function resolveLogin(typed: string): Promise<string | null> {
+  try {
+    const hit = await sql`select username from staff_accounts where login_name = ${typed} limit 1`;
+    if (hit.length) return hit[0].username;
+    const own = await sql`select login_name from staff_accounts where username = ${typed} limit 1`;
+    if (own.length && own[0].login_name) return null;   // renamed: the old username no longer signs in
+  } catch (_) { /* v7.5 block of schema.sql not run yet: usernames only */ }
+  return typed;
+}
+// Sent with sign-in and `me`: this account's sign-in username and display name, and the names to show for every
+// account id (the superadmin also gets their sign-in usernames, for the Activity Log).
+async function accountNamesFor(id: string, role: string, row: any) {
+  const staffNames: Record<string, { n?: string; l?: string }> = {};
+  try {
+    for (const r of await sql`select username, display_name, login_name from staff_accounts where display_name <> '' or login_name is not null`) {
+      const x: { n?: string; l?: string } = {};
+      if (r.display_name) x.n = r.display_name;
+      if (role === "superadmin" && r.login_name) x.l = r.login_name;
+      if (x.n || x.l) staffNames[r.username] = x;
+    }
+  } catch (_) { /* v7.5 block not run yet */ }
+  return { login: (row && row.login_name) || id, displayName: (row && row.display_name) || "", staffNames };
+}
+const cleanDisplayName = (v: unknown) => String(v ?? "").replace(/[\u0000-\u001f\u007f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
+// Superadmin: set an account's display name and sign-in username. A new sign-in username signs the person out
+// everywhere (except the superadmin's own session), so they sign in again with it. Empty / the original username =
+// sign in with the original username again.
+async function adminSetNames(ctx: Ctx, req: any) {
+  const { u } = await accountName(req.username);
+  const row = (await accountRow(u)) || {};
+  const display = cleanDisplayName(req.displayName);
+  let login = String(req.loginName ?? "").trim();
+  if (login === u) login = "";
+  if (login) {
+    if (!USERNAME_RE.test(login)) throw new Error("The sign-in username must be 3–32 characters: letters, numbers, _ . or -");
+    // unique ignoring case across every account's original username and every sign-in username
+    const all = await allAccounts();
+    if (Object.keys(all).some((x) => x !== u && x.toLowerCase() === login.toLowerCase())) throw new Error("That username is already taken.");
+    const taken = await sql`select 1 from staff_accounts where username <> ${u} and (lower(username) = lower(${login}) or lower(login_name) = lower(${login})) limit 1`;
+    if (taken.length) throw new Error("That username is already taken.");
+  }
+  const prevDisplay = row.display_name || "", prevLogin = row.login_name || "";
+  const loginChanged = prevLogin !== login, bump = loginChanged && u !== ctx.user;
+  await sql`insert into staff_accounts (username, display_name, login_name, session_version, updated_by)
+            values (${u}, ${display}, ${login || null}, ${bump ? 2 : 1}, ${ctx.user || ""})
+            on conflict (username) do update set display_name = ${display}, login_name = ${login || null},
+              session_version = staff_accounts.session_version + ${bump ? 1 : 0}, updated_at = now(), updated_by = ${ctx.user || ""}`;
+  if (loginChanged) {
+    for (const x of [u, prevLogin, login]) if (x) await kvRemove("login_fails:" + x.toLowerCase().slice(0, 64));
+  }
+  const log: ActRow[] = [];
+  if (display !== prevDisplay) log.push(act(ctx, "user_name", "account", u, u, { from: prevDisplay, to: display }));
+  if (loginChanged) log.push(act(ctx, "user_login", "account", u, u, { from: prevLogin || u, to: login || u }));
+  if (log.length) await logActivity(log);
+  return { displayName: display, loginName: login || u, signedOut: bump };
 }
 // A password the person chose in the app (staff_accounts.hash) replaces the STAFF_ACCOUNTS one.
 function withOwnPassword(acc: Account | undefined, row: any): Account | undefined {
@@ -377,12 +442,13 @@ async function hashPassword(pw: string): Promise<string> {
   const iterations = 150000;
   return "pbkdf2$" + iterations + "$" + b64urlFromBytes(salt) + "$" + b64urlFromBytes(await pbkdf2(pw, salt, iterations));
 }
-// Password rules: 10–128 characters, at least one letter and one number, not containing the username.
-function passwordProblem(pw: string, user: string): string {
+// Password rules: 10–128 characters, at least one letter and one number, not containing the username (either the
+// original one or the sign-in username, v7.5).
+function passwordProblem(pw: string, ...users: string[]): string {
   if (pw.length < 10) return "The new password must be at least 10 characters.";
   if (pw.length > 128) return "The new password is too long (128 characters at most).";
   if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return "The new password needs at least one letter and one number.";
-  if (user && pw.toLowerCase().includes(user.toLowerCase())) return "The new password can't contain your username.";
+  if (users.some((user) => user && pw.toLowerCase().includes(user.toLowerCase()))) return "The new password can't contain your username.";
   if (/^(.)\1+$/.test(pw)) return "The new password is too simple.";
   return "";
 }
@@ -415,7 +481,7 @@ async function changePassword(ctx: Ctx, req: any) {
     await new Promise((r) => setTimeout(r, 1000));
     throw new Error("Your current password is not correct.");
   }
-  const problem = passwordProblem(next, u);
+  const problem = passwordProblem(next, u, (row0 && row0.login_name) || "");
   if (problem) throw new Error(problem);
   if (next === cur) throw new Error("The new password must be different from the current one.");
   if (acc.pass === undefined && await passwordMatches(acc, next)) throw new Error("The new password must be different from the current one.");
@@ -434,14 +500,14 @@ async function accountName(input: unknown): Promise<{ u: string; acc: Account & 
 async function adminAccounts() {
   const all = await allAccounts();
   let rows: any[] = [];
-  try { rows = await sql`select username, hash is not null as own, session_version, must_change, perms, disabled, created_at, created_by, updated_at, updated_by from staff_accounts`; }
-  catch (_) { throw new Error("Run the v6 and v7 blocks of schema.sql first (staff_accounts table)."); }
+  try { rows = await sql`select username, hash is not null as own, session_version, must_change, perms, disabled, created_at, created_by, updated_at, updated_by, display_name, login_name from staff_accounts`; }
+  catch (_) { throw new Error("Run the v6, v7 and v7.5 blocks of schema.sql first (staff_accounts table)."); }
   const byUser: Record<string, any> = {};
   for (const r of rows) byUser[r.username] = r;
   const order: Record<string, number> = { superadmin: 0, trainer: 1, coordinator: 2 };
   return Object.keys(all).sort((a, b) => (order[all[a].role] - order[all[b].role]) || a.localeCompare(b)).map((u) => {
     const r = byUser[u] || {};
-    return { username: u, role: all[u].role, app: !!all[u].app, disabled: !!r.disabled, ownPassword: !!r.own, mustChange: !!r.must_change,
+    return { username: u, displayName: r.display_name || "", loginName: r.login_name || u, role: all[u].role, app: !!all[u].app, disabled: !!r.disabled, ownPassword: !!r.own, mustChange: !!r.must_change,
       overrides: r.perms || {}, defaults: rolePerms(all[u].role), perms: effectivePerms(all[u].role, r.perms),
       createdAt: all[u].app && r.created_at ? new Date(r.created_at).toISOString() : null, createdBy: all[u].app ? (r.created_by || "") : "",
       updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null, updatedBy: r.updated_by || "" };
@@ -468,10 +534,11 @@ async function adminResetPassword(ctx: Ctx, req: any) {
   const { u } = await accountName(req.username);
   if (u === ctx.user) throw new Error("Use Change password for your own account.");
   const temp = String(req.temp || "");
-  const problem = passwordProblem(temp, u);
-  if (problem) throw new Error(problem.replace("The new password", "The temporary password"));
+  const login = ((await accountRow(u)) || {}).login_name || "";
+  const problem = passwordProblem(temp, u, login);
+  if (problem) throw new Error(problem.replace("The new password", "The temporary password").replace("your username", "their username"));
   await saveAccount(u, ctx.user || "", { hash: await hashPassword(temp), mustChange: true, bump: true });
-  await kvRemove("login_fails:" + u.toLowerCase().slice(0, 64));
+  for (const x of [u, login]) if (x) await kvRemove("login_fails:" + x.toLowerCase().slice(0, 64));
   await logActivity([act(ctx, "password_reset", "account", u, u, {})]);
 }
 async function adminSignOut(ctx: Ctx, req: any) {
@@ -489,14 +556,15 @@ async function adminCreateUser(ctx: Ctx, req: any) {
   if (role !== "trainer" && role !== "coordinator") throw new Error("Choose the role: Trainer or Coordinator.");
   const all = await allAccounts();
   if (Object.keys(all).some((x) => x.toLowerCase() === u.toLowerCase())) throw new Error("That username is already taken.");
-  const old = await sql`select role from staff_accounts where lower(username) = lower(${u})`;
+  const old = await sql`select role from staff_accounts where lower(username) = lower(${u}) or lower(login_name) = lower(${u})`;
   if (old.length) throw new Error("That username is already taken.");
   const temp = String(req.temp || "");
   const problem = passwordProblem(temp, u);
-  if (problem) throw new Error(problem.replace("The new password", "The temporary password"));
-  await sql`insert into staff_accounts (username, role, hash, session_version, must_change, perms, created_by, updated_by)
-            values (${u}, ${role}, ${await hashPassword(temp)}, 1, true, '{}'::jsonb, ${ctx.user || ""}, ${ctx.user || ""})`;
-  await logActivity([act(ctx, "user_create", "account", u, u, { role })]);
+  if (problem) throw new Error(problem.replace("The new password", "The temporary password").replace("your username", "their username"));
+  const display = cleanDisplayName(req.displayName);
+  await sql`insert into staff_accounts (username, role, hash, session_version, must_change, perms, created_by, updated_by, display_name)
+            values (${u}, ${role}, ${await hashPassword(temp)}, 1, true, '{}'::jsonb, ${ctx.user || ""}, ${ctx.user || ""}, ${display})`;
+  await logActivity([act(ctx, "user_create", "account", u, u, display ? { role, name: display } : { role })]);
 }
 async function adminSetDisabled(ctx: Ctx, req: any) {
   const { u, acc } = await accountName(req.username);

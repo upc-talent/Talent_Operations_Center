@@ -2,7 +2,7 @@
 
 **For:** Claude Code, working directly in the Hub repo (`Sync Training/`)
 **Owner:** Zaghloul (UPC Talent Management)
-**Status:** Approved design. Build in the phase order in §11.
+**Status:** Approved design. Build in the phase order in §10.
 
 > **Read first:** `docs/PROJECT_HANDOFF.md` (especially the v4 section), `supabase/README.md`, `supabase/schema.sql`, `supabase/functions/api/index.ts`, `assets/js/api.js`, `assets/js/common.js`. Follow the existing conventions: classic scripts sharing globals (no ES modules, no build step), `esc()` around every interpolated value, `<thead>` cell count equal to the row template, and every write goes through the `api` Edge Function. The owner's PC has no Node, Python or Deno. Review the Edge Function carefully; the owner deploys it by hand.
 
@@ -213,7 +213,7 @@ Add it to `getKey` and to `COORD_KEYS`. Trainers can read it too: the Attendance
 - Add three tabs after "General Configurations": **Moodle Reports**, **SAP Reports**, **Reports Configuration**.
 - Add a new class `reports-only`, shown for `superadmin` and `coordinator` and hidden for `trainer`. Do **not** reuse `trainer-only`, whose meaning is "hidden for coordinators".
 - **Coordinators:** after D14 their General Configurations tab has nothing left, so hide it for coordinators (`COORD_TABS` = Attendance, Calendar, Analytics (Master Sheet Preview), Moodle Reports, SAP Reports, Reports Configuration).
-- Load `xlsx` (upgraded, §10), then `reports-admin.js` after `trainer.js`. All new globals are prefixed `rp` (for example `rpState`, `rpParseAoa`) to avoid collisions.
+- Load `xlsx` (upgraded, §9), then `reports-admin.js` after `trainer.js`. All new globals are prefixed `rp` (for example `rpState`, `rpParseAoa`) to avoid collisions.
 
 ### 5.2 Moodle Reports tab: a port of every Moodle tool feature
 
@@ -259,7 +259,7 @@ The workflow is laid out as numbered panels, like the original tool.
   - `[Weekday, ]D Month YYYY[, H:MM AM|PM]`
   - Excel serial numbers
 
-  Treat all of them as **KSA local time (UTC+3)** and return epoch milliseconds or null. Read sheets with `raw:true, cellDates:false` so serial numbers aren't reformatted by the browser locale. Keep the raw text for display. **Add unit-style self-checks** (§12).
+  Treat all of them as **KSA local time (UTC+3)** and return epoch milliseconds or null. Read sheets with `raw:true, cellDates:false` so serial numbers aren't reformatted by the browser locale. Keep the raw text for display. **Add unit-style self-checks** (§11).
 - The deadline is `deadline date + time + :59 seconds` in KSA, as in the original (inclusive minute). Document this in the UI note.
 - Remove `window.claude.use('downloads')`.
 - Rows without email are dropped from publish and counted as `noEmail` in the summary.
@@ -447,38 +447,28 @@ Status buckets on this page: **Finished** = Completed + Final video done, others
 
 ---
 
-## 9. Retirement of the old stack (after parity sign-off)
-
-1. Export each course tab of the old Google Sheet to `.xlsx`. Create a tracked course in Configuration for each and publish it through **Moodle Reports**; the layout is the same as Moodle exports.
-2. Compare counts with the old dashboard per course (see §12).
-3. Point the old dashboard's URL (`upc-talent.github.io/LMS-reporting/`) to a one-line page: "Moved → <Hub>/reports.html" (the owner does this in that repo).
-4. **Archive the Apps Script deployment** and set the old Sheet to **Restricted**. Its URL was public, so it exposes the whole roster until it is archived.
-
----
-
-## 10. Libraries
+## 9. Libraries
 
 - Replace `assets/vendor/xlsx.full.min.js` (currently SheetJS **0.18.5**) with **0.20.3** from `https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js`, vendored, to fix CVE-2023-30533 and CVE-2024-22363. Re-test the Master upload, Calendar import, Bulk Add and the new Moodle upload.
 - No new libraries.
 
 ---
 
-## 11. Build phases and deploy order
+## 10. Build phases and deploy order
 
 | Phase | Work | Deploy |
 |---|---|---|
 | **1. Database** | §3 SQL | Run in the Supabase SQL Editor **first**. |
 | **2. Backend** | §4 (new actions, `course-slots`, `getMaster` / `patchMaster` / `getConfig` changes, backup tabs) | Deploy `api`, then `backup`. The old front end keeps working: unknown keys are ignored, and the Core/Capsule columns show `—` until phase 4. |
-| **3. Staff tabs** | §5, §7, §10 | GitHub Pages. |
+| **3. Staff tabs** | §5, §7, §9 | GitHub Pages. |
 | **4. Hub columns** | §6.1–§6.3, §6.5 | GitHub Pages. Assign the Core and Capsule courses in Configuration right after. |
 | **5. Public page** | §8 and the §6.4 landing link | GitHub Pages. |
-| **6. Migration and retirement** | §9 | Manual. |
 
 Update `README.md`, `docs/PROJECT_HANDOFF.md` (new "v5 — Reports" section, new tables, actions, roles) and `supabase/README.md` (new SQL, backup tabs).
 
 ---
 
-## 12. Test checklist
+## 11. Test checklist
 
 **Engine** (add `rpSelfTest()` runnable from the console with `?debug=1`):
 - [ ] `Test@x.com` and `test@x.com` merge into one student.
@@ -510,7 +500,7 @@ Update `README.md`, `docs/PROJECT_HANDOFF.md` (new "v5 — Reports" section, new
 
 ---
 
-## 13. Open items (do not block the build)
+## 12. Open items (do not block the build)
 
 - **A sample real Moodle export** is needed to confirm the timestamp formats for `rpParseTs`. Ask the owner before finalising the parser.
 - **Brand palette.** The Hub still uses `#003261` / `#2FB3DF`, but the official UPC palette is `#223974` / `#188CCD` / `#F8991D` / `#00A99B`. This is a separate decision, so don't change it in this work.

@@ -234,3 +234,11 @@ alter table staff_accounts add column if not exists role       text;
 alter table staff_accounts add column if not exists disabled   boolean not null default false;
 alter table staff_accounts add column if not exists created_at timestamptz not null default now();
 alter table staff_accounts add column if not exists created_by text not null default '';
+
+-- ═════════ v7.5 — account names ═════════
+-- The superadmin can give any account a display name (shown in the app instead of the username) and a different
+-- sign-in username (login_name). `username` stays the account's fixed id: sessions, permissions, the Activity Log and
+-- "marked by" stamps keep using it. Once login_name is set, the old username no longer signs in.
+alter table staff_accounts add column if not exists display_name text not null default '';
+alter table staff_accounts add column if not exists login_name   text;
+create unique index if not exists staff_accounts_login_name_key on staff_accounts (lower(login_name)) where login_name is not null;

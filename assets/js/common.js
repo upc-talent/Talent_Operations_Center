@@ -1117,7 +1117,7 @@ function buildMasterRow(p){
     originalDate: retrainHistory(p.id).length ? attemptDayText(retrainHistory(p.id)[0]) : '',
     attempt: retrainHistory(p.id).length ? String(retrainHistory(p.id).length + (a && a.type==='date' ? 1 : 0)) : '',
     note: p.note || (validDateAssignment && att && att.note ? att.note : ''),
-    markedBy: validDateAssignment && att ? (att.markedBy || (att.day1&&att.day1.markedBy) || (att.day2&&att.day2.markedBy) || '') : ''
+    markedBy: staffLabel(validDateAssignment && att ? (att.markedBy || (att.day1&&att.day1.markedBy) || (att.day2&&att.day2.markedBy) || '') : '')
   };
 }
 
@@ -1364,12 +1364,43 @@ function initFloatingScrollbars(){
 }
 document.addEventListener('DOMContentLoaded', initFloatingScrollbars);
 
-async function captureFull(el){
-  el.classList.add('exporting');
-  try{ return await html2canvas(el, {scale:2, backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false}); }
-  finally{ el.classList.remove('exporting'); }
+// Image / PDF capture draws a copy of `el`, laid out so nothing is cut off whatever the window or phone size; the page
+// itself doesn't move.
+//   Tables (default): the copy takes the table's whole width — no sideways scroll box, no wrapping or "…" cells.
+//   opts.minWidth: the copy is laid out at least that wide in px instead (the calendar, whose grid always fits its box
+//   and only gets cramped on a phone).
+async function captureFull(el, opts){
+  const minWidth = opts && opts.minWidth;
+  const layoutWidth = minWidth ? Math.max(el.offsetWidth, minWidth) : 0;
+  const prep = node=>{
+    node.classList.add('exporting');
+    if(layoutWidth) node.style.width = layoutWidth + 'px'; else node.classList.add('export-full');
+  };
+  // measure the copy's layout off-screen, to size its window and keep the canvas within browser limits
+  const probe = el.cloneNode(true);
+  prep(probe);
+  Object.assign(probe.style, {position:'absolute', left:'-100000px', top:'0', visibility:'hidden'});
+  el.parentNode.appendChild(probe);
+  const w = Math.max(1, probe.offsetWidth), h = Math.max(1, probe.offsetHeight);
+  probe.remove();
+  const left = Math.max(0, el.getBoundingClientRect().left + window.scrollX);
+  return await html2canvas(el, {
+    backgroundColor:'#ffffff', useCORS:true, allowTaint:true, logging:false,
+    scale: exportCanvasScale(w, h),
+    // the copy's window holds the whole copy where it sits, and is wide enough that the phone layout doesn't apply
+    windowWidth: Math.max(window.innerWidth, Math.ceil(left + w) + 64),
+    onclone: (doc, copy)=>prep(copy),
+  });
+}
+// 2× for sharp text, lowered for very long tables: browsers refuse canvases over ~32k px a side, and phones (iOS)
+// over ~16.7 million pixels — a refused canvas comes out blank or cut.
+function exportCanvasScale(w, h){
+  const phone = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+  const maxSide = 32000, maxArea = phone ? 16e6 : 60e6;
+  return Math.min(2, maxSide / w, maxSide / h, Math.sqrt(maxArea / (w * h)));
 }
 // opts.autoName: `filename` is the final name (with .png / .pdf) — no "save as" prompt (course reports, reportFileName)
+// opts.minWidth: see captureFull
 async function exportTableImage(containerId, filename, opts){
   const el = document.getElementById(containerId);
   if(!el){ toast('Nothing to export','err'); return; }
@@ -1377,7 +1408,7 @@ async function exportTableImage(containerId, filename, opts){
   const chosenName = (opts && opts.autoName) ? filename : await promptForFilename(filename, 'png');
   if(!chosenName) return;
   try{
-    const canvas = await captureFull(el);
+    const canvas = await captureFull(el, opts);
     canvas.toBlob((blob)=>{
       if(!blob){ toast('Image export failed: could not generate image data','err'); return; }
       const url = URL.createObjectURL(blob);
@@ -1399,7 +1430,7 @@ async function exportTablePDF(containerId, filename, opts){
   const chosenName = (opts && opts.autoName) ? filename : await promptForFilename(filename, 'pdf');
   if(!chosenName) return;
   try{
-    const canvas = await captureFull(el);
+    const canvas = await captureFull(el, opts);
     const { jsPDF } = window.jspdf;
     const imgW = canvas.width, imgH = canvas.height;
     const pdf = new jsPDF({orientation: imgW>imgH?'l':'p', unit:'px', format:[imgW, imgH]});
@@ -1415,4 +1446,58 @@ async function exportTablePDF(containerId, filename, opts){
     setTimeout(()=>URL.revokeObjectURL(pdfUrl), 5000);
     toast('PDF downloaded','ok');
   }catch(e){ console.error('PDF export error:', e); toast('PDF export failed: ' + (e && e.message ? e.message : 'unknown error'), 'err'); }
+}
+
+/* ═══════════════════════════════ HEADCOUNT SHEET (Excel / CSV with an email column) ═══════════════════════════════ */
+// Shared by the public reports page (pub*) and the Attendance tab (trainerHc*). The file is read in this browser
+// only — never uploaded. Returns email (lowercase) → {n, di, am, ci, su}; throws when no email column is found.
+async function readHeadcountFile(file){
+  if(typeof XLSX==='undefined') throw new Error('the spreadsheet reader did not load — refresh the page');
+  const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), {type:'array'});
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false, defval:'', blankrows:false});
+  const people = parseHeadcountSheet(aoa);
+  if(!people.size) throw new Error('no Email or Username (Email) column with email addresses was found');
+  return people;
+}
+// email (lowercase) → {n, di, am, ci, su} from the sheet. The header row is found in the first 10 rows.
+function parseHeadcountSheet(aoa){
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  let hr = -1, idx = null;
+  for(let r=0; r<Math.min(10, aoa.length) && hr<0; r++){
+    const h = (aoa[r]||[]).map(x=>String(x||'').trim());
+    const col = res=>{ for(const re of res){ const i = h.findIndex(x=>re.test(x)); if(i>-1) return i; } return -1; };
+    const e = col([/e-?mail/i, /^username/i]);
+    if(e>-1){ hr = r; idx = {e, n:col([/display.*name/i, /pharmacist.*name/i, /^(full\s*)?name$/i]), di:col([/district/i]),
+      am:col([/area\s*manager/i]), ci:col([/^city$/i, /\bcity\b/i]), su:col([/supervisor/i])}; }
+  }
+  if(hr<0){   // no header: use the column where most cells are emails
+    const counts = {};
+    aoa.slice(0, 200).forEach(row=>(row||[]).forEach((v,i)=>{ if(emailRe.test(String(v||'').trim())) counts[i] = (counts[i]||0)+1; }));
+    const best = Object.keys(counts).sort((a,b)=>counts[b]-counts[a])[0];
+    if(best===undefined) return new Map();
+    hr = -1; idx = {e:Number(best), n:-1, di:-1, am:-1, ci:-1, su:-1};
+  }
+  const v = (row, i)=> i>-1 ? String(row[i]||'').trim().slice(0, 200) : '';
+  const people = new Map();
+  aoa.slice(hr+1, hr+1+20000).forEach(row=>{
+    const e = v(row||[], idx.e).toLowerCase();
+    if(!emailRe.test(e) || people.has(e)) return;
+    people.set(e, {n:v(row, idx.n), di:v(row, idx.di), am:v(row, idx.am), ci:v(row, idx.ci), su:v(row, idx.su)});
+  });
+  return people;
+}
+
+/* ═══════════════════════════════ ACCOUNT NAMES (v7.5) ═══════════════════════════════ */
+// Staff accounts are stored by their fixed id (the original username): Activity Log rows, "merged by" and the other
+// stamps. Show them by the display name the superadmin gave the account, else the id itself (e.g. a supervisor's name).
+function staffLabel(id){
+  const x = id && API.staffNames ? API.staffNames[id] : null;
+  return (x && x.n) || id || '';
+}
+// Superadmin views: "Ahmed Salem (ahmed.salem)" — the display name and the username they sign in with now.
+function staffLabelFull(id){
+  const x = id && API.staffNames ? API.staffNames[id] : null;
+  if(!x) return id || '';
+  const login = x.l || id;
+  return x.n ? `${x.n} (${login})` : login;
 }

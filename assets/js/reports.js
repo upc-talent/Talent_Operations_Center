@@ -418,43 +418,12 @@ async function pubOnHcFile(input){
   input.value = '';
   if(!f) return;
   try{
-    if(typeof XLSX==='undefined') throw new Error('the spreadsheet reader did not load — refresh the page');
-    const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), {type:'array'});
-    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false, defval:'', blankrows:false});
-    const people = pubParseHeadcount(aoa);
-    if(!people.size) throw new Error('no Email or Username (Email) column with email addresses was found');
+    const people = await readHeadcountFile(f);   // common.js
     pubState.hc = {fileName:f.name, people};
     pubState.hcMode = 'hc';
     pubAfterHcChange();
     toast(`Headcount loaded — ${people.size} people`,'ok');
   }catch(e){ toast(`Could not read "${f.name}": ${e.message||'unknown error'}`,'err'); }
-}
-// email (lowercase) → {n, di, am, ci, su} from the sheet. The header row is found in the first 10 rows.
-function pubParseHeadcount(aoa){
-  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  let hr = -1, idx = null;
-  for(let r=0; r<Math.min(10, aoa.length) && hr<0; r++){
-    const h = (aoa[r]||[]).map(x=>String(x||'').trim());
-    const col = res=>{ for(const re of res){ const i = h.findIndex(x=>re.test(x)); if(i>-1) return i; } return -1; };
-    const e = col([/e-?mail/i, /^username/i]);
-    if(e>-1){ hr = r; idx = {e, n:col([/display.*name/i, /pharmacist.*name/i, /^(full\s*)?name$/i]), di:col([/district/i]),
-      am:col([/area\s*manager/i]), ci:col([/^city$/i, /\bcity\b/i]), su:col([/supervisor/i])}; }
-  }
-  if(hr<0){   // no header: use the column where most cells are emails
-    const counts = {};
-    aoa.slice(0, 200).forEach(row=>(row||[]).forEach((v,i)=>{ if(emailRe.test(String(v||'').trim())) counts[i] = (counts[i]||0)+1; }));
-    const best = Object.keys(counts).sort((a,b)=>counts[b]-counts[a])[0];
-    if(best===undefined) return new Map();
-    hr = -1; idx = {e:Number(best), n:-1, di:-1, am:-1, ci:-1, su:-1};
-  }
-  const v = (row, i)=> i>-1 ? String(row[i]||'').trim().slice(0, 200) : '';
-  const people = new Map();
-  aoa.slice(hr+1, hr+1+20000).forEach(row=>{
-    const e = v(row||[], idx.e).toLowerCase();
-    if(!emailRe.test(e) || people.has(e)) return;
-    people.set(e, {n:v(row, idx.n), di:v(row, idx.di), am:v(row, idx.am), ci:v(row, idx.ci), su:v(row, idx.su)});
-  });
-  return people;
 }
 
 function pubVisibleCols(){

@@ -214,8 +214,8 @@ async function readV6Tables(iso: (v: any) => string): Promise<Table[]> {
   return [
     { tab: "Hidden From Reports", header: ["email", "hidden_by", "hidden_at"],
       rows: hid.map((r) => [r.email, r.hidden_by, iso(r.hidden_at)].map(cell)), ids: hid.map((r) => r.email), names: hid.map((r) => r.email) },
-    { tab: "Admin Accounts", header: ["username", "role (app-made accounts)", "switched off", "session_version", "must_change", "permissions (json)", "created_by", "updated_at", "updated_by"],
-      rows: acc.map((r) => [r.username, r.role || "", r.disabled ? "yes" : "no", r.session_version, r.must_change ? "yes" : "no", r.perms, r.created_by || "", iso(r.updated_at), r.updated_by].map(cell)),
+    { tab: "Admin Accounts", header: ["username", "display name", "sign-in username (if changed)", "role (app-made accounts)", "switched off", "session_version", "must_change", "permissions (json)", "created_by", "updated_at", "updated_by"],
+      rows: acc.map((r) => [r.username, r.display_name || "", r.login_name || "", r.role || "", r.disabled ? "yes" : "no", r.session_version, r.must_change ? "yes" : "no", r.perms, r.created_by || "", iso(r.updated_at), r.updated_by].map(cell)),
       ids: acc.map((r) => r.username), names: acc.map((r) => r.username) },
   ];
 }

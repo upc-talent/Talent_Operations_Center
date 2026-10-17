@@ -1,7 +1,7 @@
 # Tiny static web server for local testing (no Node/Python needed).
 #   powershell -NoProfile -ExecutionPolicy Bypass -File dev/serve.ps1 -Port 5173
 param([int]$Port = 5173)
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $mime = @{ '.html'='text/html; charset=utf-8'; '.css'='text/css; charset=utf-8'; '.js'='application/javascript; charset=utf-8';
            '.gs'='text/plain; charset=utf-8'; '.json'='application/json'; '.png'='image/png'; '.svg'='image/svg+xml'; '.ico'='image/x-icon' }
 $listener = New-Object System.Net.HttpListener
@@ -14,7 +14,7 @@ while ($listener.IsListening) {
     $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath.TrimStart('/'))
     if ([string]::IsNullOrEmpty($rel)) { $rel = 'index.html' }
     $path = [IO.Path]::GetFullPath((Join-Path $root $rel))
-    if (-not $path.StartsWith($root) -or -not (Test-Path $path -PathType Leaf)) {
+    if (-not $path.StartsWith($root) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
       $ctx.Response.StatusCode = 404
     } else {
       $ext = [IO.Path]::GetExtension($path).ToLower()

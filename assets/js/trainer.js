@@ -602,6 +602,13 @@ function applyPermissions(root){
   b.toggle('no-core-capsule', !can('attend.coreCapsule'));
 }
 const ROLE_LABELS = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'Coordinator'};
+// Top bar: "Role · display name" (v7.5), else the sign-in username
+function renderRoleBadge(){
+  const badge = document.getElementById('roleBadge');
+  if(!badge) return;
+  badge.textContent = (ROLE_LABELS[API.role] || 'Trainer') + (API.user ? ' · '+(API.displayName || API.login || API.user) : '');
+  badge.title = 'Signed in as '+(API.login||API.user||'')+' — everything you change is recorded under this account';
+}
 // Coordinators see their tabs in this order: Attendance (opens first) · Calendar · Analytics & Export · Moodle Reports ·
 // SAP Reports · Reports Configuration, then anything else the superadmin switched on. Which tabs, sections and buttons
 // show at all comes from the account's permissions (applyPermissions).
@@ -613,11 +620,7 @@ function applyRoleToPage(){
   const order = coord ? COORD_TABS.concat(bar._trainerOrder.filter(id=>!COORD_TABS.includes(id))) : bar._trainerOrder;
   order.forEach(id=>bar.appendChild(bar.querySelector(`.tab[data-tab="${id}"]`)));
   applyPermissions();
-  const badge = document.getElementById('roleBadge');
-  if(badge){
-    badge.textContent = (ROLE_LABELS[API.role] || 'Trainer') + (API.user ? ' · '+API.user : '');
-    badge.title = 'Signed in as '+(API.user||'')+' — everything you change is recorded under this account';
-  }
+  renderRoleBadge();
   // open the first tab this account can see (Attendance for most)
   const visible = [...bar.querySelectorAll('.tab')].filter(t=>!t.classList.contains('perm-hidden'));
   const active = bar.querySelector('.tab.active');
@@ -2256,7 +2259,7 @@ function pharmacistFacetValues(){
   };
 }
 function registerTrainerFilterFacets(){
-  registerFilterFacets('trainer', { items: ()=>masterData, values: pharmacistFacetValues() });
+  registerFilterFacets('trainer', { items: ()=>trainerHcBase(), values: pharmacistFacetValues() });
   registerFilterFacets('master',  { items: ()=>masterData, values: pharmacistFacetValues() });
   registerFilterFacets('days', { items: ()=>trainingConfig.dates, values: {
     city: d=>[(d.city||'').toString()], type: d=>[d.type||'Pharmacist Training'], date: d=>[d.date],
@@ -2264,17 +2267,98 @@ function registerTrainerFilterFacets(){
   }});
 }
 function buildTrainerFilterBar(){
+  // with a headcount sheet in "Headcount only" mode, the lists offer only the values of the sheet's pharmacists
+  // (values already ticked stay listed so they can be unticked)
+  const base = trainerHcBase();
+  const opts = key=>{
+    const vals = distinctValues(base, key);
+    trainerFilterState[key].forEach(v=>{ if(!vals.includes(v)) vals.push(v); });
+    return vals.map(v=>({value:v,text:v}));
+  };
   document.getElementById('trainerFilterBar').innerHTML =
     `<div class="filter-field search-field"><div class="search-box"><span>🔍</span><input type="text" class="big-search-input" id="trainerSearchInput" value="${esc(trainerSearchQ)}" oninput="onTrainerSearch(this.value)" placeholder="Search name or email..."></div></div>` +
-    renderMsFilter('trainer','district','District', distinctValues(masterData,'district').map(v=>({value:v,text:v}))) +
-    renderMsFilter('trainer','areaManager','Area Manager', distinctValues(masterData,'areaManager').map(v=>({value:v,text:v}))) +
-    renderMsFilter('trainer','city','City', distinctValues(masterData,'city').map(v=>({value:v,text:v}))) +
-    renderMsFilter('trainer','supervisor','Supervisor', distinctValues(masterData,'supervisor').map(v=>({value:v,text:v}))) +
+    renderMsFilter('trainer','district','District', opts('district')) +
+    renderMsFilter('trainer','areaManager','Area Manager', opts('areaManager')) +
+    renderMsFilter('trainer','city','City', opts('city')) +
+    renderMsFilter('trainer','supervisor','Supervisor', opts('supervisor')) +
     renderMsFilter('trainer','date','Date', dateFilterOptions(trainingConfig.dates.slice().sort((a,b)=>a.date.localeCompare(b.date)), true)) +
     renderMsFilter('trainer','att','Attendance', ATT_FILTER_OPTIONS) +
     renderMsFilter('trainer','retrain','Retraining', RETRAIN_FILTER_OPTIONS) +
     `<button class="btn btn-outline btn-sm" onclick="clearTrainerFilters()">Clear Filters</button>`;
   renderConductedBySelect();
+  renderTrainerHcBar();
+}
+
+/* ---------- Attendance tab: headcount sheet (like the public page's "Upload Headcount Sheet") ----------
+   An Excel / CSV with an email column, read in this browser only (readHeadcountFile, common.js) and kept until the
+   page is reloaded. "Headcount only" shows just the roster pharmacists whose email is in the sheet: the table, the
+   filters, bulk selection and the exports follow it. "Everyone" shows the whole roster as usual. Clear Filters keeps
+   the sheet; "Remove file" drops it. */
+let trainerHc = null;        // {fileName, people: Map email (lowercase) → {n, di, am, ci, su}}
+let trainerHcMode = 'hc';    // 'hc' = Headcount only, 'all' = Everyone
+const hcEmailKey = p=>String(p.email||'').trim().toLowerCase();
+function trainerHcActive(){ return !!(trainerHc && trainerHcMode==='hc'); }
+function trainerHcBase(){ return trainerHcActive() ? masterData.filter(p=>trainerHc.people.has(hcEmailKey(p))) : masterData; }
+// sheet people whose email isn't in the roster: [{e, n, su, …}]
+function trainerHcMissing(){
+  if(!trainerHc) return [];
+  const roster = new Set(masterData.map(hcEmailKey));
+  const out = [];
+  trainerHc.people.forEach((p, e)=>{ if(!roster.has(e)) out.push({e, ...p}); });
+  return out;
+}
+function renderTrainerHcBar(){
+  const bar = document.getElementById('trainerHcBar');
+  if(!bar) return;
+  if(!trainerHc){
+    bar.innerHTML = `<label class="pub-hc-card" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
+      <input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="onTrainerHcFile(this)">
+      <span class="ic">📋</span><span><b>Upload Headcount Sheet</b><span class="sub">Show only the pharmacists in your own list of emails (read in this browser only)</span>
+      <span class="fname">Click to upload (.xlsx / .xls / .csv)</span></span></label>`;
+    return;
+  }
+  const missing = trainerHcMissing(), total = trainerHc.people.size;
+  bar.innerHTML = `<div class="pub-hc-card loaded"><span class="ic">✅</span><span><b>${esc(trainerHc.fileName)}</b>
+      <span class="sub">${total} people · ${total-missing.length} found in the roster · ${missing.length} not in the roster</span></span></div>
+    <div class="pub-hc-toggle" role="group" aria-label="Headcount source">
+      <button type="button" class="${trainerHcMode==='hc'?'active':''}" onclick="setTrainerHcMode('hc')">📁 Headcount only</button>
+      <button type="button" class="${trainerHcMode==='all'?'active':''}" onclick="setTrainerHcMode('all')">🌐 Everyone</button>
+    </div>
+    ${missing.length ? `<button type="button" class="btn btn-outline btn-sm" onclick="openTrainerHcMissing()">👤 Not in roster (${missing.length})</button>` : ''}
+    <label class="btn btn-outline btn-sm"><input type="file" accept=".xlsx,.xls,.csv" class="hidden" onchange="onTrainerHcFile(this)">↺ Replace</label>
+    <button type="button" class="btn btn-outline btn-sm" onclick="clearTrainerHc()">✕ Remove file</button>`;
+}
+function afterTrainerHcChange(){ buildTrainerFilterBar(); renderTrainerTable(); }
+function setTrainerHcMode(m){ trainerHcMode = m; afterTrainerHcChange(); }
+function clearTrainerHc(){ trainerHc = null; trainerHcMode = 'hc'; afterTrainerHcChange(); toast('Headcount removed — showing everyone','info'); }
+async function onTrainerHcFile(input){
+  const f = input.files && input.files[0];
+  input.value = '';
+  if(!f) return;
+  try{
+    const people = await readHeadcountFile(f);
+    trainerHc = {fileName:f.name, people};
+    trainerHcMode = 'hc';
+    afterTrainerHcChange();
+    toast(`Headcount loaded — ${people.size} people`,'ok');
+  }catch(e){ toast(`Could not read "${f.name}": ${e.message||'unknown error'}`,'err'); }
+}
+function openTrainerHcMissing(){
+  const list = trainerHcMissing();
+  showModal(`<h3>Not in the roster (${list.length})</h3>
+    <p class="small-note">These emails are in <b>${esc(trainerHc.fileName)}</b> but no pharmacist in the roster has them, so they aren't in the table.</p>
+    <div class="table-wrap" style="max-height:55vh;overflow:auto;"><table style="font-size:12px;">
+      <thead><tr><th class="no-sort">#</th><th class="no-sort">Email</th><th class="no-sort">Name (from the sheet)</th><th class="no-sort">Supervisor (from the sheet)</th></tr></thead>
+      <tbody>${list.map((x,i)=>`<tr><td>${i+1}</td><td class="email-cell">${esc(x.e)}</td><td class="name-cell">${esc(x.n||'—')}</td><td>${esc(x.su||'—')}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="copyTrainerHcMissing()">⧉ Copy emails</button>
+      <button class="btn btn-navy btn-sm" onclick="closeModal()">Close</button>
+    </div>`, 'max-width:760px;');
+}
+async function copyTrainerHcMissing(){
+  try{ await navigator.clipboard.writeText(trainerHcMissing().map(x=>x.e).join('\n')); toast('Emails copied','ok'); }
+  catch(e){ toast('Could not copy — select the emails in the list instead','err'); }
 }
 function onTrainerSearch(v){ trainerSearchQ=v; renderTrainerTable(); }
 function clearTrainerFilters(){
@@ -2334,7 +2418,9 @@ function dayMatchesFilters(d){
 
 /* ═══════════════════════════════ TRAINER TABLE + ATTENDANCE ═══════════════════════════════ */
 function applyTrainerFilters(list){
+  const hc = trainerHcActive() ? trainerHc.people : null;
   return list.filter(p=>{
+    if(hc && !hc.has(hcEmailKey(p))) return false;
     if(!inSet(p.district, trainerFilterState.district)) return false;
     if(!inSet(p.areaManager, trainerFilterState.areaManager)) return false;
     if(!inSet(p.city, trainerFilterState.city)) return false;
@@ -2543,7 +2629,7 @@ function trainerRowCells(p, rownum){
 }
 
 function renderTrainerTable(){
-  document.getElementById('trainerTableTitle').textContent = trainerFilterState.date.size ? 'Filtered Records' : 'All Records';
+  document.getElementById('trainerTableTitle').textContent = (trainerFilterState.date.size || trainerHcActive()) ? 'Filtered Records' : 'All Records';
   updateCourseSlotHeaders();
   renderGroupMixBanner();
 
@@ -3936,8 +4022,8 @@ function renderMergesTable(){
       <td>${esc(m.coordinator||'—')}</td>
       <td><b>${m.attendees}</b></td>
       <td class="no-truncate">${esc(m.note||'—')}</td>
-      <td class="no-truncate">${esc(m.mergedBy||'—')}<br><span class="small-note">${esc(when(m.mergedAt))}</span></td>
-      <td>${m.status==='Unmerged' ? `<span class="badge badge-empty">Unmerged</span><br><span class="small-note">${esc(m.unmergedBy||'')} ${esc(when(m.unmergedAt))}</span>` : '<span class="badge badge-date">Active</span>'}</td>
+      <td class="no-truncate">${esc(staffLabel(m.mergedBy)||'—')}<br><span class="small-note">${esc(when(m.mergedAt))}</span></td>
+      <td>${m.status==='Unmerged' ? `<span class="badge badge-empty">Unmerged</span><br><span class="small-note">${esc(staffLabel(m.unmergedBy))} ${esc(when(m.unmergedAt))}</span>` : '<span class="badge badge-date">Active</span>'}</td>
       <td class="no-truncate">${m.status==='Unmerged' || !can('attend.merge') ? '' : `<button class="btn btn-outline btn-sm" onclick="openMergeModal('${m.id}')">Edit</button> <button class="btn btn-danger btn-sm" onclick="unmergeGroups('${m.id}')">Unmerge</button>`}</td>
     </tr>`).join('');
 }
@@ -3946,8 +4032,8 @@ async function exportMergesExcel(){
   const list = mergesCache.filter(m=>showAll || m.status!=='Unmerged').sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
   if(!list.length){ toast('No data to export','err'); return; }
   const headers = ['Date','Merged groups','Trainer','Coordinator','Total attendees','Note','Merged by','Merged at','Status','Unmerged by','Unmerged at'];
-  const rows = list.map(m=>[formatDate(m.date), (m.dayLabels||[]).join(' + '), m.trainer||'', m.coordinator||'', m.attendees, m.note||'', m.mergedBy||'',
-    m.mergedAt ? new Date(m.mergedAt).toLocaleString('en-GB') : '', m.status||'Active', m.unmergedBy||'', m.unmergedAt ? new Date(m.unmergedAt).toLocaleString('en-GB') : '']);
+  const rows = list.map(m=>[formatDate(m.date), (m.dayLabels||[]).join(' + '), m.trainer||'', m.coordinator||'', m.attendees, m.note||'', staffLabel(m.mergedBy),
+    m.mergedAt ? new Date(m.mergedAt).toLocaleString('en-GB') : '', m.status||'Active', staffLabel(m.unmergedBy), m.unmergedAt ? new Date(m.unmergedAt).toLocaleString('en-GB') : '']);
   const ok = await downloadStyledXlsx('merged-groups.xlsx', 'Merged Groups', headers, rows, [14,36,18,18,14,30,14,20,11,14,20], {autoFilter:true});
   if(ok) toast('Excel downloaded','ok');
 }
@@ -3965,6 +4051,7 @@ const ACTIVITY_LABELS = {
   course_share_rotate:'Share link renewed', course_slots:'Core / Capsule courses set', course_publish:'Course data published',
   lms_learner_save:'Onboarding learner saved', lms_learner_delete:'Onboarding learner removed',
   report_hide:'Hidden from reports', report_unhide:'Shown in reports again', password_change:'Password changed',
+  user_name:'Display name changed', user_login:'Sign-in username changed',
   password_change_failed:'Password change refused', password_reset:'Password reset (temporary)', sign_out_all:'Signed out everywhere',
   permissions:'Permissions changed', unsubmit:'Unsubmitted (handed back to the supervisor)', user_create:'Account created',
   user_disable:'Account switched off', user_enable:'Account switched on', user_delete:'Account deleted'
@@ -3983,7 +4070,7 @@ async function loadActivity(older){
     const out = await API.activity(filters);
     activityRows = older ? activityRows.concat(out.rows||[]) : (out.rows||[]);
     activityMore = !!out.more;
-    fillActivityFacet('actUser', out.users||[], 'All users', u=>u);
+    fillActivityFacet('actUser', out.users||[], 'All users', staffLabelFull);
     fillActivityFacet('actAction', out.actions||[], 'All actions', a=>ACTIVITY_LABELS[a]||a);
     renderActivity();
   }catch(e){ toast('Could not load the Activity Log — '+(e.message||'please try again'),'err'); }
@@ -4034,6 +4121,7 @@ function activityDetailsHtml(r){
   if(r.action==='setting') return d.from!==undefined ? arrow(actValue(d.from), actValue(d.to)) : esc(actValue(d.changed));
   if(r.action==='submit') return `${d.newlyLocked||0} locked · ${d.dates||0} with a date · ${d.leaves||0} other status · ${d.unassigned||0} not assigned`;
   if(r.action==='login_failed') return esc(d.reason||'');
+  if(r.action==='user_name' || r.action==='user_login') return arrow(d.from, d.to);
   const keys = Object.keys(d);
   return keys.length ? esc(keys.map(k=>k+': '+actValue(d[k])).join(' · ')) : '';
 }
@@ -4042,10 +4130,10 @@ function renderActivity(){
   if(!activityRows.length){ tb.innerHTML = `<tr><td colspan="6" class="empty-msg">No activity matches the filters</td></tr>`; }
   else tb.innerHTML = activityRows.map(r=>`<tr class="${r.action==='login_failed'?'act-warn':''}">
       <td style="white-space:nowrap">${esc(ksaTime(r.at))}</td>
-      <td class="name-cell">${esc(r.username||'—')}</td>
+      <td class="name-cell">${esc(staffLabelFull(r.username)||'—')}</td>
       <td>${esc(ROLE_NAMES[r.role]||r.role||'—')}</td>
       <td>${esc(ACTIVITY_LABELS[r.action]||r.action)}</td>
-      <td class="no-truncate">${esc(r.target_name||r.target_id||'')}${r.target_kind && !['pharmacist','account'].includes(r.target_kind) ? ` <span class="small-note">(${esc(r.target_kind)})</span>` : ''}</td>
+      <td class="no-truncate">${esc(r.target_kind==='account' ? staffLabelFull(r.target_id) : (r.target_name||r.target_id||''))}${r.target_kind && !['pharmacist','account'].includes(r.target_kind) ? ` <span class="small-note">(${esc(r.target_kind)})</span>` : ''}</td>
       <td class="no-truncate act-details">${activityDetailsHtml(r)}</td>
     </tr>`).join('');
   document.getElementById('activityCount').textContent = `${activityRows.length} row(s) shown${activityMore?' — older rows available':''}`;
@@ -4057,7 +4145,7 @@ async function exportActivityExcel(){
   if(!activityRows.length){ toast('No data to export','err'); return; }
   const plain = html=>{ const div = document.createElement('div'); div.innerHTML = html.replace(/<br>/g,' | '); return div.textContent; };
   const headers = ['Time (KSA)','User','Role','Action','Target','Details'];
-  const rows = activityRows.map(r=>[ksaTime(r.at), r.username, ROLE_NAMES[r.role]||r.role, ACTIVITY_LABELS[r.action]||r.action, r.target_name||r.target_id||'', plain(activityDetailsHtml(r))]);
+  const rows = activityRows.map(r=>[ksaTime(r.at), staffLabelFull(r.username), ROLE_NAMES[r.role]||r.role, ACTIVITY_LABELS[r.action]||r.action, r.target_kind==='account' ? staffLabelFull(r.target_id) : (r.target_name||r.target_id||''), plain(activityDetailsHtml(r))]);
   const ok = await downloadStyledXlsx('activity-log.xlsx', 'Activity Log', headers, rows, [17,14,12,20,28,80], {autoFilter:true});
   if(ok) toast('Activity Log downloaded (the rows shown)','ok');
 }
@@ -4117,7 +4205,7 @@ function openChangePassword(forced){
   showModal(`<h3>${forced ? 'Choose a new password' : 'Change your password'}</h3>
     ${forced ? '<p class="small-note" style="margin-top:-6px;">Your password was reset by the super admin. Choose your own before you continue.</p>' : ''}
     <form onsubmit="submitChangePassword(event, ${forced?'true':'false'})" class="pw-form" autocomplete="on">
-      <input type="text" name="username" autocomplete="username" value="${esc(API.user||'')}" class="hidden" readonly>
+      <input type="text" name="username" autocomplete="username" value="${esc(API.login||API.user||'')}" class="hidden" readonly>
       <label class="field-label" for="pwCur">${forced ? 'Temporary password' : 'Current password'}</label>
       <input type="password" id="pwCur" autocomplete="current-password" required>
       <label class="field-label" for="pwNew">New password</label>
@@ -4136,7 +4224,7 @@ function openChangePassword(forced){
 }
 function pwStrengthHint(){
   const v = document.getElementById('pwNew').value, el = document.getElementById('pwHint');
-  const ok = v.length>=10 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !(API.user && v.toLowerCase().includes(API.user.toLowerCase()));
+  const ok = v.length>=10 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && ![API.user, API.login].some(u=>u && v.toLowerCase().includes(u.toLowerCase()));
   el.style.color = !v ? '' : (ok ? 'var(--ok)' : 'var(--warn)');
 }
 async function submitChangePassword(ev, forced){
@@ -4223,10 +4311,12 @@ async function loadPermAccounts(){
   if(permSel) selectPermAccount(permSel); else document.getElementById('permEditor').innerHTML = '<div class="empty-msg">Choose an account on the left</div>';
 }
 function permChangedCount(a){ return Object.keys(a.overrides||{}).length; }
+// v7.5: the account's display name (or its sign-in username), and "signs in as … · Role" underneath
+const permAccTitle = a=>a.displayName || a.loginName || a.username;
 function renderPermAccounts(){
   document.getElementById('permAccounts').innerHTML = permAccounts.map(a=>`
     <button type="button" class="perm-acc${permSel===a.username?' active':''}" onclick="selectPermAccount('${esc(a.username)}')">
-      <b>${esc(a.username)}</b><span class="small-note">${esc(ROLE_LABELS[a.role]||a.role)}</span>
+      <b>${esc(permAccTitle(a))}</b><span class="small-note">${a.displayName ? esc(a.loginName||a.username)+' · ' : ''}${esc(ROLE_LABELS[a.role]||a.role)}</span>
       <span class="perm-acc-tags">${a.role==='superadmin' ? '<span class="rp-tag ok">everything</span>' : (permChangedCount(a) ? `<span class="rp-tag mid">${permChangedCount(a)} changed</span>` : '<span class="rp-tag grey">role defaults</span>')}
         ${a.mustChange ? '<span class="rp-tag no">must change password</span>' : ''}${a.disabled ? '<span class="rp-tag no">switched off</span>' : ''}${a.app ? '<span class="rp-tag grey" title="Made in the app">app account</span>' : ''}</span>
     </button>`).join('') || '<div class="small-note">No accounts</div>';
@@ -4251,10 +4341,12 @@ function renderPermEditor(){
   };
   el.innerHTML = `
     <div class="perm-head">
-      <div><h3 style="margin:0">${esc(a.username)} <span class="small-note">· ${esc(ROLE_LABELS[a.role]||a.role)}</span></h3>
+      <div><h3 style="margin:0">${esc(permAccTitle(a))} <span class="small-note">· ${esc(ROLE_LABELS[a.role]||a.role)}</span></h3>
+        <div class="small-note">Signs in as <b>${esc(a.loginName||a.username)}</b>${(a.loginName||a.username)!==a.username ? ` · originally ${esc(a.username)}` : ''}</div>
         ${a.disabled ? '<div class="rp-note warn" style="margin:6px 0">This account is switched off — it can\'t sign in.</div>' : ''}
-        <div class="small-note">${a.app ? 'Made in the app'+(a.createdBy?' by '+esc(a.createdBy):'')+' · ' : ''}${a.ownPassword ? 'Uses a password they chose' : 'Uses the password from the server settings'}${a.updatedAt ? ' · last changed '+esc(ksaTime(a.updatedAt))+' KSA'+(a.updatedBy?' by '+esc(a.updatedBy):'') : ''}</div></div>
+        <div class="small-note">${a.app ? 'Made in the app'+(a.createdBy?' by '+esc(staffLabel(a.createdBy)):'')+' · ' : ''}${a.ownPassword ? 'Uses a password they chose' : 'Uses the password from the server settings'}${a.updatedAt ? ' · last changed '+esc(ksaTime(a.updatedAt))+' KSA'+(a.updatedBy?' by '+esc(staffLabel(a.updatedBy)):'') : ''}</div></div>
       <div class="row">
+        <button class="btn btn-outline btn-sm" onclick="openAccountNames('${esc(a.username)}')">✎ Name &amp; username</button>
         ${self ? '<button class="btn btn-outline btn-sm" onclick="openChangePassword()">🔑 Change my password</button>' : `
         <button class="btn btn-outline btn-sm" onclick="openResetPassword('${esc(a.username)}')">🔑 Reset password</button>
         <button class="btn btn-outline btn-sm" onclick="permSignOutEverywhere('${esc(a.username)}')">⎋ Sign out everywhere</button>
@@ -4285,7 +4377,7 @@ async function savePermDraft(){
     a.perms = out.perms; a.overrides = out.overrides;
     permDraft = {...out.perms};
     renderPermAccounts(); renderPermEditor();
-    toast(`Saved — ${a.username} sees the change on their next page load`,'ok');
+    toast(`Saved — ${permAccTitle(a)} sees the change on their next page load`,'ok');
   }catch(e){ toast('Could not save — '+(e.message||''),'err'); }
 }
 // A temporary password made in this browser (shown once); the person must choose their own at the next sign-in.
@@ -4296,17 +4388,67 @@ function makeTempPassword(){
   for(let i=0; i<12; i++) s += (i%4===3 ? digits[buf[i] % digits.length] : letters[buf[i] % letters.length]);
   return s.slice(0,4)+'-'+s.slice(4,8)+'-'+s.slice(8);
 }
-async function openResetPassword(user){
-  const go = await confirmDialog(`Reset ${user}'s password? They are signed out everywhere and must choose a new password the next time they sign in with the temporary one.`);
-  if(!go) return;
-  const temp = makeTempPassword();
-  try{ await API.call('adminResetPassword', {username:user, temp}); }
-  catch(e){ toast('Could not reset — '+(e.message||''),'err'); return; }
-  showModal(`<h3>Temporary password for ${esc(user)}</h3>
-    <p class="small-note">Give it to them privately. It is shown only now; they must change it when they sign in.</p>
-    <input type="text" id="tempPwOut" readonly value="${esc(temp)}" style="width:100%;font-size:16px;font-weight:700;letter-spacing:.5px;" onfocus="this.select()">
-    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="copyTempPassword()">Copy</button>
+// v7.5: the superadmin either has one generated or types the temporary password themselves (Reset password and
+// Add user). Either way the person must choose their own at the next sign-in. Same rules as the server.
+function tempPasswordFieldsHtml(){
+  return `<fieldset class="pw-choice">
+      <legend class="field-label">Temporary password</legend>
+      <label><input type="radio" name="tpMode" value="gen" checked onchange="tempPwModeChanged()"> Generate one for me</label>
+      <label><input type="radio" name="tpMode" value="own" onchange="tempPwModeChanged()"> Type it myself</label>
+      <div id="tpOwnWrap" class="hidden">
+        <input type="text" id="tpOwn" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="128" placeholder="At least 10 characters, with a letter and a number">
+      </div>
+    </fieldset>`;
+}
+function tempPwModeChanged(){
+  const own = document.querySelector('input[name="tpMode"]:checked').value==='own';
+  document.getElementById('tpOwnWrap').classList.toggle('hidden', !own);
+  if(own) document.getElementById('tpOwn').focus();
+}
+// The temporary password to send; throws with the reason when a typed one can't be used.
+function chosenTempPassword(...names){
+  if(document.querySelector('input[name="tpMode"]:checked').value!=='own') return makeTempPassword();
+  const v = document.getElementById('tpOwn').value;
+  if(v.length<10) throw new Error('The temporary password must be at least 10 characters.');
+  if(v.length>128) throw new Error('The temporary password is too long (128 characters at most).');
+  if(!/[A-Za-z]/.test(v) || !/[0-9]/.test(v)) throw new Error('The temporary password needs at least one letter and one number.');
+  if(names.some(n=>n && v.toLowerCase().includes(n.toLowerCase()))) throw new Error('The temporary password can\'t contain their username.');
+  if(/^(.)\1+$/.test(v)) throw new Error('The temporary password is too simple.');
+  return v;
+}
+function showTempPassword(title, note, login, temp){
+  showModal(`<h3>${esc(title)}</h3>
+    <p class="small-note">${esc(note)}</p>
+    <div class="pw-form">
+      <label class="field-label" for="tempLoginOut">Sign-in username</label>
+      <input type="text" id="tempLoginOut" readonly value="${esc(login)}" onfocus="this.select()">
+      <label class="field-label" for="tempPwOut" style="margin-top:8px">Temporary password</label>
+      <input type="text" id="tempPwOut" readonly value="${esc(temp)}" style="width:100%;font-size:16px;font-weight:700;letter-spacing:.5px;" onfocus="this.select()">
+    </div>
+    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="copyTempPassword()">Copy password</button>
       <button class="btn btn-navy btn-sm" onclick="closeModal()">Done</button></div>`, 'max-width:420px;');
+}
+const permAcc = user=>permAccounts.find(x=>x.username===user) || {username:user};
+const permName = user=>permAccTitle(permAcc(user));
+function openResetPassword(user){
+  showModal(`<h3>Reset ${esc(permName(user))}'s password</h3>
+    <p class="small-note" style="margin-top:-6px;">For a forgotten password. They are signed out everywhere, sign in with the temporary password, and must choose their own password straight away.</p>
+    <form onsubmit="event.preventDefault(); submitResetPassword('${esc(user)}')" class="pw-form">
+      ${tempPasswordFieldsHtml()}
+      <p class="login-error hidden" id="tpErr" role="alert"></p>
+      <div class="modal-actions"><button type="button" class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-navy btn-sm" id="tpGo">Reset password</button></div>
+    </form>`, 'max-width:440px;');
+}
+async function submitResetPassword(user){
+  const a = permAcc(user), err = document.getElementById('tpErr'), btn = document.getElementById('tpGo');
+  err.classList.add('hidden');
+  let temp;
+  try{ temp = chosenTempPassword(user, a.loginName); }catch(e){ err.textContent = e.message; err.classList.remove('hidden'); return; }
+  btn.disabled = true; btn.textContent = 'Resetting…';
+  try{ await API.call('adminResetPassword', {username:user, temp}); }
+  catch(e){ err.textContent = 'Could not reset — '+(e.message||''); err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Reset password'; return; }
+  showTempPassword(`Temporary password for ${permName(user)}`, 'Give it to them privately. It is shown only now; they must change it when they sign in.', a.loginName||user, temp);
   loadPermAccounts();
 }
 async function copyTempPassword(){
@@ -4314,9 +4456,50 @@ async function copyTempPassword(){
   try{ await navigator.clipboard.writeText(el.value); toast('Copied','ok'); }catch(e){ el.focus(); el.select(); }
 }
 async function permSignOutEverywhere(user){
-  if(!await confirmDialog(`Sign ${user} out on every device and browser now?`)) return;
-  try{ await API.call('adminSignOut', {username:user}); toast(`${user} was signed out everywhere`,'ok'); loadPermAccounts(); }
+  if(!await confirmDialog(`Sign ${permName(user)} out on every device and browser now?`)) return;
+  try{ await API.call('adminSignOut', {username:user}); toast(`${permName(user)} was signed out everywhere`,'ok'); loadPermAccounts(); }
   catch(e){ toast('Could not sign out — '+(e.message||''),'err'); }
+}
+
+/* ── Names (v7.5): display name and sign-in username, for any account ──
+   The account keeps its original username as its fixed id, so its history, permissions and stamps stay attached. */
+function openAccountNames(user){
+  const a = permAccounts.find(x=>x.username===user);
+  if(!a) return;
+  const self = user===API.user, login = a.loginName||a.username;
+  showModal(`<h3>Name &amp; username</h3>
+    <p class="small-note" style="margin-top:-6px;">${esc(ROLE_LABELS[a.role]||a.role)} account, originally <b>${esc(a.username)}</b>.</p>
+    <form onsubmit="event.preventDefault(); submitAccountNames('${esc(user)}')" class="pw-form">
+      <label class="field-label" for="anDisplay">Display name</label>
+      <input type="text" id="anDisplay" maxlength="60" value="${esc(a.displayName||'')}" placeholder="e.g. Ahmed Salem">
+      <span class="small-note">Shown in the top bar, Admins Permissions, the Activity Log and "merged by", also on their past entries. Leave it empty to show the username.</span>
+      <label class="field-label" for="anLogin" style="margin-top:10px">Sign-in username</label>
+      <input type="text" id="anLogin" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(login)}">
+      <span class="small-note">What they type to sign in: 3–32 characters, letters, numbers, _ . or -. ${self ? 'You stay signed in here.' : 'Changing it signs them out everywhere, and the old one stops working.'}${login!==a.username ? ` Type <b>${esc(a.username)}</b> to go back to the original.` : ''}</span>
+      <p class="login-error hidden" id="anErr" role="alert"></p>
+      <div class="modal-actions"><button type="button" class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-navy btn-sm" id="anGo">Save</button></div>
+    </form>`, 'max-width:460px;');
+  setTimeout(()=>{ const el = document.getElementById('anDisplay'); if(el) el.focus(); }, 0);
+}
+async function submitAccountNames(user){
+  const a = permAcc(user), err = document.getElementById('anErr'), btn = document.getElementById('anGo');
+  const displayName = document.getElementById('anDisplay').value.trim(), loginName = document.getElementById('anLogin').value.trim();
+  err.classList.add('hidden');
+  if(!/^[A-Za-z0-9_.-]{3,32}$/.test(loginName)){ err.textContent = 'The sign-in username must be 3–32 characters: letters, numbers, _ . or -'; err.classList.remove('hidden'); return; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  let out;
+  try{ out = await API.call('adminSetNames', {username:user, displayName, loginName}); }
+  catch(e){ err.textContent = e.message || 'Could not save'; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Save'; return; }
+  // show the new names straight away (top bar, Activity Log) without a reload
+  const x = {}; if(out.displayName) x.n = out.displayName; if(out.loginName!==user) x.l = out.loginName;
+  if(x.n || x.l) API.staffNames[user] = x; else delete API.staffNames[user];
+  if(user===API.user){ API.displayName = out.displayName; API.login = out.loginName; renderRoleBadge(); }
+  closeModal();
+  const was = a.loginName||a.username;
+  toast(out.loginName!==was ? `Saved — ${out.displayName||out.loginName} now signs in as ${out.loginName}${out.signedOut ? ' (signed out everywhere)' : ''}` : 'Saved','ok');
+  if(activityRows.length) renderActivity();
+  loadPermAccounts();
 }
 
 /* ── Users (v7): the superadmin adds trainer / coordinator accounts in the app ── */
@@ -4324,41 +4507,44 @@ function openAddUser(){
   showModal(`<h3>Add a user</h3>
     <p class="small-note" style="margin-top:-6px;">They sign in with a temporary password (shown once on the next screen) and must choose their own straight away. You can then set what they see in Admins Permissions.</p>
     <form onsubmit="event.preventDefault(); submitAddUser()" class="pw-form">
-      <label class="field-label" for="nuName">Username</label>
+      <label class="field-label" for="nuDisplay">Display name <span class="small-note">(optional)</span></label>
+      <input type="text" id="nuDisplay" maxlength="60" placeholder="e.g. Ahmed Salem">
+      <label class="field-label" for="nuName" style="margin-top:10px">Username</label>
       <input type="text" id="nuName" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. UPC_T5" maxlength="32" required>
-      <span class="small-note">3–32 characters: letters, numbers, _ . or -</span>
+      <span class="small-note">What they type to sign in: 3–32 characters, letters, numbers, _ . or -</span>
       <label class="field-label" for="nuRole" style="margin-top:10px">Role</label>
       <select id="nuRole"><option value="trainer">Trainer — the training team's usual access</option><option value="coordinator">Coordinator — attendance and reports</option></select>
+      ${tempPasswordFieldsHtml()}
       <p class="login-error hidden" id="nuErr" role="alert"></p>
       <div class="modal-actions"><button type="button" class="btn btn-outline btn-sm" onclick="closeModal()">Cancel</button>
         <button type="submit" class="btn btn-navy btn-sm" id="nuGo">Create user</button></div>
     </form>`, 'max-width:440px;');
-  setTimeout(()=>{ const el = document.getElementById('nuName'); if(el) el.focus(); }, 0);
+  setTimeout(()=>{ const el = document.getElementById('nuDisplay'); if(el) el.focus(); }, 0);
 }
 async function submitAddUser(){
   const u = document.getElementById('nuName').value.trim(), role = document.getElementById('nuRole').value;
+  const displayName = document.getElementById('nuDisplay').value.trim();
   const err = document.getElementById('nuErr'), btn = document.getElementById('nuGo');
+  const fail = m=>{ err.textContent = m; err.classList.remove('hidden'); };
   err.classList.add('hidden');
-  if(!/^[A-Za-z0-9_.-]{3,32}$/.test(u)){ err.textContent = 'The username must be 3–32 characters: letters, numbers, _ . or -'; err.classList.remove('hidden'); return; }
-  const temp = makeTempPassword();
+  if(!/^[A-Za-z0-9_.-]{3,32}$/.test(u)){ fail('The username must be 3–32 characters: letters, numbers, _ . or -'); return; }
+  let temp;
+  try{ temp = chosenTempPassword(u); }catch(e){ fail(e.message); return; }
   btn.disabled = true; btn.textContent = 'Creating…';
-  try{ await API.call('adminCreateUser', {username:u, role, temp}); }
-  catch(e){ err.textContent = e.message || 'Could not create the user'; err.classList.remove('hidden'); btn.disabled = false; btn.textContent = 'Create user'; return; }
+  try{ await API.call('adminCreateUser', {username:u, role, temp, displayName}); }
+  catch(e){ fail(e.message || 'Could not create the user'); btn.disabled = false; btn.textContent = 'Create user'; return; }
+  if(displayName) API.staffNames[u] = {n:displayName};
   permSel = u;
-  showModal(`<h3>${esc(u)} is ready</h3>
-    <p class="small-note">Give them their username and this temporary password privately. It is shown only now; they must change it when they first sign in.</p>
-    <input type="text" id="tempPwOut" readonly value="${esc(temp)}" style="width:100%;font-size:16px;font-weight:700;letter-spacing:.5px;" onfocus="this.select()">
-    <div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="copyTempPassword()">Copy</button>
-      <button class="btn btn-navy btn-sm" onclick="closeModal()">Done</button></div>`, 'max-width:420px;');
+  showTempPassword(`${displayName||u} is ready`, 'Give them their username and this temporary password privately. It is shown only now; they must change it when they first sign in.', u, temp);
   loadPermAccounts();
 }
 async function permSetDisabled(user, off){
-  if(!await confirmDialog(off ? `Switch off ${user}? They are signed out everywhere and can't sign in until you switch the account on again.` : `Switch ${user} on again?`)) return;
-  try{ await API.call('adminSetDisabled', {username:user, disabled:off}); toast(off ? `${user} is switched off` : `${user} can sign in again`,'ok'); loadPermAccounts(); }
+  if(!await confirmDialog(off ? `Switch off ${permName(user)}? They are signed out everywhere and can't sign in until you switch the account on again.` : `Switch ${permName(user)} on again?`)) return;
+  try{ await API.call('adminSetDisabled', {username:user, disabled:off}); toast(off ? `${permName(user)} is switched off` : `${permName(user)} can sign in again`,'ok'); loadPermAccounts(); }
   catch(e){ toast('Could not change it — '+(e.message||''),'err'); }
 }
 async function permDeleteUser(user){
-  if(!await confirmDialog(`Delete the account ${user}? They can no longer sign in. Their past changes stay in the Activity Log. This can't be undone.`)) return;
-  try{ await API.call('adminDeleteUser', {username:user}); toast(`${user} deleted`,'ok'); permSel = null; loadPermAccounts(); }
+  if(!await confirmDialog(`Delete the account ${permName(user)}? They can no longer sign in. Their past changes stay in the Activity Log. This can't be undone.`)) return;
+  try{ await API.call('adminDeleteUser', {username:user}); toast(`${permName(user)} deleted`,'ok'); permSel = null; loadPermAccounts(); }
   catch(e){ toast('Could not delete — '+(e.message||''),'err'); }
 }

@@ -5,9 +5,53 @@ every read, every write, and all authentication. The front‑end talks to it thr
 (`assets/js/api.js`).
 
 ```
-supabase/schema.sql            ← run once in the SQL editor (creates tables + locks them down)
+supabase/schema.sql            ← run in the SQL editor (creates / upgrades tables + locks them down; safe to re-run)
 supabase/functions/api/        ← the Edge Function — all reads/writes and all auth
+supabase/functions/backup/     ← hourly copy of every table to a Google Sheet
+supabase/backup.sql            ← the pg_cron schedule for the backup
 ```
+
+---
+
+## Deploy checklist
+
+Use this for every update. The order matters: the new `api` reads columns that only exist after step 1.
+
+1. **Database:** SQL Editor → paste all of [`schema.sql`](schema.sql) → **Run**. It is safe to re-run; the upgrade
+   blocks (v4, v5, v6, v7, v7.5) at the end only add what is missing.
+2. **`api`:** run the command below, or Dashboard → Edge Functions → `api` → paste
+   [`functions/api/index.ts`](functions/api/index.ts) → **Deploy**.
+   ```bash
+   supabase functions deploy api
+   ```
+3. **`backup`:** run the command below, or paste [`functions/backup/index.ts`](functions/backup/index.ts). Keep
+   **Verify JWT off**.
+   ```bash
+   supabase functions deploy backup --no-verify-jwt
+   ```
+4. **Front end:** push `main`; GitHub Pages updates in a minute or two.
+   ```bash
+   git push origin main
+   ```
+5. **Check:**
+   1. Open the Admins Dashboard with **Ctrl+F5** and sign in.
+   2. In the Activity Log, the sign-in should appear.
+   3. Open the public reports page.
+   4. The public page caches answers for up to 60 s, so allow a minute for changes there.
+
+Secrets don't change between versions: keep `STAFF_ACCOUNTS` as it is. Sessions survive a deploy.
+
+### Troubleshooting (things that happened before)
+
+| Symptom | Cause and fix |
+|---|---|
+| A new filter, column or button is missing when testing locally | The local page uses the **live** `api`. Deploy step 2 first. |
+| Every request fails right after deploying `api` | `schema.sql` wasn't run (a new column or table is missing). Run step 1. |
+| "Too many requests — try again in a minute" on the public page | 30 requests / minute / IP limit. Wait a minute. |
+| A change on the public page shows late | Server cache of 60 s. Wait and press Refresh. |
+| "Session expired" for everyone | `TOKEN_SECRET` changed, or the token format changed (v4). Everyone signs in again. |
+| Superadmin forgot their password | SQL: `update staff_accounts set hash = null, must_change = false where username = 'UPC_TMD';` — the `STAFF_ACCOUNTS` password works again. |
+| Someone can't sign in: "This account is switched off" | Admins Permissions → choose the account → Switch on. |
 
 ---
 
@@ -35,7 +79,7 @@ Everyone on the training team has their own account, so every change is recorded
 | Username | Role | Can do |
 |---|---|---|
 | `UPC_TMD` | superadmin | everything, plus the Activity Log and Admins Permissions tabs |
-| `UPC_T1` … `UPC_T4` | trainer | everything except the Activity Log |
+| `UPC_T1` … `UPC_T4` | trainer | everything except the Activity Log, Admins Permissions and the three Reports tabs |
 | `UPC_Co`, `UPC_Co1`, `UPC_Co2` | coordinator | Attendance, Calendar (view only), Master Sheet Preview, Moodle / SAP Reports, Reports Configuration — from v6 the superadmin can change any account’s access in **Admins Permissions** |
 
 Passwords are **never stored** — only a one-way PBKDF2 hash of each one. To set or change passwords:
@@ -48,6 +92,16 @@ Passwords are **never stored** — only a one-way PBKDF2 hash of each one. To se
    (they are only a fallback used while `STAFF_ACCOUNTS` is missing).
 
 Wrong passwords lock **that username** for 10 minutes after 8 tries (other people can still sign in).
+
+**Since v6 / v7 most account work happens in the app** — the secret is only needed for the superadmin and for
+first-time setup:
+- **Own password:** every admin changes their own password with **🔑 Password** in the top bar. The new hash is stored
+  in `staff_accounts` and replaces the secret's one.
+- **Forgotten password:** the superadmin uses **Reset password** in Admins Permissions. A temporary password is
+  shown once, and the person must choose their own at the next sign-in.
+- **New trainers and coordinators:** created with **+ Add user** in Admins Permissions; no change to the secret.
+  Accounts can be switched off or on; app-made accounts can be deleted.
+- **To add another superadmin**, or change a secret account's role, edit `STAFF_ACCOUNTS` as above.
 
 ## Step 3 — Deploy the Edge Function
 
@@ -200,3 +254,15 @@ Re-run [`schema.sql`](schema.sql). Its v7 block adds `role`, `disabled`, `create
   - "Unsubmit" permission: Unsubmit (an operations patch with `a.locked: false`).
 - **Accounts now come from two places:** `STAFF_ACCOUNTS` (which wins on a clash) and accounts created in the app.
   Switching any account off blocks sign-in and ends its sessions.
+
+## v7.5 — account names, typed temporary passwords
+
+Re-run [`schema.sql`](schema.sql). Its v7.5 block adds `display_name` and `login_name` to `staff_accounts`, plus a
+unique index on `lower(login_name)`. Then redeploy `api` and `backup`.
+
+- **New superadmin action:** `adminSetNames {username, displayName, loginName}`. `adminCreateUser` also takes
+  `displayName`.
+- **Sign-in:** an account with a `login_name` signs in with it, and no longer with its original username. The original
+  username (the `STAFF_ACCOUNTS` key for those accounts) stays its id, so `STAFF_ACCOUNTS` doesn't change.
+- **Forgotten superadmin username:** in the SQL editor, `update staff_accounts set login_name = null where username = 'UPC_TMD';`
+  brings back the original one.

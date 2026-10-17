@@ -1,5 +1,9 @@
 # Talent Operations Center — work summary (Sept 2026)
 
+> **Historical record.** This covers the September 2026 round only (speed work and the move from Google Sheets to
+> Supabase). For the system as it is today see [PROJECT_HANDOFF.md](PROJECT_HANDOFF.md) and
+> [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md); for everything learned since, see [LESSONS_LEARNED.md](LESSONS_LEARNED.md).
+
 A record of every change made in this round of work: what was wrong, what was changed, how it was
 verified, and what is still open. For how the system works *today*, see
 [PROJECT_HANDOFF.md](PROJECT_HANDOFF.md); for backend setup, see [../supabase/README.md](../supabase/README.md).
@@ -238,13 +242,11 @@ background, so nobody waits for them.
 3. ⚠️ **Watch for changes made after the migration.** If people kept using the old live site (still on the
    Google Sheet) after the data was copied on **22 Sep 2026**, those edits are in the Sheet but not in
    Supabase. Check before switching over. The copy tool was deleted but can be rebuilt quickly if needed.
-4. **After switching over:** archive the Apps Script deployment and keep the Google Sheet *Restricted*,
-   so nothing can write to the old store.
-5. **Free-tier pause:** a free Supabase project goes to sleep after 7 days without use. Add a weekly
+4. **Free-tier pause:** a free Supabase project goes to sleep after 7 days without use. Add a weekly
    keep-alive (e.g. `pg_cron`), or resume it by hand after quiet weeks.
-6. **Testing:** there is no offline test setup any more (the old one simulated Google Sheets). Test against
+5. **Testing:** there is no offline test setup any more (the old one simulated Google Sheets). Test against
    Supabase with a spare supervisor or day, or add automated tests later.
-7. **Version control:** this folder is not a git repository yet. Commit it so changes can be tracked and
+6. **Version control:** this folder is not a git repository yet. Commit it so changes can be tracked and
    undone.
 
 ## Decisions made along the way
