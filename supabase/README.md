@@ -52,6 +52,9 @@ Secrets don't change between versions: keep `STAFF_ACCOUNTS` as it is. Sessions 
 | "Session expired" for everyone | `TOKEN_SECRET` changed, or the token format changed (v4). Everyone signs in again. |
 | Superadmin forgot their password | SQL: `update staff_accounts set hash = null, must_change = false where username = 'UPC_TMD';` — the `STAFF_ACCOUNTS` password works again. |
 | Someone can't sign in: "This account is switched off" | Admins Permissions → choose the account → Switch on. |
+| Saving category colours (or any new button) says **"Could not save — Unknown action"** | The live `api` is older than the pushed front end. Redeploy `api` (step 2). The front end was pushed first, or `api` was never redeployed after v7.2. |
+| Everyone sees "API.login is not a function" when signing in | A v7.5 front-end bug (fixed in v7.5.1: property renamed to `API.loginName`). Push the fixed `assets/js/api.js` and `trainer.js`; people already signed in are unaffected. |
+| Someone says their old username no longer works | v7.5: the superadmin changed their sign-in username. Admins Permissions → their account shows "Signs in as …". |
 
 ---
 
@@ -266,3 +269,8 @@ unique index on `lower(login_name)`. Then redeploy `api` and `backup`.
   username (the `STAFF_ACCOUNTS` key for those accounts) stays its id, so `STAFF_ACCOUNTS` doesn't change.
 - **Forgotten superadmin username:** in the SQL editor, `update staff_accounts set login_name = null where username = 'UPC_TMD';`
   brings back the original one.
+
+## v7.3 and v7.4 — front end only
+
+Nothing to run in Supabase and nothing to redeploy: v7.3 (Image / PDF exports at the table's full width) and v7.4
+(Attendance tab headcount sheet) live in `assets/` and `trainer.html` only. Push `main`.

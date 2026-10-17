@@ -36,14 +36,14 @@ A web tool for **United Pharmacy (UPC) — Talent Management**.
   - The front end is static files on **GitHub Pages**.
   - A second function (`backup`) copies everything to a Google Sheet every hour.
 
-**Owner:** muhammed.zaghloul237@gmail.com. Working dir on the owner's PC: `D:\Work\UPC\Sync Training`. Git repo, branch `main`;
+**Owner:** muhammed.zaghloul237@gmail.com. Working dir on the owner's PC: `D:\Work\UPC\Digital Tools\[Active] Talent Operation Hub` (moved from `D:\Work\UPC\Sync Training` in Oct 2026). Git repo, branch `main`;
 the owner pushes to GitHub.
 
 **History:**
 1. A single 2.2 MB HTML file.
 2. Pages backed by a Google Sheet.
 3. Supabase (Sept 2026).
-4. Then versions v3 → v7.2; see §10 and [LESSONS_LEARNED.md](LESSONS_LEARNED.md).
+4. Then versions v3 → v7.5; see §10 and [LESSONS_LEARNED.md](LESSONS_LEARNED.md).
 
 The old reporting tool (separate `LMS-reporting` repo + public Google Sheet) was folded into the Hub in v5. Copies of the
 old tools are kept locally in `reference/` (git-ignored).
@@ -106,7 +106,7 @@ Project ref `aoqgabdsayaqgqroscdw`. Schema in `supabase/schema.sql`.
 | `course_progress` | One row per learner per course; a publish replaces the course's rows. |
 | `course_uploads` | Publish history (counts only, never the exclusion list). |
 | `report_hidden` | v6. Not-in-roster people hidden from the public reports. |
-| `staff_accounts` | v6 / v7. Own password `hash`, `session_version`, `must_change`, `perms` (overrides).<br>For app-made users: `role`, `disabled`, `created_*`. |
+| `staff_accounts` | v6 / v7 / v7.5. Own password `hash`, `session_version`, `must_change`, `perms` (overrides).<br>For app-made users: `role`, `disabled`, `created_*`.<br>v7.5, any account: `display_name`, `login_name` (a different sign-in username; `username` stays the fixed id). |
 | `lms_learners` | v5 onboarding learners: kept as old data, unused since v6. |
 
 **Every table has RLS enabled with no policies**, so the anon key can read and write nothing. Only the Edge Function
@@ -150,6 +150,7 @@ Every response includes `_ms`, the server's own time.
 ### Auth and authorization
 - **Staff accounts:**
   - The `STAFF_ACCOUNTS` secret (`{user:{role,hash}}`), plus app-made accounts in `staff_accounts`. The secret wins on a clash.
+  - **Names (v7.5):** the typed sign-in username is resolved to the account id by `resolveLogin()` (`staff_accounts.login_name`). After a rename the original username no longer signs in. Everything else (tokens, permissions, Activity Log, stamps) uses the fixed id; the page shows display names through `API.staffNames` / `staffLabel()`.
   - A password the person chose (`staff_accounts.hash`) replaces the secret's hash.
   - Lockout: 8 wrong tries per username in 10 minutes, plus an overall cap.
 - **Tokens:**
@@ -196,6 +197,8 @@ The full list with IDs is in [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md) §11. 
 - **Master Sheet export = upload format.** The upload matches people by email → employee ID → name + supervisor, and
   keeps their ids, days and attendance.
 - **Calendar import:** identity = the day code (`JED N 1`, `MIX 4`), so re-importing updates the same day.
+- **Headcount sheet (v7.4):** an Excel / CSV of emails filters the Attendance tab (T-A15) and the public course page (PUB-8). Read in the browser only; matched by email ignoring case; lost on reload.
+- **Image / PDF exports (v7.3):** drawn from a full-width copy, so nothing is cut off on phones or small windows; very long tables come out smaller.
 - **Reports:**
   - **Roster match:** the roster (by email) wins; anyone else is "Not in roster", and can be hidden from the reports.
   - **Timestamps:** read in KSA. An unreadable timestamp means "Completed (date unknown)", never Late.
@@ -279,8 +282,11 @@ The full list with IDs is in [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md) §11. 
   - Changes apply on the person's next page load.
   - Write checks are lenient by design (any screen that makes a change allows it).
 - **Public page:** can lag up to 60 s after a publish or hide (cache).
-- **Headcount filter:** needs the course's Email column.
+- **Headcount filter:** needs the course's Email column on the public page (the Attendance tab uses each pharmacist's email). The file is kept in that browser tab only.
+- **Image / PDF:** a very long table is drawn smaller so the browser can still make the image (about 16 million pixels on phones); Excel is the better export for a whole course.
+- **Names:** a changed sign-in username signs the person out; a forgotten superadmin username can be restored with SQL (see supabase/README.md).
 - **Notes:** visible to supervisors, by design.
+- **Old reporting dashboard:** its retirement (archiving the Apps Script deployment and setting the old Google Sheet to Restricted) is no longer a tracked phase in these docs. That Sheet's URL was public and exposed the roster, so confirm it was done.
 - **Free Supabase:** pauses after 7 days without use.
 
 **Ideas not built:**
@@ -303,6 +309,7 @@ Open `http://localhost:5173/`. It talks to the **live** backend, so:
 
 - **Writes are tested against an in-browser mock** of the Edge Function (see [LESSONS_LEARNED.md](LESSONS_LEARNED.md) §5).
   Temporary `dev/_t_*.TEMP.html` pages load the real page plus the mock. Delete them afterwards; never commit them.
+- **Server code can be run in the browser too (v7.5):** load TypeScript from a CDN, stub the database and call `route()` directly; see [LESSONS_LEARNED.md](LESSONS_LEARNED.md) §5.
 - **Checks against the live system are read-only.**
 - **`rpSelfTest()`** (with `?debug=1`) runs 23 Moodle-engine checks.
 
@@ -321,7 +328,8 @@ Always run the schema before deploying a new `api`.
 - **No Node / Python / Deno on the owner's PC.** Check scripts with the Perl scope checker and by loading every changed
   page in the browser. See [LESSONS_LEARNED.md](LESSONS_LEARNED.md) for the editing traps (Perl `$1`, heredocs,
   apostrophes in JS strings).
-- **Git** needs `-c "safe.directory=D:/Work/UPC/Sync Training"`. The owner pushes; commit per phase.
+- **Git** refuses with "dubious ownership" on this folder. Pass `-c safe.directory='*'` per command (`git -c safe.directory='*' status`) instead of changing the global config. The owner pushes; commit per phase.
+- **The folder name has brackets** (`[Active] …`). Tools that treat `[ ]` as a pattern break: `dev/serve.ps1` needed `-LiteralPath` (fixed in v7.3). Use literal-path options in any new PowerShell script.
 - **Never commit roster exports** (`*.xlsx`, `*.xls`, `*.csv` are ignored) or secrets.
 - **Table columns:** the `<thead>` in the HTML and the row template in the JS must have the same number of cells
   (including the bulk-select checkbox column).
@@ -608,7 +616,7 @@ Older entries describe the rules **as they were then**. Where a later version ch
     original username or sign-in username, ignoring case.
   - **Server:** `adminSetNames {username, displayName, loginName}` (superadmin; logged as `user_name` / `user_login`).
     `login` and `me` also return `login`, `displayName` and `staffNames` (`{id: {n, l}}`; `l` only for the superadmin).
-  - **Front end:** `API.login`, `API.displayName`, `API.staffNames`; `staffLabel(id)` / `staffLabelFull(id)` in
+  - **Front end:** `API.loginName`, `API.displayName`, `API.staffNames` (not `API.login`, which is the sign-in function); `staffLabel(id)` / `staffLabelFull(id)` in
     common.js; `renderRoleBadge()` in trainer.js.
 - **Reset password and Add user:** "Generate one for me" or "Type it myself" (`chosenTempPassword`). Same rules as the
   server: 10+ characters, a letter and a number, and it must not contain either username. Either way the person must

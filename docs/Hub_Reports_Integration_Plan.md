@@ -1,6 +1,6 @@
 # Talent Operations Center — Reports Integration Plan
 
-**For:** Claude Code, working directly in the Hub repo (`Sync Training/`)
+**For:** Claude Code, working directly in the Hub repo (`Sync Training/` when this plan was written; now `D:\Work\UPC\Digital Tools\[Active] Talent Operation Hub`)
 **Owner:** Zaghloul (UPC Talent Management)
 **Status:** Approved design. Build in the phase order in §10.
 

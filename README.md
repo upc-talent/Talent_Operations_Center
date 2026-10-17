@@ -9,7 +9,7 @@ completion reports.
 | Read this | For |
 |---|---|
 | [docs/FEATURE_CATALOGUE.md](docs/FEATURE_CATALOGUE.md) | Every feature and rule, with IDs |
-| [docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md) | How it works inside, plus the change history (v3 → v7) |
+| [docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md) | How it works inside, plus the change history (v3 → v7.5) |
 | [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md) | Trials, errors and fixes — read before changing code |
 | [supabase/README.md](supabase/README.md) | Database, secrets, deploying the Edge Functions, backup |
 | [docs/Hub_Reports_Integration_Plan.md](docs/Hub_Reports_Integration_Plan.md) | The plan for moving course reports into the Hub (v5) |
@@ -28,7 +28,7 @@ assets/js/trainer.js        Admins Dashboard (all staff tabs, sign-in, passwords
 assets/js/reports-admin.js  Moodle Reports engine + Reports Configuration (staff)
 assets/js/reports.js        Public reports page
 assets/vendor/              SheetJS 0.20.3, JSZip, html2canvas, jsPDF
-supabase/schema.sql         The database (safe to re-run; upgrade blocks v4 → v7 at the end)
+supabase/schema.sql         The database (safe to re-run; upgrade blocks v4 → v7.5 at the end)
 supabase/functions/api      The Edge Function — all reads, writes and sign-ins go through it
 supabase/functions/backup   Hourly copy of every table to a Google Sheet
 dev/serve.ps1               Local static server (the owner's PC has no Node / Python)
@@ -41,7 +41,7 @@ dev/password-hash.html      Offline tool that makes the STAFF_ACCOUNTS password 
 |---|---|---|
 | Supervisors | Pick their name (no password) | Book their pharmacists on training days, record leave, Submit, Request Change / Data Edit |
 | Training team (trainers, coordinators) | Their own account | Attendance, training days, calendar, approvals, analytics, course reports — whatever their permissions allow |
-| Superadmin (`UPC_TMD`) | Their own account | Everything, plus the Activity Log, Admins Permissions and user accounts |
+| Superadmin (`UPC_TMD`) | Their own account | Everything, plus the Activity Log and Admins Permissions: per-account switches, display names and sign-in usernames, password resets (generated or typed), new users |
 | Anyone with the link | No sign-in | The public course progress reports |
 
 ## 2. Data model
@@ -58,7 +58,7 @@ dev/password-hash.html      Offline tool that makes the STAFF_ACCOUNTS password 
 | `activity_log` | Every sign-in and change (append-only, superadmin reads it) |
 | `courses`, `course_progress`, `course_uploads` | Tracked courses, published completion rows, publish history |
 | `report_hidden` | People not in the roster who are hidden from the public reports |
-| `staff_accounts` | App side of admin accounts: own password hash, session version, must-change, permissions, app-made users |
+| `staff_accounts` | App side of admin accounts: own password hash, session version, must-change, permissions, app-made users, display name and sign-in username (v7.5) |
 | `lms_learners` | Old onboarding data (no longer used) |
 
 Everything is edited **through the app**. Exports (Excel / image / PDF) are made in the browser.
@@ -97,7 +97,8 @@ They are not what protects the data:
     someone changes their password or is created in the app).
   - 8 wrong tries lock that username for 10 minutes.
   - Tokens last 10 hours, or 6 days with "Keep me signed in".
-  - A password change, a reset or "Sign out everywhere" ends every other session.
+  - A password change, a reset, a new sign-in username or "Sign out everywhere" ends every other session.
+  - After a reset by the superadmin the person must choose their own password before they can do anything else.
   - Switched-off accounts can't sign in.
 - **Permissions:** each admin account has per-tab / per-action switches (Admins Permissions). The server checks them
   on every action; the page only hides what is off.
@@ -119,4 +120,6 @@ They are not what protects the data:
 - Undo / Redo covers training-day / config changes only.
 - Permission changes take effect on the person's next page load.
 - Public answers are cached for up to 60 seconds.
+- Image / PDF exports of a very long table come out smaller, because browsers refuse huge images; use Excel for those.
+- A headcount sheet uploaded on the Attendance tab or the public page lives in that browser tab only; reloading drops it.
 - A free Supabase project pauses after 7 days without use (one-click resume).

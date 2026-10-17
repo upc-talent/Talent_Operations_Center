@@ -325,3 +325,15 @@ The superadmin can change any of this per account.
 - **Fill:** background; the number boxes stay white.
 - **Text:** a colour, or auto black / white by contrast.
 - **Precedence:** course colour → category colour → default, decided per colour.
+
+### R-17 Image / PDF export (v7.3)
+- Drawn from a copy of the table laid out at its own full width: no sideways scroll box, no wrapping and no "…" cells, whatever the screen.
+- The calendar is laid out at least 1,100 px wide.
+- Very long tables are drawn smaller: browsers refuse huge canvases (about 32,000 px a side; about 16 million pixels on phones). Use Excel for a whole course.
+- The trainer's short Attendance export still leaves out Completion, Attendance and Notes (`col-export-skip`).
+
+### R-18 Headcount sheet (v7.4)
+- An Excel / CSV with an Email (or Username) column, read in the browser only and lost on reload.
+- Emails match ignoring upper / lower case and spaces. Names, district, area manager, city and supervisor columns in the sheet are optional.
+- **Headcount only** keeps just the people in the sheet; **Everyone** shows all. It applies to the table, the filter lists, bulk selection, the exports and the counts.
+- Public page: sheet people missing from the course data are listed as "No completion data". Attendance tab: they are listed under **Not in roster (n)** instead.

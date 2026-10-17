@@ -246,7 +246,7 @@ background, so nobody waits for them.
    keep-alive (e.g. `pg_cron`), or resume it by hand after quiet weeks.
 5. **Testing:** there is no offline test setup any more (the old one simulated Google Sheets). Test against
    Supabase with a spare supervisor or day, or add automated tests later.
-6. **Version control:** this folder is not a git repository yet. Commit it so changes can be tracked and
+6. **Version control:** *(done later: the folder is a git repository, branch `main`.)* Originally: this folder was not a git repository. Commit it so changes can be tracked and
    undone.
 
 ## Decisions made along the way

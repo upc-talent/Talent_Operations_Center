@@ -606,8 +606,8 @@ const ROLE_LABELS = {superadmin:'Super Admin', trainer:'Trainer', coordinator:'C
 function renderRoleBadge(){
   const badge = document.getElementById('roleBadge');
   if(!badge) return;
-  badge.textContent = (ROLE_LABELS[API.role] || 'Trainer') + (API.user ? ' · '+(API.displayName || API.login || API.user) : '');
-  badge.title = 'Signed in as '+(API.login||API.user||'')+' — everything you change is recorded under this account';
+  badge.textContent = (ROLE_LABELS[API.role] || 'Trainer') + (API.user ? ' · '+(API.displayName || API.loginName || API.user) : '');
+  badge.title = 'Signed in as '+(API.loginName||API.user||'')+' — everything you change is recorded under this account';
 }
 // Coordinators see their tabs in this order: Attendance (opens first) · Calendar · Analytics & Export · Moodle Reports ·
 // SAP Reports · Reports Configuration, then anything else the superadmin switched on. Which tabs, sections and buttons
@@ -4205,7 +4205,7 @@ function openChangePassword(forced){
   showModal(`<h3>${forced ? 'Choose a new password' : 'Change your password'}</h3>
     ${forced ? '<p class="small-note" style="margin-top:-6px;">Your password was reset by the super admin. Choose your own before you continue.</p>' : ''}
     <form onsubmit="submitChangePassword(event, ${forced?'true':'false'})" class="pw-form" autocomplete="on">
-      <input type="text" name="username" autocomplete="username" value="${esc(API.login||API.user||'')}" class="hidden" readonly>
+      <input type="text" name="username" autocomplete="username" value="${esc(API.loginName||API.user||'')}" class="hidden" readonly>
       <label class="field-label" for="pwCur">${forced ? 'Temporary password' : 'Current password'}</label>
       <input type="password" id="pwCur" autocomplete="current-password" required>
       <label class="field-label" for="pwNew">New password</label>
@@ -4224,7 +4224,7 @@ function openChangePassword(forced){
 }
 function pwStrengthHint(){
   const v = document.getElementById('pwNew').value, el = document.getElementById('pwHint');
-  const ok = v.length>=10 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && ![API.user, API.login].some(u=>u && v.toLowerCase().includes(u.toLowerCase()));
+  const ok = v.length>=10 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && ![API.user, API.loginName].some(u=>u && v.toLowerCase().includes(u.toLowerCase()));
   el.style.color = !v ? '' : (ok ? 'var(--ok)' : 'var(--warn)');
 }
 async function submitChangePassword(ev, forced){
@@ -4494,7 +4494,7 @@ async function submitAccountNames(user){
   // show the new names straight away (top bar, Activity Log) without a reload
   const x = {}; if(out.displayName) x.n = out.displayName; if(out.loginName!==user) x.l = out.loginName;
   if(x.n || x.l) API.staffNames[user] = x; else delete API.staffNames[user];
-  if(user===API.user){ API.displayName = out.displayName; API.login = out.loginName; renderRoleBadge(); }
+  if(user===API.user){ API.displayName = out.displayName; API.loginName = out.loginName; renderRoleBadge(); }
   closeModal();
   const was = a.loginName||a.username;
   toast(out.loginName!==was ? `Saved — ${out.displayName||out.loginName} now signs in as ${out.loginName}${out.signedOut ? ' (signed out everywhere)' : ''}` : 'Saved','ok');

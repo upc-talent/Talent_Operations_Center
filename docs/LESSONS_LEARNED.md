@@ -19,6 +19,9 @@ feature, see [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md).
 | v5 | Course progress reports moved into the Hub (Moodle Reports, Reports Configuration, public `reports.html`) | The old reporting tool lived in a separate repo + a public Google Sheet |
 | v6 | Admins Permissions, own passwords, hidden report people, bulk attendance, lock fix | Owner requests + a lock bug |
 | v7 | Training Date filter, Unsubmit, course and category card colours, users made in the app | Owner requests |
+| v7.3 | Image / PDF exports never cut off | Phone and small-window downloads lost the columns past the right edge |
+| v7.4 | Headcount sheet on the Attendance tab | The public page had it; trainers wanted to filter the roster by their own email list |
+| v7.5 | Display names, changeable sign-in usernames, typed temporary passwords | Owner request: real names instead of UPC_T1, and a way to help someone who forgot their password |
 
 ---
 
@@ -27,7 +30,7 @@ feature, see [FEATURE_CATALOGUE.md](FEATURE_CATALOGUE.md).
 | Problem we hit | What we do now |
 |---|---|
 | **No Python, Node or Deno** on the PC, so no way to run or type-check JavaScript / TypeScript locally. Loading TypeScript from a CDN was blocked at first, but works in the built-in browser (see §5). | A small Perl script, `scopecheck.pl` (kept in the agent's scratchpad, not in the repo), checks balanced braces and duplicate `const` / `let` names in one block. It caught a real deploy-breaking bug (§4). Its "declared twice" warnings for `for (const k …)` loops in separate blocks are false positives. **Then load every changed page in the browser** — that is the real syntax check. |
-| `git` refused to run: *"dubious ownership"*. | Pass it per command — `git -c "safe.directory=D:/Work/UPC/Sync Training" …` — instead of changing the global Git config. |
+| `git` refused to run: *"dubious ownership"*. | Pass it per command — `git -c safe.directory='*' …` — instead of changing the global Git config. |
 | "LF will be replaced by CRLF" warnings on every commit. | Harmless (Windows line endings). Ignore. |
 | The owner pushes to GitHub themselves. | Commit locally with a clear message after each phase; never push. |
 | `dev/serve.ps1` is the only local web server. | `.claude/launch.json` starts it as "hub" on port 5173. |
@@ -107,6 +110,39 @@ These all happened. Each one either broke a page or wasted a round of work.
 - An unreadable timestamp must never become "Late" or "On time" → "Completed (date unknown)", shown with examples in
   the preview, and Publish needs a tick when there are any. `rpSelfTest()` (23 checks, `?debug=1`) guards this.
 - SheetJS went from 0.18.5 to 0.20.3 for this — re-test Master upload, Calendar import and Bulk Add after any upgrade.
+
+### Deploying (v7.2 → v7.5)
+- **"Could not save — Unknown action" on category colours.** The front end (v7.2) was live but the `api` Edge Function was
+  still v7, so it didn't know `categoryColorsSet`. The same old `api` was also silently dropping each course's Card fill and
+  Text colours (v7.1) on save. **Do:** deploy `schema.sql` → `api` → `backup` → front end, always in that order, and
+  after a deploy try one new action on the live site. To check which `api` is live without signing in, ask the public
+  endpoint (`reportsPublic`) for a field the new version adds (a v7.1 `api` sends `display.bg` / `display.text`).
+- **A folder name with `[ ]` brackets** broke `dev/serve.ps1`: `Resolve-Path` and `Test-Path` treat `[Active]` as a
+  wildcard, so every page came back 404 and the preview was blank. **Do:** `-LiteralPath` in PowerShell scripts.
+
+### Exports (v7.3)
+- **Cut-off Image / PDF on phones and small windows.** `html2canvas` captured the element at the window's width, so a
+  1,300 px table inside a 300 px card kept only its left quarter, and phone CSS squeezed and wrapped the rest.
+  **Fix:** capture a copy at the table's own width (`captureFull`), with a `windowWidth` wide enough that the phone
+  layout doesn't apply. Wide-but-fitting things (the calendar grid) use `minWidth` instead.
+- **Canvas limits.** Browsers refuse canvases over about 32,000 px a side, and phones over about 16 million pixels,
+  returning a blank or cut image. The export scale drops for very long tables (`exportCanvasScale`).
+- **Test with a marker.** Put a coloured marker in the last cell of every row and check that its pixels appear at the
+  right edge of the exported image; "the image looks wide" isn't proof.
+
+### Accounts (v7.5)
+- **A rename must not rewrite history.** Changing the sign-in username could have meant updating every Activity Log row,
+  permission and "marked by" stamp. Instead `username` stays a fixed id, `login_name` is an alias, and display names are
+  applied when shown (`staffLabel`). Nothing stored has to change, and a rename can be undone by typing the original.
+- **"API.login is not a function" — nobody could sign in (v7.5).** The `API` object already had a method `login()`. v7.5
+  added a property also called `login` (the sign-in username), and the later one replaced the method, so every new
+  sign-in failed. People already signed in kept working, because their session check doesn't call `login()`. The test
+  round missed it because it replaced `API.call` and never used the real sign-in form. **Fix:** the property is
+  `API.loginName`. **Do:** before adding a property to a shared object (`API`, `APP_HOOKS`), search for that name
+  (`grep -n "API\.name\|name(" assets/js/api.js`); and always test sign-in through the page's own form with only the
+  network stubbed (`window.fetch`), after any change to `api.js` or the login flow.
+- **The superadmin can lock themselves out** by renaming their own sign-in username and forgetting it. There is a SQL
+  escape hatch in supabase/README.md; keep it documented.
 
 ### UI
 - **Side margins** on wide screens came from `main{max-width:1800px}`. Now full width with a responsive gutter.
